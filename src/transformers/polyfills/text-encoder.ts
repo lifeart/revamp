@@ -71,9 +71,24 @@ export const textEncoderPolyfill = `
       } else if (input instanceof ArrayBuffer) {
         bytes = new Uint8Array(input);
       } else if (input.buffer instanceof ArrayBuffer) {
-        bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+        // Safely handle TypedArray views with bounds checking
+        try {
+          var offset = input.byteOffset || 0;
+          var length = input.byteLength;
+          if (typeof length !== 'number' || length < 0 || offset < 0 || offset + length > input.buffer.byteLength) {
+            bytes = new Uint8Array(input.buffer);
+          } else {
+            bytes = new Uint8Array(input.buffer, offset, length);
+          }
+        } catch (e) {
+          bytes = new Uint8Array(input.buffer);
+        }
       } else {
-        bytes = new Uint8Array(input);
+        try {
+          bytes = new Uint8Array(input);
+        } catch (e) {
+          bytes = new Uint8Array(0);
+        }
       }
       
       // Handle ASCII and Latin-1

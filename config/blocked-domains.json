@@ -69,6 +69,7 @@
     "splunkcloud.com"
   ],
   "trackingUrls": [
+    "/ads/system/header-bidding.js",
     "/tracker.js",
     "/pixel.gif",
     "/beacon",

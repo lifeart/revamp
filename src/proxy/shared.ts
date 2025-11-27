@@ -17,6 +17,7 @@ import { URL } from 'node:url';
 import { getConfig, type RevampConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
+import { recordCacheHit } from '../metrics/index.js';
 import type { ContentType } from './types.js';
 
 // Re-export types for convenience
@@ -313,6 +314,7 @@ export async function transformContent(
     const cached = await getCached(url, contentType);
     if (cached) {
       console.log(`📦 Cache hit: ${url}`);
+      recordCacheHit();
       return cached;
     }
   }

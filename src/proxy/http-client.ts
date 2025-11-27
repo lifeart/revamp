@@ -1,6 +1,6 @@
 /**
  * HTTP Request Utilities
- * 
+ *
  * Shared HTTP/HTTPS request functions for proxy implementations.
  * Handles content transformation, decompression, and header manipulation.
  */
@@ -10,6 +10,10 @@ import { request as httpsRequest } from 'node:https';
 import { getConfig } from '../config/index.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { transformImage, needsImageTransform } from '../transformers/image.js';
+import {
+  recordTransform,
+  recordBandwidth,
+} from '../metrics/index.js';
 import {
   getCharset,
   getContentType,
@@ -21,7 +25,7 @@ import type { HttpResponse, RequestHeaders } from './types.js';
 
 /**
  * Make an HTTPS request to a remote server with transformation support
- * 
+ *
  * @param method - HTTP method (GET, POST, etc.)
  * @param hostname - Target hostname
  * @param path - Request path including query string
@@ -37,13 +41,13 @@ export async function makeHttpsRequest(
   body: Buffer
 ): Promise<HttpResponse> {
   const config = getConfig();
-  
+
   // Spoof User-Agent to simulate a modern browser
   const requestHeaders = { ...headers };
   if (config.spoofUserAgent && requestHeaders['user-agent']) {
     requestHeaders['user-agent'] = SPOOFED_USER_AGENT;
   }
-  
+
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
@@ -57,10 +61,10 @@ export async function makeHttpsRequest(
       },
       rejectUnauthorized: false,
     };
-    
+
     const req = httpsRequest(options, async (res) => {
       const chunks: Buffer[] = [];
-      
+
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', async () => {
         try {
@@ -76,9 +80,9 @@ export async function makeHttpsRequest(
       });
       res.on('error', reject);
     });
-    
+
     req.on('error', reject);
-    
+
     if (body.length > 0) {
       req.write(body);
     }
@@ -88,7 +92,7 @@ export async function makeHttpsRequest(
 
 /**
  * Make an HTTP request to a remote server with transformation support
- * 
+ *
  * @param method - HTTP method (GET, POST, etc.)
  * @param hostname - Target hostname
  * @param port - Target port
@@ -116,10 +120,10 @@ export async function makeHttpRequest(
         'accept-encoding': 'gzip, deflate',
       },
     };
-    
+
     const req = httpRequest(options, async (res) => {
       const chunks: Buffer[] = [];
-      
+
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', async () => {
         try {
@@ -135,9 +139,9 @@ export async function makeHttpRequest(
       });
       res.on('error', reject);
     });
-    
+
     req.on('error', reject);
-    
+
     if (body.length > 0) {
       req.write(body);
     }
@@ -147,7 +151,7 @@ export async function makeHttpRequest(
 
 /**
  * Process an HTTP response - decompress and transform content
- * 
+ *
  * @param res - Node.js IncomingMessage
  * @param rawBody - Raw response body
  * @param targetUrl - Full target URL for logging and transformation
@@ -161,21 +165,21 @@ async function processResponse(
   // Decompress if needed
   const encoding = res.headers['content-encoding'];
   let responseBody = decompressBody(rawBody, encoding as string);
-  
+
   const updatedHeaders = { ...res.headers };
-  
+
   // Check for redirect responses (301, 302, 303, 307, 308)
   const statusCode = res.statusCode || 200;
   const isRedirect = isRedirectStatus(statusCode);
-  
+
   const rawContentType = res.headers['content-type'] || '';
   const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-  
+
   // Mark redirecting URLs so we don't cache them
   if (isRedirect) {
     markAsRedirect(targetUrl);
   }
-  
+
   // Transform content if not a redirect and has content
   if (!isRedirect && responseBody.length > 0) {
     // Transform WebP/AVIF images to JPEG for legacy browser compatibility
@@ -185,6 +189,7 @@ async function processResponse(
       if (imageResult.transformed) {
         responseBody = Buffer.from(imageResult.data);
         updatedHeaders['content-type'] = imageResult.contentType;
+        recordTransform('images');
       }
     } else {
       // Transform text content (JS, CSS, HTML)
@@ -193,21 +198,26 @@ async function processResponse(
         res.headers as Record<string, string | string[] | undefined>,
         targetUrl
       );
-      
+
       if (contentType !== 'other') {
+        const originalSize = responseBody.length;
         responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-        
+        recordTransform(contentType);
+
         // Update Content-Type header to UTF-8 since we converted the content
         if (updatedHeaders['content-type']) {
-          const ct = Array.isArray(updatedHeaders['content-type']) 
-            ? updatedHeaders['content-type'][0] 
+          const ct = Array.isArray(updatedHeaders['content-type'])
+            ? updatedHeaders['content-type'][0]
             : updatedHeaders['content-type'];
           updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
         }
       }
     }
   }
-  
+
+  // Record bandwidth metrics
+  recordBandwidth(rawBody.length, responseBody.length);
+
   return {
     statusCode: res.statusCode || 200,
     statusMessage: res.statusMessage || 'OK',
