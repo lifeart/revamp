@@ -3,12 +3,80 @@
  * Transforms modern CSS to be compatible with iOS 9+ Safari (iPad 2+)
  */
 
-import postcss from 'postcss';
+import postcss, { type Plugin } from 'postcss';
 import postcssPresetEnv from 'postcss-preset-env';
 import { getConfig } from '../config/index.js';
 
 // PostCSS processor instance (cached)
 let processor: ReturnType<typeof postcss> | null = null;
+
+/**
+ * Custom PostCSS plugin to add webkit prefixes for flexbox and grid
+ * Safari 9/iOS 9 needs -webkit- prefixes for many flex/grid properties
+ */
+const webkitFlexGridPlugin: Plugin = {
+  postcssPlugin: 'webkit-flex-grid',
+  Declaration(decl) {
+    const prop = decl.prop;
+    const value = decl.value;
+    
+    // Flexbox properties that need -webkit- prefix for Safari 9
+    const flexboxProps: Record<string, string | undefined> = {
+      'flex': '-webkit-flex',
+      'flex-grow': '-webkit-flex-grow',
+      'flex-shrink': '-webkit-flex-shrink',
+      'flex-basis': '-webkit-flex-basis',
+      'flex-direction': '-webkit-flex-direction',
+      'flex-wrap': '-webkit-flex-wrap',
+      'flex-flow': '-webkit-flex-flow',
+      'justify-content': '-webkit-justify-content',
+      'align-items': '-webkit-align-items',
+      'align-self': '-webkit-align-self',
+      'align-content': '-webkit-align-content',
+      'order': '-webkit-order',
+    };
+    
+    // Add -webkit- prefix for flexbox properties
+    if (flexboxProps[prop] && !decl.parent?.some(node => 
+      node.type === 'decl' && (node as typeof decl).prop === flexboxProps[prop]
+    )) {
+      decl.cloneBefore({ prop: flexboxProps[prop]!, value });
+    }
+    
+    // Handle display: flex and display: grid
+    if (prop === 'display') {
+      if (value === 'flex' && !decl.parent?.some(node =>
+        node.type === 'decl' && (node as typeof decl).prop === 'display' && (node as typeof decl).value === '-webkit-flex'
+      )) {
+        decl.cloneBefore({ prop: 'display', value: '-webkit-flex' });
+      }
+      if (value === 'inline-flex' && !decl.parent?.some(node =>
+        node.type === 'decl' && (node as typeof decl).prop === 'display' && (node as typeof decl).value === '-webkit-inline-flex'
+      )) {
+        decl.cloneBefore({ prop: 'display', value: '-webkit-inline-flex' });
+      }
+    }
+    
+    // Gap property fallback for flexbox (Safari 9 doesn't support gap in flexbox)
+    // We can't perfectly polyfill this, but we can add margin-based fallback hint
+    if (prop === 'gap' || prop === 'row-gap' || prop === 'column-gap') {
+      // Check if parent uses flexbox
+      const parentRule = decl.parent;
+      if (parentRule) {
+        const isFlexbox = parentRule.some(node => 
+          node.type === 'decl' && 
+          (node as typeof decl).prop === 'display' && 
+          ((node as typeof decl).value === 'flex' || (node as typeof decl).value === '-webkit-flex')
+        );
+        
+        // For grid, autoprefixer handles it. For flexbox, gap isn't supported in Safari 9
+        // Just ensure the property exists (PostCSS preset-env should handle this)
+      }
+    }
+  }
+};
+
+webkitFlexGridPlugin.postcssPlugin = 'webkit-flex-grid';
 
 function getProcessor(): ReturnType<typeof postcss> {
   if (processor) {
@@ -18,13 +86,16 @@ function getProcessor(): ReturnType<typeof postcss> {
   const config = getConfig();
   
   processor = postcss([
+    // First apply our webkit flexbox/grid prefixes
+    webkitFlexGridPlugin,
+    // Then apply postcss-preset-env for other transformations
     postcssPresetEnv({
-      // iOS 11 compatible features
+      // iOS 9 compatible features
       browsers: config.targets.join(', '),
       // Stage 2 features are reasonably stable
       stage: 2,
       features: {
-        // Enable specific features for iOS 11 compatibility
+        // Enable specific features for iOS 9 compatibility
         'nesting-rules': true,
         'custom-properties': true, // CSS variables fallbacks
         'color-function': true,
@@ -45,8 +116,8 @@ function getProcessor(): ReturnType<typeof postcss> {
       },
       // Add vendor prefixes
       autoprefixer: {
-        flexbox: 'no-2009', // Don't add old flexbox syntax
-        grid: 'autoplace',  // Add IE grid support (useful for older browsers)
+        flexbox: true,       // Enable full flexbox prefixing for Safari 9
+        grid: 'autoplace',   // Add IE grid support (useful for older browsers)
       },
     }),
   ]);
@@ -86,12 +157,14 @@ export async function transformCss(code: string, filename?: string): Promise<str
  * Quick heuristic to avoid unnecessary processing
  */
 export function needsCssTransform(code: string): boolean {
-  // Check for modern CSS features that iOS 11 doesn't support
+  // Check for modern CSS features that iOS 9 doesn't support well
   const modernPatterns = [
     /:is\(/,                  // :is() selector
     /:where\(/,               // :where() selector
     /:has\(/,                 // :has() selector
-    /gap:/,                   // gap property (non-grid)
+    /gap:/,                   // gap property (needs prefixes in older Safari)
+    /row-gap:/,               // row-gap property
+    /column-gap:/,            // column-gap property
     /aspect-ratio:/,          // aspect-ratio
     /color-mix\(/,            // color-mix()
     /oklch\(/,                // oklch color
@@ -106,10 +179,29 @@ export function needsCssTransform(code: string): boolean {
     /padding-block:/,         // logical property
     /scroll-behavior:/,       // scroll-behavior
     /overscroll-behavior:/,   // overscroll-behavior
-    /backdrop-filter:/,       // backdrop-filter (partial iOS 11 support)
+    /backdrop-filter:/,       // backdrop-filter (partial iOS support)
     /clamp\(/,                // clamp() function
     /min\(/,                  // min() function
     /max\(/,                  // max() function
+    /display:\s*flex/,        // flexbox - needs -webkit- for Safari 9
+    /display:\s*inline-flex/, // inline-flex - needs -webkit- for Safari 9
+    /display:\s*grid/,        // grid - needs prefixes
+    /flex-direction:/,        // flexbox property
+    /flex-wrap:/,             // flexbox property
+    /justify-content:/,       // flexbox property
+    /align-items:/,           // flexbox property
+    /align-self:/,            // flexbox property
+    /align-content:/,         // flexbox property
+    /flex-grow:/,             // flexbox property
+    /flex-shrink:/,           // flexbox property
+    /flex-basis:/,            // flexbox property
+    /grid-template/,          // grid property
+    /grid-area:/,             // grid property
+    /grid-column:/,           // grid property
+    /grid-row:/,              // grid property
+    /place-items:/,           // shorthand for align-items + justify-items
+    /place-content:/,         // shorthand for align-content + justify-content
+    /place-self:/,            // shorthand for align-self + justify-self
   ];
   
   return modernPatterns.some(pattern => pattern.test(code));
