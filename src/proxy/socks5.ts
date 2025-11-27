@@ -161,6 +161,18 @@ function getCharset(contentType: string): string {
 function getContentType(headers: Record<string, string | string[] | undefined>, url: string): ContentType {
   const contentType = (headers['content-type'] as string || '').toLowerCase();
   
+  // Check for binary/non-text content types first - these should never be transformed
+  if (contentType.includes('image/') || 
+      contentType.includes('video/') || 
+      contentType.includes('audio/') ||
+      contentType.includes('font/') ||
+      contentType.includes('application/octet-stream') ||
+      contentType.includes('application/pdf') ||
+      contentType.includes('application/zip') ||
+      contentType.includes('application/gzip')) {
+    return 'other';
+  }
+  
   if (contentType.includes('javascript') || contentType.includes('ecmascript')) {
     return 'js';
   }
@@ -171,16 +183,23 @@ function getContentType(headers: Record<string, string | string[] | undefined>, 
     return 'html';
   }
   
-  // Fallback to URL-based detection
-  const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
-  if (pathname.endsWith('.js') || pathname.endsWith('.mjs')) {
-    return 'js';
+  // If we have a content-type but it's not something we transform, skip it
+  if (contentType && !contentType.includes('text/')) {
+    return 'other';
   }
-  if (pathname.endsWith('.css')) {
-    return 'css';
-  }
-  if (pathname.endsWith('.html') || pathname.endsWith('.htm') || pathname === '/' || !pathname.includes('.')) {
-    return 'html';
+  
+  // Fallback to URL-based detection only if no content-type was provided
+  if (!contentType) {
+    const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
+    if (pathname.endsWith('.js') || pathname.endsWith('.mjs')) {
+      return 'js';
+    }
+    if (pathname.endsWith('.css')) {
+      return 'css';
+    }
+    if (pathname.endsWith('.html') || pathname.endsWith('.htm') || pathname === '/') {
+      return 'html';
+    }
   }
   
   return 'other';
@@ -238,8 +257,44 @@ function decodeWindows1251(buffer: Buffer): string {
   return result;
 }
 
+// Check if buffer contains binary content by looking for common binary file signatures
+function isBinaryContent(buffer: Buffer): boolean {
+  if (buffer.length < 4) return false;
+  
+  // Check for common binary file signatures (magic bytes)
+  const signatures = [
+    [0x47, 0x49, 0x46, 0x38],       // GIF (GIF87a, GIF89a)
+    [0x89, 0x50, 0x4E, 0x47],       // PNG
+    [0xFF, 0xD8, 0xFF],              // JPEG
+    [0x52, 0x49, 0x46, 0x46],       // WEBP (RIFF)
+    [0x00, 0x00, 0x00],              // Various (MP4, etc.)
+    [0x50, 0x4B, 0x03, 0x04],       // ZIP/XLSX/DOCX
+    [0x25, 0x50, 0x44, 0x46],       // PDF
+    [0x1F, 0x8B],                    // GZIP
+  ];
+  
+  for (const sig of signatures) {
+    let match = true;
+    for (let i = 0; i < sig.length && i < buffer.length; i++) {
+      if (buffer[i] !== sig[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  
+  return false;
+}
+
 async function transformContent(body: Buffer, contentType: ContentType, url: string, charset: string = 'utf-8'): Promise<Buffer> {
   const config = getConfig();
+  
+  // Safety check: don't transform binary content even if content-type was wrong
+  if (isBinaryContent(body)) {
+    console.log(`⏭️ Skipping binary content: ${url}`);
+    return body;
+  }
   
   // Check cache first
   const cached = await getCached(url, contentType);
