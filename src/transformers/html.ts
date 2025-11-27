@@ -141,6 +141,20 @@ export async function transformHtml(html: string, url?: string): Promise<string>
             continue;
           }
           
+          // Skip content that looks like HTML templates (starts with < followed by tag name)
+          // This catches cases where HTML is stored in script tags as templates
+          const trimmedContent = content.trim();
+          if (/^<[a-zA-Z]/.test(trimmedContent)) {
+            continue;
+          }
+          
+          // Skip content that's mostly HTML (contains many HTML tags)
+          const htmlTagCount = (content.match(/<[a-zA-Z][^>]*>/g) || []).length;
+          const jsKeywordCount = (content.match(/\b(function|var|let|const|if|else|for|while|return|this)\b/g) || []).length;
+          if (htmlTagCount > 3 && htmlTagCount > jsKeywordCount) {
+            continue;
+          }
+          
           const transformed = await transformJs(content, url ? `${url}#inline` : 'inline.js');
           $(elem).html(transformed);
         } catch (err) {

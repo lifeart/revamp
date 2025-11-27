@@ -22,6 +22,13 @@ function getBabelConfig(): TransformOptions {
         },
       ],
     ],
+    // Parser options to handle edge cases in minified/concatenated files
+    parserOpts: {
+      // Allow duplicate declarations (common in concatenated minified files)
+      allowReturnOutsideFunction: true,
+      // More lenient parsing for real-world JS
+      errorRecovery: true,
+    },
     // Don't include source maps for transformed content
     sourceMaps: false,
     // Compact output for smaller payload
@@ -56,7 +63,26 @@ export async function transformJs(code: string, filename?: string): Promise<stri
     
     return code;
   } catch (error) {
-    console.error('❌ Babel transform error:', error instanceof Error ? error.message : error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Known non-critical errors that we can safely ignore
+    // These usually occur in minified/concatenated files that still work in browsers
+    const ignorableErrors = [
+      'has already been declared',  // Duplicate declarations in concatenated files
+      'Identifier .* has already been declared',
+      'Unexpected token',           // Sometimes minified code has edge cases
+    ];
+    
+    const isIgnorable = ignorableErrors.some(pattern => 
+      new RegExp(pattern).test(errorMessage)
+    );
+    
+    if (isIgnorable) {
+      console.warn(`⚠️ Skipping JS transform (non-critical parse issue): ${filename || 'unknown'}`);
+      return code;
+    }
+    
+    console.error('❌ Babel transform error:', errorMessage);
     // Return original code on error to not break the page
     return code;
   }
