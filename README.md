@@ -1,33 +1,36 @@
 # Revamp 🔄
 
-**Legacy Browser Compatibility Proxy**
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
 
-Transform modern web content for older devices like iPads and iPods running iOS 11.
+**Legacy Browser Compatibility Proxy** — Transform modern web content for older devices like iPads and iPods running iOS 9+.
 
-## What it does
+Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern websites work again!
 
-Revamp is a SOCKS5/HTTP proxy that intercepts web traffic and transforms it for legacy browser compatibility:
+## ✨ Features
 
-- **JavaScript**: Uses Babel to transpile modern JS (optional chaining, nullish coalescing, etc.) to ES6
-- **CSS**: Uses PostCSS to add vendor prefixes and transform modern CSS features
-- **HTML**: Injects polyfills and removes ads/tracking scripts
-- **HTTPS**: Transparent SSL interception with auto-generated certificates
+- **🔧 JavaScript Transpilation** — Babel transforms modern JS (optional chaining, nullish coalescing, async/await) to ES5/ES6
+- **🎨 CSS Transformation** — PostCSS adds vendor prefixes and transforms modern CSS features
+- **📄 HTML Modification** — Injects polyfills and can remove ads/tracking scripts
+- **🔒 HTTPS Interception** — Transparent SSL/TLS interception with auto-generated certificates
+- **🧦 SOCKS5 Proxy** — Device-wide traffic routing (recommended for iOS)
+- **🌐 HTTP Proxy** — Alternative proxy method
+- **📦 Smart Caching** — Memory + disk caching for faster repeat visits
+- **🎭 User-Agent Spoofing** — Bypass browser detection (optional)
+- **🚫 Ad & Tracking Removal** — Block common ad networks and trackers
+- **📱 Easy Setup** — Built-in captive portal for certificate installation
 
-## Features
+## 🚀 Quick Start
 
-✅ SOCKS5 proxy for device-wide traffic routing  
-✅ HTTP proxy as alternative  
-✅ Babel transformation targeting iOS 11 Safari  
-✅ PostCSS with autoprefixer  
-✅ Polyfill injection for missing APIs  
-✅ Ad and tracking script removal  
-✅ Content caching (memory + disk)  
-✅ Auto-generated SSL certificates for HTTPS interception  
-
-## Quick Start
+### Installation
 
 ```bash
-# Install dependencies
+# Clone the repository
+git clone https://github.com/lifeart/revamp.git
+cd revamp
+
+# Install dependencies (pnpm recommended)
 pnpm install
 
 # Start the proxy
@@ -37,84 +40,219 @@ pnpm start
 pnpm dev
 ```
 
-## Device Setup
+### Device Setup
 
-### 1. Install the CA Certificate
+1. **Start Revamp** on your computer
+2. **Open the setup page** on your legacy device:
+   - Navigate to `http://YOUR_COMPUTER_IP:8888`
+3. **Install the certificate** and enable trust (see detailed instructions below)
+4. **Configure proxy** in Wi-Fi settings
 
-After starting Revamp, a CA certificate will be generated at `.revamp-certs/ca.crt`.
+## 📱 Detailed Setup
+
+### Installing the CA Certificate
+
+When you start Revamp, a CA certificate is generated at `.revamp-certs/ca.crt`.
 
 **On iOS:**
-1. Transfer the certificate to your device (AirDrop, email, etc.)
-2. Open the file and tap "Install Profile"
-3. Go to Settings → General → About → Certificate Trust Settings
-4. Enable full trust for "Revamp Proxy CA"
+1. Open `http://YOUR_COMPUTER_IP:8888` in Safari
+2. Tap "Download Certificate"
+3. Go to **Settings → General → VPN & Device Management**
+4. Install the downloaded profile
+5. Go to **Settings → General → About → Certificate Trust Settings**
+6. Enable full trust for "Revamp Proxy CA"
 
-### 2. Configure the Proxy
+**On macOS:**
+1. Open the `.revamp-certs/ca.crt` file
+2. Add to Keychain Access
+3. Find "Revamp Proxy CA", double-click, expand Trust
+4. Set "When using this certificate" to "Always Trust"
 
-**SOCKS5 (recommended):**
-- Go to Settings → Wi-Fi → Your Network → Configure Proxy
-- Select "Manual"
-- Server: Your computer's IP address
+### Configuring the Proxy
+
+**SOCKS5 (Recommended for iOS):**
+- **Settings → Wi-Fi → [Your Network] → Configure Proxy**
+- Select **Manual**
+- Server: `YOUR_COMPUTER_IP`
 - Port: `1080`
 
-**HTTP Proxy:**
-- Server: Your computer's IP address
+**HTTP Proxy (Alternative):**
+- Server: `YOUR_COMPUTER_IP`
 - Port: `8080`
 
-## Configuration
+## ⚙️ Configuration
 
-Edit `src/config/index.ts` to customize:
+Edit `src/config/index.ts` or pass options when creating the server:
 
 ```typescript
-{
+import { createRevampServer } from 'revamp';
+
+const server = createRevampServer({
   // Server ports
   socks5Port: 1080,
   httpProxyPort: 8080,
+  captivePortalPort: 8888,
   
   // Target browsers (Browserslist format)
-  targets: ['safari 11', 'ios 11'],
+  targets: ['safari 9', 'ios 9'],
   
   // Feature toggles
-  transformJs: true,
-  transformCss: true,
-  transformHtml: true,
-  removeAds: true,
-  removeTracking: true,
-  injectPolyfills: true,
+  transformJs: true,      // Babel transpilation
+  transformCss: true,     // PostCSS transformation
+  transformHtml: true,    // HTML polyfill injection
+  removeAds: true,        // Block ad domains
+  removeTracking: true,   // Block tracking domains
+  injectPolyfills: true,  // Add polyfills for missing APIs
+  spoofUserAgent: true,   // Send modern User-Agent to servers
+  spoofUserAgentInJs: true, // Override navigator.userAgent
   
   // Cache settings
   cacheEnabled: true,
   cacheTTL: 3600, // seconds
-}
+});
+
+server.start();
 ```
 
-## Architecture
+### Runtime Configuration API
+
+You can change settings at runtime via the config API:
+
+```javascript
+// From your legacy device's browser console or code:
+fetch('http://any-proxied-site/__revamp__/config', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    transformJs: false,  // Disable JS transformation
+    removeAds: false,    // Allow ads
+  })
+});
+```
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Legacy Device  │────▶│  SOCKS5 Proxy   │────▶│   HTTP Proxy    │
-│   (iOS 11)      │     │   (port 1080)   │     │   (port 8080)   │
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                                                         ▼
+│  Legacy Device  │────▶│  SOCKS5 Proxy   │────▶│  Target Server  │
+│   (iOS 9+)      │     │   (port 1080)   │     │                 │
+└─────────────────┘     └────────┬────────┘     └─────────────────┘
+                                 │
+                                 ▼
                         ┌─────────────────────────────────────────┐
-                        │            Content Pipeline             │
+                        │         Transformation Pipeline         │
                         ├─────────────────────────────────────────┤
-                        │  1. Fetch from origin                   │
+                        │  1. Intercept request                   │
                         │  2. Check cache                         │
-                        │  3. Transform (Babel/PostCSS/Cheerio)   │
-                        │  4. Cache result                        │
-                        │  5. Return to client                    │
+                        │  3. Fetch from origin server            │
+                        │  4. Transform content:                  │
+                        │     • JS → Babel (ES5/ES6)              │
+                        │     • CSS → PostCSS (prefixes)          │
+                        │     • HTML → Cheerio (polyfills)        │
+                        │  5. Cache transformed result            │
+                        │  6. Return to client                    │
                         └─────────────────────────────────────────┘
 ```
 
-## Dependencies
+## 📁 Project Structure
 
-- **@babel/core** + **@babel/preset-env**: JavaScript transpilation
-- **postcss** + **postcss-preset-env**: CSS transformation
-- **cheerio**: HTML parsing and manipulation
-- **node-forge**: Certificate generation
+```
+src/
+├── index.ts              # Main entry point
+├── config/               # Configuration management
+├── proxy/                # Proxy servers
+│   ├── http-proxy.ts     # HTTP/HTTPS proxy
+│   ├── socks5.ts         # SOCKS5 proxy
+│   ├── socks5-protocol.ts # SOCKS5 protocol implementation
+│   ├── http-client.ts    # HTTP request utilities
+│   ├── shared.ts         # Shared utilities
+│   └── types.ts          # Type definitions
+├── transformers/         # Content transformation
+│   ├── js.ts             # JavaScript (Babel)
+│   ├── css.ts            # CSS (PostCSS)
+│   ├── html.ts           # HTML (Cheerio)
+│   ├── image.ts          # Image optimization
+│   └── polyfills/        # Polyfill scripts
+├── cache/                # Caching system
+├── certs/                # Certificate generation
+└── portal/               # Captive portal
+```
 
-## License
+## 🧪 Testing
 
-ISC
+```bash
+# Unit tests
+pnpm test:unit        # Watch mode
+pnpm test:unit:run    # Single run
+
+# E2E tests
+pnpm test             # Run all
+pnpm test:headed      # With browser
+pnpm test:ui          # Interactive mode
+```
+
+## 🔧 Troubleshooting
+
+### Certificate Issues
+
+**"Not Trusted" warning:**
+- Ensure you've enabled trust in **Settings → General → About → Certificate Trust Settings**
+- Try regenerating certificates: delete `.revamp-certs/` and restart
+
+**Certificate won't install:**
+- Make sure you're using Safari (not Chrome) on iOS
+- The certificate must be downloaded via HTTP, not HTTPS
+
+### Connection Issues
+
+**Can't connect to proxy:**
+- Verify your computer's IP address
+- Check firewall settings (ports 1080, 8080, 8888)
+- Ensure both devices are on the same network
+
+**Websites not loading:**
+- Check the Revamp console for errors
+- Some sites may have additional protections
+- Try disabling transformations to isolate issues
+
+### Performance Issues
+
+**Slow page loads:**
+- Enable caching if disabled
+- Consider disabling transformations for specific sites
+- Check available disk space for cache
+
+## 📦 Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `@babel/core` | JavaScript transpilation |
+| `postcss` | CSS transformation |
+| `cheerio` | HTML parsing/manipulation |
+| `node-forge` | Certificate generation |
+| `sharp` | Image optimization |
+
+## 🤝 Contributing
+
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests
+5. Submit a pull request
+
+## 📄 License
+
+[MIT](LICENSE) © Alex Kanunnikov
+
+## 🙏 Acknowledgments
+
+- Babel team for the amazing transpiler
+- PostCSS team for CSS tooling
+- node-forge for certificate generation
+- All contributors and users!
+
+---
+
+**Give your old devices new life! 🔄**

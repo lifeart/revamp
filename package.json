@@ -5,6 +5,14 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lifeart/revamp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lifeart/revamp/issues"
+  },
+  "homepage": "https://github.com/lifeart/revamp#readme",
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
@@ -14,19 +22,32 @@
     "test:ui": "playwright test --ui",
     "test:headed": "playwright test --headed",
     "test:unit": "vitest",
-    "test:unit:run": "vitest run"
+    "test:unit:run": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "proxy",
     "socks5",
+    "http-proxy",
     "babel",
     "postcss",
     "legacy",
     "ios",
-    "compatibility"
+    "safari",
+    "ipad",
+    "ipod",
+    "compatibility",
+    "transpiler",
+    "polyfill",
+    "mitm",
+    "ssl-interception"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "Alex Kanunnikov",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
     "@types/babel__core": "^7.20.5",

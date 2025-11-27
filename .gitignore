@@ -13,19 +13,33 @@ dist/
 .vscode/
 *.swp
 *.swo
+*.sublime-workspace
+*.sublime-project
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Logs
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
 # Environment
 .env
 .env.local
+.env.*.local
 
 # Tests
-test-results
-playwright-report
+test-results/
+playwright-report/
+coverage/
+.nyc_output/
+
+# Misc
+*.tgz
+*.tsbuildinfo
