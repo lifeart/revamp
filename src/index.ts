@@ -155,7 +155,8 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
    Remove Ads:     ${config.removeAds ? '✅' : '❌'}
    Remove Tracking:${config.removeTracking ? '✅' : '❌'}
    Inject Polyfills: ${config.injectPolyfills ? '✅' : '❌'}
-   Spoof User-Agent: ${config.spoofUserAgent ? '✅' : '❌'}
+   Spoof User-Agent (HTTP): ${config.spoofUserAgent ? '✅' : '❌'}
+   Spoof User-Agent (JS):   ${config.spoofUserAgentInJs ? '✅' : '❌'}
    Cache Enabled:  ${config.cacheEnabled ? '✅' : '❌'}
 
 📊 Target Browsers: ${config.targets.join(', ')}
