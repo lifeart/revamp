@@ -13,6 +13,7 @@ import { getConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
+import { transformImage, needsImageTransform } from '../transformers/image.js';
 
 // SOCKS5 constants
 const SOCKS_VERSION = 0x05;
@@ -924,6 +925,15 @@ async function makeHttpsRequest(
               updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
             }
           }
+          
+          // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+          if (needsImageTransform(contentTypeValue, targetUrl)) {
+            const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
+            if (imageResult.transformed) {
+              responseBody = Buffer.from(imageResult.data);
+              updatedHeaders['content-type'] = imageResult.contentType;
+            }
+          }
         }
         
         resolve({
@@ -1003,6 +1013,15 @@ async function makeHttpRequest(
                 : updatedHeaders['content-type'];
               // Replace charset with UTF-8 since we converted the content
               updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+            }
+          }
+          
+          // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+          if (needsImageTransform(contentTypeValue, targetUrl)) {
+            const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
+            if (imageResult.transformed) {
+              responseBody = Buffer.from(imageResult.data);
+              updatedHeaders['content-type'] = imageResult.contentType;
             }
           }
         }
