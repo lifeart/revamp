@@ -397,6 +397,10 @@ async function proxyRequest(
           delete headers['content-encoding'];
           delete headers['transfer-encoding'];
           
+          // Remove trailer-related headers (invalid without chunked encoding)
+          delete headers['trailer'];
+          delete headers['te'];
+          
           // Apply gzip compression for text-based content if client supports it
           const currentContentType = headers['content-type'];
           const contentTypeStr = Array.isArray(currentContentType) ? currentContentType[0] : (currentContentType || '');
