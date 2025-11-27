@@ -25,6 +25,7 @@ export { abortControllerPolyfill } from './abort-controller.js';
 export { textEncoderPolyfill } from './text-encoder.js';
 export { intersectionObserverPolyfill } from './intersection-observer.js';
 export { userAgentPolyfill } from './user-agent.js';
+export { esModulesPolyfill } from './es-modules.js';
 
 // Debug tools
 export { errorOverlayScript } from './error-overlay.js';
@@ -49,6 +50,7 @@ import { abortControllerPolyfill } from './abort-controller.js';
 import { textEncoderPolyfill } from './text-encoder.js';
 import { intersectionObserverPolyfill } from './intersection-observer.js';
 import { userAgentPolyfill } from './user-agent.js';
+import { esModulesPolyfill } from './es-modules.js';
 import { errorOverlayScript } from './error-overlay.js';
 
 /**
@@ -56,6 +58,9 @@ import { errorOverlayScript } from './error-overlay.js';
  */
 export function buildPolyfillScript(): string {
   const polyfills = [
+    // ES Modules compatibility (run first to handle nomodule scripts)
+    esModulesPolyfill,
+    
     // Core ES6+ polyfills
     symbolPolyfill,
     arrayPolyfill,
@@ -120,7 +125,8 @@ export type PolyfillName =
   | 'abortController'
   | 'textEncoder'
   | 'intersectionObserver'
-  | 'userAgent';
+  | 'userAgent'
+  | 'esModules';
 
 const polyfillMap: Record<PolyfillName, string> = {
   symbol: symbolPolyfill,
@@ -142,6 +148,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   textEncoder: textEncoderPolyfill,
   intersectionObserver: intersectionObserverPolyfill,
   userAgent: userAgentPolyfill,
+  esModules: esModulesPolyfill,
 };
 
 /**
