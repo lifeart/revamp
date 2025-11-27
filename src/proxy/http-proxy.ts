@@ -293,8 +293,11 @@ async function proxyRequest(
             }
           }
           
-          // Copy response headers
-          const headers = { ...proxyRes.headers };
+          // Copy response headers (sanitize header names to remove trailing spaces)
+          const headers: Record<string, string | string[] | undefined> = {};
+          for (const [key, value] of Object.entries(proxyRes.headers)) {
+            headers[key.trim().toLowerCase()] = value;
+          }
           
           // Update Content-Type header to UTF-8 if we transformed the content
           if (contentType !== 'other' && headers['content-type']) {
