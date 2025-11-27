@@ -29,11 +29,15 @@ export const errorOverlayScript = `
     '.revamp-error-item{border-bottom:1px solid #333;padding:16px;}' +
     '.revamp-error-item:last-child{border-bottom:none;}' +
     '.revamp-error-type{color:#e74c3c;font-weight:600;font-size:14px;margin-bottom:4px;}' +
+    '.revamp-error-type.warning{color:#f39c12;}' +
+    '.revamp-error-type.promise{color:#9b59b6;}' +
     '.revamp-error-message{color:#fff;font-size:14px;margin-bottom:8px;word-wrap:break-word;' +
     'white-space:pre-wrap;background:#1a1a1a;padding:10px;border-radius:4px;overflow-x:auto;}' +
     '.revamp-error-location{color:#3498db;font-size:12px;margin-bottom:8px;}' +
-    '.revamp-error-stack{color:#888;font-size:11px;white-space:pre-wrap;word-wrap:break-word;' +
-    'background:#111;padding:10px;border-radius:4px;overflow-x:auto;max-height:200px;overflow-y:auto;}' +
+    '.revamp-error-stack{color:#aaa;font-size:11px;white-space:pre-wrap;word-wrap:break-word;' +
+    'background:#111;padding:10px;border-radius:4px;overflow-x:auto;max-height:300px;overflow-y:auto;' +
+    'border-left:3px solid #e74c3c;}' +
+    '.revamp-error-stack-label{color:#888;font-size:10px;margin-bottom:4px;text-transform:uppercase;}' +
     '.revamp-error-time{color:#666;font-size:11px;margin-top:8px;}' +
     '#revamp-error-badge{position:fixed;bottom:20px;right:20px;background:#e74c3c;color:#fff;' +
     'width:50px;height:50px;border-radius:50%;display:-webkit-flex;display:flex;' +
@@ -132,8 +136,12 @@ export const errorOverlayScript = `
     var html = '';
     for (var i = errors.length - 1; i >= 0; i--) {
       var err = errors[i];
+      var typeClass = '';
+      if (err.type.indexOf('Warning') >= 0) typeClass = ' warning';
+      else if (err.type.indexOf('Promise') >= 0) typeClass = ' promise';
+      
       html += '<li class="revamp-error-item">' +
-        '<div class="revamp-error-type">' + escapeHtml(err.type) + '</div>' +
+        '<div class="revamp-error-type' + typeClass + '">' + escapeHtml(err.type) + '</div>' +
         '<div class="revamp-error-message">' + escapeHtml(err.message) + '</div>';
       
       if (err.location) {
@@ -141,7 +149,8 @@ export const errorOverlayScript = `
       }
       
       if (err.stack) {
-        html += '<div class="revamp-error-stack">' + escapeHtml(err.stack) + '</div>';
+        html += '<div class="revamp-error-stack-label">📚 Stack Trace:</div>' +
+                '<div class="revamp-error-stack">' + escapeHtml(err.stack) + '</div>';
       }
       
       html += '<div class="revamp-error-time">🕐 ' + err.time + '</div>' +
@@ -224,6 +233,9 @@ export const errorOverlayScript = `
   console.error = function() {
     var args = Array.prototype.slice.call(arguments);
     var message = args.map(function(arg) {
+      if (arg instanceof Error) {
+        return arg.message || String(arg);
+      }
       if (typeof arg === 'object') {
         try {
           return JSON.stringify(arg, null, 2);
@@ -234,8 +246,74 @@ export const errorOverlayScript = `
       return String(arg);
     }).join(' ');
     
-    addError('Console Error', message, '', '', '', '');
+    // Try to extract stack from Error objects in arguments
+    var stack = '';
+    for (var i = 0; i < args.length; i++) {
+      if (args[i] instanceof Error && args[i].stack) {
+        stack = args[i].stack;
+        break;
+      }
+    }
+    
+    // If no Error object found, generate a stack trace
+    if (!stack) {
+      try {
+        throw new Error('Console error stack trace');
+      } catch (e) {
+        if (e.stack) {
+          // Remove the first two lines (Error message and this function)
+          var lines = e.stack.split('\\n');
+          lines.splice(0, 3); // Remove Error line, console.error wrapper, and this try/catch
+          stack = lines.join('\\n');
+        }
+      }
+    }
+    
+    addError('Console Error', message, '', '', '', stack);
     originalConsoleError.apply(console, arguments);
+  };
+  
+  // Console.warn interceptor (optional, for warnings)
+  var originalConsoleWarn = console.warn;
+  console.warn = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var message = args.map(function(arg) {
+      if (arg instanceof Error) {
+        return arg.message || String(arg);
+      }
+      if (typeof arg === 'object') {
+        try {
+          return JSON.stringify(arg, null, 2);
+        } catch (e) {
+          return String(arg);
+        }
+      }
+      return String(arg);
+    }).join(' ');
+    
+    // Generate stack trace for warnings too
+    var stack = '';
+    for (var i = 0; i < args.length; i++) {
+      if (args[i] instanceof Error && args[i].stack) {
+        stack = args[i].stack;
+        break;
+      }
+    }
+    
+    if (!stack) {
+      try {
+        throw new Error('Console warn stack trace');
+      } catch (e) {
+        if (e.stack) {
+          var lines = e.stack.split('\\n');
+          lines.splice(0, 3);
+          stack = lines.join('\\n');
+        }
+      }
+    }
+    
+    addError('Console Warning', message, '', '', '', stack);
+    originalConsoleWarn.apply(console, arguments);
   };
   
   console.log('[Revamp] Error overlay initialized - errors will show a red badge');
