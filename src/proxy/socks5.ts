@@ -1,238 +1,84 @@
 /**
  * SOCKS5 Proxy Server
- * Implements SOCKS5 protocol for legacy device connections
+ * 
+ * Implements SOCKS5 protocol for legacy device connections.
+ * Provides TLS interception for HTTPS traffic with content transformation.
+ * 
+ * @module proxy/socks5
  */
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { connect } from 'node:net';
-import { TLSSocket, type TLSSocket as TLSSocketType, connect as tlsConnect } from 'node:tls';
-import { request as httpRequest } from 'node:http';
-import { request as httpsRequest } from 'node:https';
+import { TLSSocket, connect as tlsConnect } from 'node:tls';
 import { gzipSync } from 'node:zlib';
-import { getConfig, getClientConfig, setClientConfig, resetClientConfig, type ClientConfig } from '../config/index.js';
+import { getConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
-import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
-import { transformImage, needsImageTransform } from '../transformers/image.js';
 import {
-  type ContentType,
-  CONFIG_ENDPOINT,
+  // SOCKS5 Protocol
+  SOCKS_VERSION,
+  AUTH_NO_AUTH,
+  AUTH_NO_ACCEPTABLE,
+  CMD_CONNECT,
+  REPLY_SUCCESS,
+  REPLY_GENERAL_FAILURE,
+  REPLY_NETWORK_UNREACHABLE,
+  REPLY_COMMAND_NOT_SUPPORTED,
+  REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+  ConnectionState,
+  parseAddress,
+  createReply,
+  isLikelyHttpRequest,
+  createAuthResponse,
+} from './socks5-protocol.js';
+import {
+  // HTTP Client
+  makeHttpRequest,
+  makeHttpsRequest,
+} from './http-client.js';
+import {
+  // Config Endpoint
+  isConfigEndpoint,
+  handleConfigRequest,
+  buildRawHttpResponse,
+} from './config-endpoint.js';
+import {
+  // Shared Utilities
   shouldCompress,
   acceptsGzip,
-  getCharset,
-  getContentType,
-  decompressBody,
-  transformContent,
   shouldBlockDomain,
   shouldBlockUrl,
-  CORS_ALLOWED_METHODS,
-  CORS_ALLOWED_HEADERS,
-  CORS_EXPOSE_HEADERS,
   SKIP_RESPONSE_HEADERS,
   buildCorsPreflightResponse,
   buildCorsHeadersString,
-  SPOOFED_USER_AGENT,
 } from './shared.js';
+import type { ParsedAddress } from './types.js';
 
-// SOCKS5 constants
-const SOCKS_VERSION = 0x05;
-
-// Authentication methods
-const AUTH_NO_AUTH = 0x00;
-const AUTH_NO_ACCEPTABLE = 0xff;
-
-// Address types
-const ADDR_IPV4 = 0x01;
-const ADDR_DOMAIN = 0x03;
-const ADDR_IPV6 = 0x04;
-
-// Commands
-const CMD_CONNECT = 0x01;
-// const CMD_BIND = 0x02;     // Not implemented
-// const CMD_UDP = 0x03;      // Not implemented
-
-// Reply codes
-const REPLY_SUCCESS = 0x00;
-const REPLY_GENERAL_FAILURE = 0x01;
-// const REPLY_CONNECTION_NOT_ALLOWED = 0x02;
-const REPLY_NETWORK_UNREACHABLE = 0x03;
-// const REPLY_HOST_UNREACHABLE = 0x04;
-// const REPLY_CONNECTION_REFUSED = 0x05;
-// const REPLY_TTL_EXPIRED = 0x06;
-const REPLY_COMMAND_NOT_SUPPORTED = 0x07;
-const REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08;
-
-interface ParsedAddress {
-  host: string;
-  port: number;
-  addressType: number;
-}
-
-enum ConnectionState {
-  AWAITING_GREETING,
-  AWAITING_REQUEST,
-  CONNECTED,
-}
-
-function parseAddress(buffer: Buffer, offset: number): ParsedAddress | null {
-  const addressType = buffer[offset];
-  let host: string;
-  let port: number;
-  let endOffset: number;
-  
-  switch (addressType) {
-    case ADDR_IPV4:
-      if (buffer.length < offset + 7) return null;
-      host = `${buffer[offset + 1]}.${buffer[offset + 2]}.${buffer[offset + 3]}.${buffer[offset + 4]}`;
-      port = buffer.readUInt16BE(offset + 5);
-      endOffset = offset + 7;
-      break;
-      
-    case ADDR_DOMAIN:
-      const domainLength = buffer[offset + 1];
-      if (buffer.length < offset + 2 + domainLength + 2) return null;
-      host = buffer.subarray(offset + 2, offset + 2 + domainLength).toString('ascii');
-      port = buffer.readUInt16BE(offset + 2 + domainLength);
-      endOffset = offset + 4 + domainLength;
-      break;
-      
-    case ADDR_IPV6:
-      if (buffer.length < offset + 19) return null;
-      const ipv6Parts: string[] = [];
-      for (let i = 0; i < 8; i++) {
-        ipv6Parts.push(buffer.readUInt16BE(offset + 1 + i * 2).toString(16));
-      }
-      host = ipv6Parts.join(':');
-      port = buffer.readUInt16BE(offset + 17);
-      endOffset = offset + 19;
-      break;
-      
-    default:
-      return null;
-  }
-  
-  return { host, port, addressType };
-}
-
-function createReply(
-  replyCode: number,
-  addressType: number = ADDR_IPV4,
-  bindAddress: string = '0.0.0.0',
-  bindPort: number = 0
-): Buffer {
-  let addressBuffer: Buffer;
-  
-  if (addressType === ADDR_IPV4) {
-    const parts = bindAddress.split('.').map(Number);
-    addressBuffer = Buffer.from([ADDR_IPV4, ...parts]);
-  } else if (addressType === ADDR_IPV6) {
-    // Simplified: just use zeros
-    addressBuffer = Buffer.alloc(17);
-    addressBuffer[0] = ADDR_IPV6;
-  } else {
-    // Domain - shouldn't happen in replies usually
-    addressBuffer = Buffer.from([ADDR_IPV4, 0, 0, 0, 0]);
-  }
-  
-  const portBuffer = Buffer.alloc(2);
-  portBuffer.writeUInt16BE(bindPort, 0);
-  
-  return Buffer.concat([
-    Buffer.from([SOCKS_VERSION, replyCode, 0x00]),
-    addressBuffer,
-    portBuffer,
-  ]);
-}
+// =============================================================================
+// Local Helper for Config Endpoint in SOCKS5 Context
+// =============================================================================
 
 /**
  * Handle config API endpoint request in SOCKS5 context
- * Returns response string if handled, null otherwise
+ * Wraps the shared handleConfigRequest to return raw HTTP response string
+ * 
+ * @param method - HTTP method
+ * @param path - URL path  
+ * @param body - Request body
+ * @returns Raw HTTP response string or null if not a config endpoint
  */
-function handleConfigEndpoint(method: string, path: string, body: string): string | null {
-  // Check if this is a config endpoint request
-  if (!path.startsWith(CONFIG_ENDPOINT)) {
+function handleConfigEndpointSocks5(method: string, path: string, body: string): string | null {
+  if (!isConfigEndpoint(path)) {
     return null;
   }
   
   console.log(`⚙️ Config endpoint: ${method} ${path}`);
-  
-  // Handle preflight
-  if (method === 'OPTIONS') {
-    return 'HTTP/1.1 204 No Content\r\n' +
-      'Access-Control-Allow-Origin: *\r\n' +
-      'Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n' +
-      'Access-Control-Allow-Headers: Content-Type\r\n' +
-      'Cache-Control: no-store, no-cache, must-revalidate\r\n' +
-      'Connection: close\r\n' +
-      '\r\n';
-  }
-  
-  const headers = 
-    'Access-Control-Allow-Origin: *\r\n' +
-    'Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n' +
-    'Access-Control-Allow-Headers: Content-Type\r\n' +
-    'Content-Type: application/json\r\n' +
-    'Cache-Control: no-store, no-cache, must-revalidate\r\n' +
-    'Pragma: no-cache\r\n';
-  
-  // GET - return current config
-  if (method === 'GET') {
-    const config = getClientConfig();
-    const responseBody = JSON.stringify({ success: true, config });
-    console.log(`⚙️ Config GET - returning:`, JSON.stringify(config));
-    return 'HTTP/1.1 200 OK\r\n' +
-      headers +
-      `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
-      'Connection: close\r\n' +
-      '\r\n' +
-      responseBody;
-  }
-  
-  // POST - update config
-  if (method === 'POST') {
-    try {
-      const newConfig = JSON.parse(body) as ClientConfig;
-      console.log(`⚙️ Config POST - saving:`, JSON.stringify(newConfig));
-      setClientConfig(newConfig);
-      const responseBody = JSON.stringify({ success: true, config: getClientConfig() });
-      return 'HTTP/1.1 200 OK\r\n' +
-        headers +
-        `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
-        'Connection: close\r\n' +
-        '\r\n' +
-        responseBody;
-    } catch (err) {
-      const responseBody = JSON.stringify({ success: false, error: 'Invalid JSON' });
-      return 'HTTP/1.1 400 Bad Request\r\n' +
-        headers +
-        `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
-        'Connection: close\r\n' +
-        '\r\n' +
-        responseBody;
-    }
-  }
-  
-  // DELETE - reset config
-  if (method === 'DELETE') {
-    console.log(`⚙️ Config DELETE - resetting`);
-    resetClientConfig();
-    const responseBody = JSON.stringify({ success: true, config: getClientConfig() });
-    return 'HTTP/1.1 200 OK\r\n' +
-      headers +
-      `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
-      'Connection: close\r\n' +
-      '\r\n' +
-      responseBody;
-  }
-  
-  // Method not allowed
-  const responseBody = JSON.stringify({ success: false, error: 'Method not allowed' });
-  return 'HTTP/1.1 405 Method Not Allowed\r\n' +
-    headers +
-    `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
-    'Connection: close\r\n' +
-    '\r\n' +
-    responseBody;
+  const result = handleConfigRequest(method, body);
+  return buildRawHttpResponse(result);
 }
+
+// =============================================================================
+// Connection Handler
+// =============================================================================
 
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
@@ -463,7 +309,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       console.log(`🔐 HTTPS: ${method} ${targetUrl}`);
       
       // Check for config endpoint FIRST (before any blocking or external requests)
-      const configResponse = handleConfigEndpoint(method, path, requestBody.toString('utf-8'));
+      const configResponse = handleConfigEndpointSocks5(method, path, requestBody.toString('utf-8'));
       if (configResponse) {
         tlsServer.write(configResponse);
         tlsServer.end();
@@ -753,219 +599,17 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   });
 }
 
-interface HttpResponse {
-  statusCode: number;
-  statusMessage: string;
-  headers: Record<string, string | string[] | undefined>;
-  body: Buffer;
-}
-
-async function makeHttpsRequest(
-  method: string,
-  hostname: string,
-  path: string,
-  headers: Record<string, string>,
-  body: Buffer
-): Promise<HttpResponse> {
-  const config = getConfig();
-  
-  // Spoof User-Agent to simulate a modern browser
-  const requestHeaders = { ...headers };
-  if (config.spoofUserAgent && requestHeaders['user-agent']) {
-    // Replace old Safari/iOS user agent with a modern Chrome one
-    requestHeaders['user-agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  }
-  
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname,
-      port: 443,
-      path,
-      method,
-      headers: {
-        ...requestHeaders,
-        'accept-encoding': 'gzip, deflate', // Don't request brotli for simplicity
-      },
-      rejectUnauthorized: false,
-    };
-    
-    const req = httpsRequest(options, async (res) => {
-      const chunks: Buffer[] = [];
-      
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', async () => {
-        let responseBody = Buffer.concat(chunks);
-        
-        // Decompress if needed
-        const encoding = res.headers['content-encoding'];
-        responseBody = Buffer.from(decompressBody(responseBody, encoding as string));
-        
-        const updatedHeaders = { ...res.headers };
-        
-        // Skip transformation for redirect responses (301, 302, 303, 307, 308)
-        const statusCode = res.statusCode || 200;
-        const isRedirect = isRedirectStatus(statusCode);
-        
-        const targetUrl = `https://${hostname}${path}`;
-        const rawContentType = res.headers['content-type'] || '';
-        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-        
-        // Mark redirecting URLs so we don't cache them in the future
-        if (isRedirect) {
-          markAsRedirect(targetUrl);
-        }
-        
-        if (!isRedirect && responseBody.length > 0) {
-          // Transform WebP/AVIF images to JPEG for legacy browser compatibility
-          // Do this BEFORE text transformation, since images shouldn't be transformed as text
-          if (needsImageTransform(contentTypeValue, targetUrl)) {
-            const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
-            if (imageResult.transformed) {
-              responseBody = Buffer.from(imageResult.data);
-              updatedHeaders['content-type'] = imageResult.contentType;
-            }
-          } else {
-            // Only transform text content (not images)
-            const charset = getCharset(contentTypeValue);
-            const contentType = getContentType(
-              res.headers as Record<string, string | string[] | undefined>,
-              targetUrl
-            );
-            
-            if (contentType !== 'other') {
-              responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-              
-              // Update Content-Type header to UTF-8 if we transformed the content
-              if (updatedHeaders['content-type']) {
-                const ct = Array.isArray(updatedHeaders['content-type']) 
-                  ? updatedHeaders['content-type'][0] 
-                  : updatedHeaders['content-type'];
-                // Replace charset with UTF-8 since we converted the content
-                updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-              }
-            }
-          }
-        }
-        
-        resolve({
-          statusCode: res.statusCode || 200,
-          statusMessage: res.statusMessage || 'OK',
-          headers: updatedHeaders,
-          body: responseBody,
-        });
-      });
-      
-      res.on('error', reject);
-    });
-    
-    req.on('error', reject);
-    
-    if (body.length > 0) {
-      req.write(body);
-    }
-    req.end();
-  });
-}
-
-async function makeHttpRequest(
-  method: string,
-  hostname: string,
-  port: number,
-  path: string,
-  headers: Record<string, string>,
-  body: Buffer
-): Promise<HttpResponse> {
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname,
-      port,
-      path,
-      method,
-      headers: {
-        ...headers,
-        'accept-encoding': 'gzip, deflate',
-      },
-    };
-    
-    const req = httpRequest(options, async (res) => {
-      const chunks: Buffer[] = [];
-      
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', async () => {
-        let responseBody = Buffer.concat(chunks);
-        
-        const encoding = res.headers['content-encoding'];
-        responseBody = Buffer.from(decompressBody(responseBody, encoding as string));
-        
-        const updatedHeaders = { ...res.headers };
-        
-        // Skip transformation for redirect responses (301, 302, 303, 307, 308)
-        const statusCode = res.statusCode || 200;
-        const isRedirect = isRedirectStatus(statusCode);
-        
-        const targetUrl = `http://${hostname}${path}`;
-        const rawContentType = res.headers['content-type'] || '';
-        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-        
-        // Mark redirecting URLs so we don't cache them in the future
-        if (isRedirect) {
-          markAsRedirect(targetUrl);
-        }
-        
-        if (!isRedirect && responseBody.length > 0) {
-          // Transform WebP/AVIF images to JPEG for legacy browser compatibility
-          // Do this BEFORE text transformation, since images shouldn't be transformed as text
-          if (needsImageTransform(contentTypeValue, targetUrl)) {
-            const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
-            if (imageResult.transformed) {
-              responseBody = Buffer.from(imageResult.data);
-              updatedHeaders['content-type'] = imageResult.contentType;
-            }
-          } else {
-            // Only transform text content (not images)
-            const charset = getCharset(contentTypeValue);
-            const contentType = getContentType(
-              res.headers as Record<string, string | string[] | undefined>,
-              targetUrl
-            );
-            
-            if (contentType !== 'other') {
-              responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-              
-              // Update Content-Type header to UTF-8 if we transformed the content
-              if (updatedHeaders['content-type']) {
-                const ct = Array.isArray(updatedHeaders['content-type']) 
-                  ? updatedHeaders['content-type'][0] 
-                  : updatedHeaders['content-type'];
-                // Replace charset with UTF-8 since we converted the content
-                updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-              }
-            }
-          }
-        }
-        
-        resolve({
-          statusCode: res.statusCode || 200,
-          statusMessage: res.statusMessage || 'OK',
-          headers: updatedHeaders,
-          body: responseBody,
-        });
-      });
-      
-      res.on('error', reject);
-    });
-    
-    req.on('error', reject);
-    
-    if (body.length > 0) {
-      req.write(body);
-    }
-    req.end();
-  });
-}
+// =============================================================================
+// SOCKS5 Proxy Server Factory
+// =============================================================================
 
 /**
  * Create and start the SOCKS5 proxy server
+ * 
+ * @param port - Port to listen on (default: 1080)
+ * @param httpProxyPort - HTTP proxy port for fallback routing
+ * @param bindAddress - Address to bind to (default: 0.0.0.0 for all interfaces)
+ * @returns Node.js Server instance
  */
 export function createSocks5Proxy(port: number, httpProxyPort: number, bindAddress: string = '0.0.0.0'): Server {
   const server = createServer((socket) => {

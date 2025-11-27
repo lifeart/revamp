@@ -1,5 +1,15 @@
 /**
- * Shared utilities for HTTP and SOCKS5 proxies
+ * Shared Utilities for HTTP and SOCKS5 Proxies
+ * 
+ * This module provides common functionality used by both proxy implementations:
+ * - CORS header management
+ * - Content type detection and transformation
+ * - Compression/decompression utilities
+ * - Charset handling (including Windows-1251 for Cyrillic)
+ * - Domain/URL blocking for ads and tracking
+ * - Response header filtering
+ * 
+ * @module proxy/shared
  */
 
 import { gunzipSync, brotliDecompressSync, inflateSync } from 'node:zlib';
@@ -7,19 +17,38 @@ import { URL } from 'node:url';
 import { getConfig, type RevampConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
+import type { ContentType } from './types.js';
 
-// Content type for transformation decisions
-export type ContentType = 'js' | 'css' | 'html' | 'other';
+// Re-export types for convenience
+export type { ContentType } from './types.js';
 
-// Config API endpoint path
-export const CONFIG_ENDPOINT = '/__revamp__/config';
+// Re-export config endpoint utilities
+export { CONFIG_ENDPOINT, isConfigEndpoint, handleConfigRequest, buildRawHttpResponse } from './config-endpoint.js';
 
-// CORS headers that we add to responses
+// =============================================================================
+// CORS Constants
+// =============================================================================
+
+/** HTTP methods allowed in CORS requests */
 export const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH';
+
+/** Headers allowed in CORS requests (includes common API headers) */
 export const CORS_ALLOWED_HEADERS = 'Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa';
+
+/** Headers exposed to client-side JavaScript */
 export const CORS_EXPOSE_HEADERS = 'Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id';
 
-// Headers to skip when proxying responses
+// =============================================================================
+// Header Filtering
+// =============================================================================
+
+/**
+ * Headers to skip when proxying responses.
+ * Includes:
+ * - Hop-by-hop headers (connection, keep-alive, etc.)
+ * - CORS headers (we replace with permissive ones)
+ * - CSP headers (removed to allow injected scripts/polyfills)
+ */
 export const SKIP_RESPONSE_HEADERS = new Set([
   'transfer-encoding',
   'content-encoding', 
@@ -46,7 +75,11 @@ export const SKIP_RESPONSE_HEADERS = new Set([
   'x-webkit-csp',
 ]);
 
-// Compressible content types for gzip
+// =============================================================================
+// Compression Utilities
+// =============================================================================
+
+/** Content types that benefit from gzip compression */
 const COMPRESSIBLE_TYPES = [
   'text/',
   'application/json',
@@ -60,6 +93,9 @@ const COMPRESSIBLE_TYPES = [
 
 /**
  * Check if content type should be gzip compressed
+ * 
+ * @param contentType - Content-Type header value
+ * @returns true if content should be compressed
  */
 export function shouldCompress(contentType: string): boolean {
   const ct = contentType.toLowerCase();
@@ -68,13 +104,23 @@ export function shouldCompress(contentType: string): boolean {
 
 /**
  * Check if client accepts gzip encoding
+ * 
+ * @param acceptEncoding - Accept-Encoding header value
+ * @returns true if client accepts gzip
  */
 export function acceptsGzip(acceptEncoding: string | undefined): boolean {
   return (acceptEncoding || '').includes('gzip');
 }
 
+// =============================================================================
+// Charset Handling
+// =============================================================================
+
 /**
  * Extract charset from Content-Type header
+ * 
+ * @param contentType - Content-Type header value
+ * @returns Charset name (defaults to 'utf-8')
  */
 export function getCharset(contentType: string): string {
   const charsetMatch = contentType.match(/charset=([^\s;]+)/i);
@@ -84,7 +130,10 @@ export function getCharset(contentType: string): string {
   return 'utf-8';
 }
 
-// Windows-1251 (Cyrillic) to Unicode mapping for bytes 0x80-0xFF
+/**
+ * Windows-1251 (Cyrillic) to Unicode mapping for bytes 0x80-0xFF
+ * Used for Russian/Ukrainian/Bulgarian websites that use this encoding
+ */
 const WIN1251_MAP: Record<number, number> = {
   0x80: 0x0402, 0x81: 0x0403, 0x82: 0x201A, 0x83: 0x0453, 0x84: 0x201E, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021,
   0x88: 0x20AC, 0x89: 0x2030, 0x8A: 0x0409, 0x8B: 0x2039, 0x8C: 0x040A, 0x8D: 0x040C, 0x8E: 0x040B, 0x8F: 0x040F,

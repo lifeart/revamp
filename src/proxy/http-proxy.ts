@@ -1,6 +1,10 @@
 /**
  * HTTP/HTTPS Proxy Interceptor
- * Intercepts HTTP traffic, transforms content, and returns to client
+ * 
+ * Intercepts HTTP/HTTPS traffic, transforms content for legacy browsers,
+ * and returns modified responses to the client.
+ * 
+ * @module proxy/http-proxy
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -10,13 +14,11 @@ import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { getConfig, getEffectiveConfig, getClientConfig, setClientConfig, resetClientConfig, type RevampConfig, type ClientConfig } from '../config/index.js';
+import { getConfig, getEffectiveConfig, type RevampConfig } from '../config/index.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { needsImageTransform, transformImage } from '../transformers/image.js';
 import {
-  type ContentType,
-  CONFIG_ENDPOINT,
   shouldCompress,
   acceptsGzip,
   getCharset,
@@ -28,75 +30,48 @@ import {
   removeCorsHeaders,
   buildCorsHeaders,
 } from './shared.js';
+import {
+  isConfigEndpoint,
+  handleConfigRequest,
+} from './config-endpoint.js';
+import type { ContentType } from './types.js';
+
+// =============================================================================
+// Config Endpoint Handler
+// =============================================================================
 
 /**
- * Handle config API requests
- * GET - returns current config
- * POST - updates config
- * DELETE - resets config to defaults
+ * Handle config API requests for HTTP proxy
+ * Uses the shared config endpoint handler
+ * 
+ * @param req - Incoming HTTP request
+ * @param res - Server response object
+ * @returns true if request was handled, false otherwise
  */
-async function handleConfigEndpoint(
+async function handleConfigEndpointHttp(
   req: IncomingMessage,
   res: ServerResponse
 ): Promise<boolean> {
   const url = req.url || '';
   
-  // Check if this is a config endpoint request
-  if (!url.startsWith(CONFIG_ENDPOINT)) {
+  if (!isConfigEndpoint(url)) {
     return false;
   }
   
-  // Set CORS headers for the config endpoint
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
+  // Read body for POST requests
+  const body = req.method === 'POST' ? await readRequestBody(req) : '';
   
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return true;
+  // Use shared handler
+  const result = handleConfigRequest(req.method || 'GET', body);
+  
+  // Apply headers
+  for (const [key, value] of Object.entries(result.headers)) {
+    res.setHeader(key, value);
   }
   
-  // GET - return current config
-  if (req.method === 'GET') {
-    const config = getClientConfig();
-    console.log(`⚙️ Config GET - returning:`, JSON.stringify(config));
-    res.writeHead(200);
-    res.end(JSON.stringify({ success: true, config }));
-    return true;
-  }
-  
-  // POST - update config
-  if (req.method === 'POST') {
-    try {
-      const body = await readRequestBody(req);
-      const newConfig = JSON.parse(body) as ClientConfig;
-      console.log(`⚙️ Config POST - saving:`, JSON.stringify(newConfig));
-      setClientConfig(newConfig);
-      res.writeHead(200);
-      res.end(JSON.stringify({ success: true, config: getClientConfig() }));
-    } catch (err) {
-      res.writeHead(400);
-      res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
-    }
-    return true;
-  }
-  
-  // DELETE - reset config
-  if (req.method === 'DELETE') {
-    console.log(`⚙️ Config DELETE - resetting`);
-    resetClientConfig();
-    res.writeHead(200);
-    res.end(JSON.stringify({ success: true, config: getClientConfig() }));
-    return true;
-  }
-  
-  res.writeHead(405);
-  res.end(JSON.stringify({ success: false, error: 'Method not allowed' }));
+  // Send response
+  res.writeHead(result.statusCode);
+  res.end(result.body);
   return true;
 }
 
@@ -112,6 +87,10 @@ function readRequestBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+// =============================================================================
+// Proxy Request Handler
+// =============================================================================
+
 async function proxyRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -120,13 +99,13 @@ async function proxyRequest(
 ): Promise<void> {
   // Check if this is a config endpoint request first
   const parsedUrl = new URL(targetUrl);
-  const isConfigEndpoint = parsedUrl.pathname.startsWith(CONFIG_ENDPOINT);
+  const isConfigPath = isConfigEndpoint(parsedUrl.pathname);
   
-  if (isConfigEndpoint) {
+  if (isConfigPath) {
     console.log(`⚙️ Config endpoint detected: ${targetUrl}`);
     // Rewrite req.url for the handler
     req.url = parsedUrl.pathname + parsedUrl.search;
-    const handled = await handleConfigEndpoint(req, res);
+    const handled = await handleConfigEndpointHttp(req, res);
     if (handled) return;
   }
   
