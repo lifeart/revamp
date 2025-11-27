@@ -271,6 +271,7 @@ async function proxyRequest(
   targetUrl: string,
   isHttps: boolean
 ): Promise<void> {
+  const config = getConfig();
   const parsedUrl = new URL(targetUrl);
   
   // Block ad/tracking domains
@@ -290,6 +291,11 @@ async function proxyRequest(
     // Tell servers we accept uncompressed content (easier to transform)
     'accept-encoding': 'identity',
   };
+  
+  // Spoof User-Agent to simulate a modern browser
+  if (config.spoofUserAgent && headers['user-agent']) {
+    headers['user-agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  }
   
   // Remove hop-by-hop headers
   delete headers['connection'];

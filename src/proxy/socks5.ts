@@ -965,6 +965,15 @@ async function makeHttpsRequest(
   headers: Record<string, string>,
   body: Buffer
 ): Promise<HttpResponse> {
+  const config = getConfig();
+  
+  // Spoof User-Agent to simulate a modern browser
+  const requestHeaders = { ...headers };
+  if (config.spoofUserAgent && requestHeaders['user-agent']) {
+    // Replace old Safari/iOS user agent with a modern Chrome one
+    requestHeaders['user-agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  }
+  
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
@@ -972,7 +981,7 @@ async function makeHttpsRequest(
       path,
       method,
       headers: {
-        ...headers,
+        ...requestHeaders,
         'accept-encoding': 'gzip, deflate', // Don't request brotli for simplicity
       },
       rejectUnauthorized: false,

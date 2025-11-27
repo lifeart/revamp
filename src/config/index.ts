@@ -20,6 +20,7 @@ export interface RevampConfig {
   removeAds: boolean;
   removeTracking: boolean;
   injectPolyfills: boolean;
+  spoofUserAgent: boolean; // Simulate a modern browser User-Agent
   
   // Cache settings
   cacheEnabled: boolean;
@@ -56,6 +57,7 @@ export const defaultConfig: RevampConfig = {
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
+  spoofUserAgent: true, // Enabled by default to get better content from servers
   
   cacheEnabled: true,
   cacheTTL: 3600, // 1 hour
