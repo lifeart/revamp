@@ -32,7 +32,7 @@ export function isAVIF(contentType: string): boolean {
  */
 export function isWebPUrl(url: string): boolean {
   try {
-    const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
+    const pathname = new URL(url).pathname.toLowerCase();
     return pathname.endsWith('.webp');
   } catch {
     return false;
@@ -44,7 +44,7 @@ export function isWebPUrl(url: string): boolean {
  */
 export function isAVIFUrl(url: string): boolean {
   try {
-    const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
+    const pathname = new URL(url).pathname.toLowerCase();
     return pathname.endsWith('.avif');
   } catch {
     return false;
@@ -56,7 +56,6 @@ export function isAVIFUrl(url: string): boolean {
  */
 export function needsImageTransform(contentType: string, url: string): boolean {
   const config = getConfig();
-  
   // Only transform if targeting old iOS (Safari 9 doesn't support WebP)
   const targetsOldSafari = config.targets.some(t => 
     t.includes('safari 9') || 

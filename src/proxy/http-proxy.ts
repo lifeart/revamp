@@ -14,6 +14,7 @@ import { getConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
+import { needsImageTransform, transformImage } from '../transformers/image.js';
 
 type ContentType = 'js' | 'css' | 'html' | 'other';
 
@@ -259,6 +260,15 @@ async function proxyRequest(
           
           if (contentType !== 'other') {
             body = Buffer.from(await transformContent(body, contentType, targetUrl, charset));
+          }
+          
+          // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+          if (needsImageTransform(contentTypeValue, targetUrl)) {
+            const imageResult = await transformImage(body, contentTypeValue, targetUrl);
+            if (imageResult.transformed) {
+              body = Buffer.from(imageResult.data);
+              proxyRes.headers['content-type'] = imageResult.contentType;
+            }
           }
           
           // Copy response headers
