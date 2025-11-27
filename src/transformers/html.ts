@@ -132,6 +132,7 @@ const TRACKING_SCRIPT_PATTERNS = [
   /google-analytics\.com/i,
   /googletagmanager\.com/i,
   /metrika\/tag\.js/i,
+  /watch_serp\.js/i,
   /gtag\(/i,
   /gtm\.js/i,
   /analytics\.js/i,

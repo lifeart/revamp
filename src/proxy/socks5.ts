@@ -610,8 +610,9 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         }
         responseHeaders += `Content-Length: ${response.body.length}\r\n`;
         responseHeaders += `Connection: close\r\n`;
-        // Add CORS headers to allow cross-origin requests
-        responseHeaders += `Access-Control-Allow-Origin: *\r\n`;
+        // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
+        responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
+        responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
         responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD\r\n`;
         responseHeaders += `Access-Control-Allow-Headers: *\r\n`;
         responseHeaders += `Access-Control-Expose-Headers: *\r\n`;
