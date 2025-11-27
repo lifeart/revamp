@@ -7,6 +7,7 @@ export interface RevampConfig {
   // Server settings
   socks5Port: number;
   httpProxyPort: number;
+  bindAddress: string; // '0.0.0.0' for LAN access, '127.0.0.1' for localhost only
   
   // Target browser compatibility
   targets: string[];
@@ -42,6 +43,7 @@ export interface RevampConfig {
 export const defaultConfig: RevampConfig = {
   socks5Port: 1080,
   httpProxyPort: 8080,
+  bindAddress: '0.0.0.0', // Bind to all interfaces for LAN access
   
   // iOS 9.3.5 Safari = Safari 9 (iPad 2), iOS 11 Safari = Safari 11
   targets: ['safari 9', 'ios 9'],

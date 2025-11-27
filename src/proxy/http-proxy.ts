@@ -429,7 +429,7 @@ function handleConnect(
 /**
  * Create and start the HTTP proxy server
  */
-export function createHttpProxy(port: number): Server {
+export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): Server {
   const server = createServer(async (req, res) => {
     const targetUrl = req.url || '/';
     console.log(`📡 HTTP: ${req.method} ${targetUrl}`);
@@ -456,8 +456,8 @@ export function createHttpProxy(port: number): Server {
   // Handle CONNECT method for HTTPS
   server.on('connect', handleConnect);
   
-  server.listen(port, () => {
-    console.log(`🌐 HTTP Proxy listening on port ${port}`);
+  server.listen(port, bindAddress, () => {
+    console.log(`🌐 HTTP Proxy listening on ${bindAddress}:${port}`);
   });
   
   return server;

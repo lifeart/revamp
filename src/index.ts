@@ -11,6 +11,24 @@ import { generateCA, getCACert } from './certs/index.js';
 import { clearCache, getCacheStats } from './cache/index.js';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { networkInterfaces } from 'node:os';
+
+// Get local IP addresses for LAN access
+function getLocalIPs(): string[] {
+  const nets = networkInterfaces();
+  const ips: string[] = [];
+  
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name] || []) {
+      // Skip internal (loopback) and non-IPv4 addresses
+      if (net.family === 'IPv4' && !net.internal) {
+        ips.push(net.address);
+      }
+    }
+  }
+  
+  return ips;
+}
 
 function printBanner(): void {
   console.log(`
@@ -32,10 +50,14 @@ function printBanner(): void {
 
 function printSetupInstructions(config: RevampConfig): void {
   const caCertPath = join(config.certDir, config.caCertFile);
+  const localIPs = getLocalIPs();
+  const ipList = localIPs.length > 0 ? localIPs.join(', ') : 'Unable to detect';
   
   console.log(`
 📱 Device Setup Instructions:
 ────────────────────────────────────────────────────────────────
+
+🌐 Your Local IP Address(es): ${ipList}
 
 1. Install the CA Certificate on your device:
    - Transfer the certificate file to your device:
@@ -48,12 +70,12 @@ function printSetupInstructions(config: RevampConfig): void {
 2. Configure SOCKS5 Proxy:
    - Go to Settings → Wi-Fi → Your Network → Configure Proxy
    - Select "Manual"
-   - Server: Your computer's IP address
+   - Server: ${localIPs[0] || 'Your computer IP'}
    - Port: ${config.socks5Port}
    - Authentication: Off
 
 3. Alternative: HTTP Proxy (if SOCKS5 not available):
-   - Server: Your computer's IP address  
+   - Server: ${localIPs[0] || 'Your computer IP'}
    - Port: ${config.httpProxyPort}
 
 ────────────────────────────────────────────────────────────────
@@ -97,11 +119,11 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
       
       // Start HTTP proxy first (SOCKS5 routes through it)
       console.log('🌐 Starting HTTP proxy...');
-      httpServer = createHttpProxy(config.httpProxyPort);
+      httpServer = createHttpProxy(config.httpProxyPort, config.bindAddress);
       
       // Start SOCKS5 proxy
       console.log('🧦 Starting SOCKS5 proxy...');
-      socks5Server = createSocks5Proxy(config.socks5Port, config.httpProxyPort);
+      socks5Server = createSocks5Proxy(config.socks5Port, config.httpProxyPort, config.bindAddress);
       
       // Print setup instructions
       printSetupInstructions(config);
@@ -109,8 +131,8 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
       console.log('✅ Revamp is ready!');
       console.log(`
 🎯 Proxy Status:
-   SOCKS5: localhost:${config.socks5Port}
-   HTTP:   localhost:${config.httpProxyPort}
+   SOCKS5: ${config.bindAddress}:${config.socks5Port}
+   HTTP:   ${config.bindAddress}:${config.httpProxyPort}
    
 🔧 Features:
    Transform JS:   ${config.transformJs ? '✅' : '❌'}

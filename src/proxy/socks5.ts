@@ -1030,7 +1030,7 @@ async function makeHttpRequest(
 /**
  * Create and start the SOCKS5 proxy server
  */
-export function createSocks5Proxy(port: number, httpProxyPort: number): Server {
+export function createSocks5Proxy(port: number, httpProxyPort: number, bindAddress: string = '0.0.0.0'): Server {
   const server = createServer((socket) => {
     handleConnection(socket, httpProxyPort);
   });
@@ -1039,8 +1039,8 @@ export function createSocks5Proxy(port: number, httpProxyPort: number): Server {
     console.error(`❌ SOCKS5 server error: ${err.message}`);
   });
   
-  server.listen(port, () => {
-    console.log(`🧦 SOCKS5 Proxy listening on port ${port}`);
+  server.listen(port, bindAddress, () => {
+    console.log(`🧦 SOCKS5 Proxy listening on ${bindAddress}:${port}`);
   });
   
   return server;
