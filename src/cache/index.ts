@@ -32,7 +32,52 @@ const NO_CACHE_DOMAINS = [
   'me.com',
 ];
 
+// URLs that are known to redirect - we shouldn't cache these
+const redirectUrls = new Set<string>();
+
+// Redirect status codes
+const REDIRECT_STATUS_CODES = [301, 302, 303, 307, 308];
+
+/**
+ * Check if a status code is a redirect
+ */
+export function isRedirectStatus(statusCode: number): boolean {
+  return REDIRECT_STATUS_CODES.includes(statusCode);
+}
+
+/**
+ * Mark a URL as redirecting (so we don't cache it in the future)
+ */
+export function markAsRedirect(url: string): void {
+  try {
+    // Normalize URL by removing hash
+    const normalized = new URL(url);
+    normalized.hash = '';
+    redirectUrls.add(normalized.href);
+  } catch {
+    redirectUrls.add(url);
+  }
+}
+
+/**
+ * Check if a URL is known to redirect
+ */
+function isKnownRedirect(url: string): boolean {
+  try {
+    const normalized = new URL(url);
+    normalized.hash = '';
+    return redirectUrls.has(normalized.href);
+  } catch {
+    return redirectUrls.has(url);
+  }
+}
+
 function shouldSkipCache(url: string): boolean {
+  // Skip if this URL is known to redirect
+  if (isKnownRedirect(url)) {
+    return true;
+  }
+  
   try {
     const hostname = new URL(url).hostname.toLowerCase();
     return NO_CACHE_DOMAINS.some(domain => 

@@ -11,7 +11,7 @@ import { request as httpsRequest } from 'node:https';
 import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
 import { getConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
-import { getCached, setCache } from '../cache/index.js';
+import { getCached, setCache, markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
 import { transformImage, needsImageTransform } from '../transformers/image.js';
 
@@ -1042,11 +1042,16 @@ async function makeHttpsRequest(
         
         // Skip transformation for redirect responses (301, 302, 303, 307, 308)
         const statusCode = res.statusCode || 200;
-        const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+        const isRedirect = isRedirectStatus(statusCode);
         
         const targetUrl = `https://${hostname}${path}`;
         const rawContentType = res.headers['content-type'] || '';
         const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        
+        // Mark redirecting URLs so we don't cache them in the future
+        if (isRedirect) {
+          markAsRedirect(targetUrl);
+        }
         
         if (!isRedirect && responseBody.length > 0) {
           // Transform WebP/AVIF images to JPEG for legacy browser compatibility
@@ -1134,11 +1139,16 @@ async function makeHttpRequest(
         
         // Skip transformation for redirect responses (301, 302, 303, 307, 308)
         const statusCode = res.statusCode || 200;
-        const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+        const isRedirect = isRedirectStatus(statusCode);
         
         const targetUrl = `http://${hostname}${path}`;
         const rawContentType = res.headers['content-type'] || '';
         const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        
+        // Mark redirecting URLs so we don't cache them in the future
+        if (isRedirect) {
+          markAsRedirect(targetUrl);
+        }
         
         if (!isRedirect && responseBody.length > 0) {
           // Transform WebP/AVIF images to JPEG for legacy browser compatibility

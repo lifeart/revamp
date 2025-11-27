@@ -11,7 +11,7 @@ import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
 import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
 import { getConfig } from '../config/index.js';
-import { getCached, setCache } from '../cache/index.js';
+import { getCached, setCache, markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
 import { needsImageTransform, transformImage } from '../transformers/image.js';
@@ -356,28 +356,40 @@ async function proxyRequest(
           const encoding = proxyRes.headers['content-encoding'];
           body = Buffer.from(decompressBody(body, encoding as string));
           
+          // Check if this is a redirect response
+          const statusCode = proxyRes.statusCode || 200;
+          const isRedirect = isRedirectStatus(statusCode);
+          
+          // Mark redirecting URLs so we don't cache them in the future
+          if (isRedirect) {
+            markAsRedirect(targetUrl);
+          }
+          
           // Determine content type and transform
           const rawContentType = proxyRes.headers['content-type'] || '';
           const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
           
-          // Transform WebP/AVIF images to JPEG for legacy browser compatibility
-          // Do this BEFORE text transformation, since images shouldn't be transformed as text
-          if (needsImageTransform(contentTypeValue, targetUrl)) {
-            const imageResult = await transformImage(body, contentTypeValue, targetUrl);
-            if (imageResult.transformed) {
-              body = Buffer.from(imageResult.data);
-              proxyRes.headers['content-type'] = imageResult.contentType;
-            }
-          } else {
-            // Only transform text content (not images)
-            const charset = getCharset(contentTypeValue);
-            const contentType = getContentType(
-              proxyRes.headers as Record<string, string | string[] | undefined>,
-              targetUrl
-            );
-            
-            if (contentType !== 'other') {
-              body = Buffer.from(await transformContent(body, contentType, targetUrl, charset));
+          // Skip transformation for redirect responses
+          if (!isRedirect && body.length > 0) {
+            // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+            // Do this BEFORE text transformation, since images shouldn't be transformed as text
+            if (needsImageTransform(contentTypeValue, targetUrl)) {
+              const imageResult = await transformImage(body, contentTypeValue, targetUrl);
+              if (imageResult.transformed) {
+                body = Buffer.from(imageResult.data);
+                proxyRes.headers['content-type'] = imageResult.contentType;
+              }
+            } else {
+              // Only transform text content (not images)
+              const charset = getCharset(contentTypeValue);
+              const contentType = getContentType(
+                proxyRes.headers as Record<string, string | string[] | undefined>,
+                targetUrl
+              );
+              
+              if (contentType !== 'other') {
+                body = Buffer.from(await transformContent(body, contentType, targetUrl, charset));
+              }
             }
           }
           
@@ -394,7 +406,7 @@ async function proxyRequest(
           );
           
           // Update Content-Type header to UTF-8 if we transformed the content (not images)
-          if (finalContentType !== 'other' && !needsImageTransform(contentTypeValue, targetUrl) && headers['content-type']) {
+          if (!isRedirect && finalContentType !== 'other' && !needsImageTransform(contentTypeValue, targetUrl) && headers['content-type']) {
             const ct = Array.isArray(headers['content-type']) 
               ? headers['content-type'][0] 
               : headers['content-type'];
