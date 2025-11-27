@@ -26,6 +26,7 @@ export { textEncoderPolyfill } from './text-encoder.js';
 export { intersectionObserverPolyfill } from './intersection-observer.js';
 export { userAgentPolyfill } from './user-agent.js';
 export { esModulesPolyfill } from './es-modules.js';
+export { readableStreamPolyfill } from './readable-stream.js';
 
 // Debug tools
 export { errorOverlayScript } from './error-overlay.js';
@@ -51,6 +52,7 @@ import { textEncoderPolyfill } from './text-encoder.js';
 import { intersectionObserverPolyfill } from './intersection-observer.js';
 import { userAgentPolyfill } from './user-agent.js';
 import { esModulesPolyfill } from './es-modules.js';
+import { readableStreamPolyfill } from './readable-stream.js';
 import { errorOverlayScript } from './error-overlay.js';
 
 /**
@@ -82,6 +84,7 @@ export function buildPolyfillScript(): string {
     abortControllerPolyfill,
     textEncoderPolyfill,
     intersectionObserverPolyfill,
+    readableStreamPolyfill,
   ];
 
   return `
@@ -126,7 +129,8 @@ export type PolyfillName =
   | 'textEncoder'
   | 'intersectionObserver'
   | 'userAgent'
-  | 'esModules';
+  | 'esModules'
+  | 'readableStream';
 
 const polyfillMap: Record<PolyfillName, string> = {
   symbol: symbolPolyfill,
@@ -149,6 +153,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   intersectionObserver: intersectionObserverPolyfill,
   userAgent: userAgentPolyfill,
   esModules: esModulesPolyfill,
+  readableStream: readableStreamPolyfill,
 };
 
 /**
