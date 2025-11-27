@@ -1,7 +1,7 @@
 {
   "name": "revamp",
   "version": "1.0.0",
-  "description": "Legacy browser compatibility proxy - Transform modern web for iOS 11 and older devices",
+  "description": "Legacy browser compatibility proxy - Transform modern web for iOS 9+ (iPad 2) and older devices",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

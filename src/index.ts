@@ -24,7 +24,7 @@ function printBanner(): void {
 ║   ╚═╝  ╚═╝╚══════╝  ╚═══╝  ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝            ║
 ║                                                               ║
 ║   Legacy Browser Compatibility Proxy                          ║
-║   Transform modern web for iOS 11 and other legacy devices    ║
+║   Transform modern web for iOS 9+ (iPad 2) and legacy devices ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 `);
