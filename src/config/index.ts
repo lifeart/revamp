@@ -125,6 +125,9 @@ export const defaultConfig: RevampConfig = {
 // Current active configuration (mutable for runtime changes)
 let currentConfig: RevampConfig = { ...defaultConfig };
 
+// Client config stored on the proxy (shared across all requests)
+let clientConfig: ClientConfig | null = null;
+
 export function getConfig(): RevampConfig {
   return currentConfig;
 }
@@ -135,4 +138,75 @@ export function updateConfig(partial: Partial<RevampConfig>): void {
 
 export function resetConfig(): void {
   currentConfig = { ...defaultConfig };
+}
+
+/**
+ * Client-side config options that can be overridden via API
+ */
+export interface ClientConfig {
+  transformJs?: boolean;
+  transformCss?: boolean;
+  transformHtml?: boolean;
+  removeAds?: boolean;
+  removeTracking?: boolean;
+  injectPolyfills?: boolean;
+  spoofUserAgent?: boolean;
+  spoofUserAgentInJs?: boolean;
+  cacheEnabled?: boolean;
+}
+
+/**
+ * Get the current client config
+ */
+export function getClientConfig(): ClientConfig {
+  return clientConfig || {
+    transformJs: currentConfig.transformJs,
+    transformCss: currentConfig.transformCss,
+    transformHtml: currentConfig.transformHtml,
+    removeAds: currentConfig.removeAds,
+    removeTracking: currentConfig.removeTracking,
+    injectPolyfills: currentConfig.injectPolyfills,
+    spoofUserAgent: currentConfig.spoofUserAgent,
+    spoofUserAgentInJs: currentConfig.spoofUserAgentInJs,
+    cacheEnabled: currentConfig.cacheEnabled,
+  };
+}
+
+/**
+ * Update client config from API request
+ */
+export function setClientConfig(config: ClientConfig): void {
+  clientConfig = config;
+  console.log('[Revamp] Client config updated:', config);
+}
+
+/**
+ * Reset client config to defaults
+ */
+export function resetClientConfig(): void {
+  clientConfig = null;
+  console.log('[Revamp] Client config reset to defaults');
+}
+
+/**
+ * Get effective config for a request, merging server defaults with client overrides
+ */
+export function getEffectiveConfig(): RevampConfig {
+  if (!clientConfig) {
+    return currentConfig;
+  }
+  
+  // Merge client config with current config (client overrides server)
+  return {
+    ...currentConfig,
+    ...(clientConfig.transformJs !== undefined && { transformJs: clientConfig.transformJs }),
+    ...(clientConfig.transformCss !== undefined && { transformCss: clientConfig.transformCss }),
+    ...(clientConfig.transformHtml !== undefined && { transformHtml: clientConfig.transformHtml }),
+    ...(clientConfig.removeAds !== undefined && { removeAds: clientConfig.removeAds }),
+    ...(clientConfig.removeTracking !== undefined && { removeTracking: clientConfig.removeTracking }),
+    ...(clientConfig.injectPolyfills !== undefined && { injectPolyfills: clientConfig.injectPolyfills }),
+    ...(clientConfig.spoofUserAgent !== undefined && { spoofUserAgent: clientConfig.spoofUserAgent }),
+    ...(clientConfig.spoofUserAgentInJs !== undefined && { spoofUserAgentInJs: clientConfig.spoofUserAgentInJs }),
+    ...(clientConfig.cacheEnabled !== undefined && { cacheEnabled: clientConfig.cacheEnabled }),
+  };
 }

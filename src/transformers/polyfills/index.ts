@@ -31,6 +31,7 @@ export { readableStreamPolyfill } from './readable-stream.js';
 
 // Debug tools
 export { errorOverlayScript } from './error-overlay.js';
+export { configOverlayScript } from './config-overlay.js';
 
 // Import all polyfills
 import { symbolPolyfill } from './symbol.js';
@@ -56,6 +57,7 @@ import { userAgentPolyfill } from './user-agent.js';
 import { esModulesPolyfill } from './es-modules.js';
 import { readableStreamPolyfill } from './readable-stream.js';
 import { errorOverlayScript } from './error-overlay.js';
+import { configOverlayScript } from './config-overlay.js';
 
 /**
  * Build the complete polyfill script from all atomic polyfills
@@ -107,6 +109,13 @@ ${polyfills.join('\n')}
  */
 export function getErrorOverlayScript(): string {
   return errorOverlayScript;
+}
+
+/**
+ * Get the config overlay script
+ */
+export function getConfigOverlayScript(): string {
+  return configOverlayScript;
 }
 
 /**

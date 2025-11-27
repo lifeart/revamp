@@ -10,7 +10,7 @@ import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
 import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
-import { getConfig } from '../config/index.js';
+import { getConfig, getEffectiveConfig, getClientConfig, setClientConfig, resetClientConfig, type RevampConfig, type ClientConfig } from '../config/index.js';
 import { getCached, setCache, markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
@@ -179,8 +179,8 @@ function isBinaryContent(buffer: Buffer): boolean {
   return false;
 }
 
-async function transformContent(body: Buffer, contentType: ContentType, url: string, charset: string = 'utf-8'): Promise<Buffer> {
-  const config = getConfig();
+async function transformContent(body: Buffer, contentType: ContentType, url: string, charset: string = 'utf-8', config?: RevampConfig): Promise<Buffer> {
+  const effectiveConfig = config || getConfig();
   
   // Safety check: don't transform binary content even if content-type was wrong
   if (isBinaryContent(body)) {
@@ -188,11 +188,13 @@ async function transformContent(body: Buffer, contentType: ContentType, url: str
     return body;
   }
   
-  // Check cache first
-  const cached = await getCached(url, contentType);
-  if (cached) {
-    console.log(`📦 Cache hit: ${url}`);
-    return cached;
+  // Check cache first (only if cache is enabled in config)
+  if (effectiveConfig.cacheEnabled) {
+    const cached = await getCached(url, contentType);
+    if (cached) {
+      console.log(`📦 Cache hit: ${url}`);
+      return cached;
+    }
   }
   
   let transformed: string;
@@ -206,7 +208,7 @@ async function transformContent(body: Buffer, contentType: ContentType, url: str
   
   switch (contentType) {
     case 'js':
-      if (config.transformJs) {
+      if (effectiveConfig.transformJs) {
         console.log(`🔧 Transforming JS: ${url}`);
         transformed = await transformJs(text, url);
       } else {
@@ -214,7 +216,7 @@ async function transformContent(body: Buffer, contentType: ContentType, url: str
       }
       break;
     case 'css':
-      if (config.transformCss) {
+      if (effectiveConfig.transformCss) {
         console.log(`🎨 Transforming CSS: ${url}`);
         transformed = await transformCss(text, url);
       } else {
@@ -222,7 +224,7 @@ async function transformContent(body: Buffer, contentType: ContentType, url: str
       }
       break;
     case 'html':
-      if (config.transformHtml && isHtmlDocument(text)) {
+      if (effectiveConfig.transformHtml && isHtmlDocument(text)) {
         console.log(`📄 Transforming HTML: ${url}`);
         transformed = await transformHtml(text, url);
       } else {
@@ -235,18 +237,20 @@ async function transformContent(body: Buffer, contentType: ContentType, url: str
   
   const result = Buffer.from(transformed, 'utf-8');
   
-  // Cache the result
-  await setCache(url, contentType, result);
+  // Cache the result (only if cache is enabled)
+  if (effectiveConfig.cacheEnabled) {
+    await setCache(url, contentType, result);
+  }
   
   return result;
 }
 
-function shouldBlockDomain(hostname: string): boolean {
-  const config = getConfig();
+function shouldBlockDomain(hostname: string, config?: RevampConfig): boolean {
+  const effectiveConfig = config || getConfig();
   
   // Check ad domains
-  if (config.removeAds) {
-    for (const domain of config.adDomains) {
+  if (effectiveConfig.removeAds) {
+    for (const domain of effectiveConfig.adDomains) {
       if (hostname.includes(domain)) {
         return true;
       }
@@ -254,8 +258,8 @@ function shouldBlockDomain(hostname: string): boolean {
   }
   
   // Check tracking domains
-  if (config.removeTracking) {
-    for (const domain of config.trackingDomains) {
+  if (effectiveConfig.removeTracking) {
+    for (const domain of effectiveConfig.trackingDomains) {
       if (hostname.includes(domain)) {
         return true;
       }
@@ -265,13 +269,13 @@ function shouldBlockDomain(hostname: string): boolean {
   return false;
 }
 
-function shouldBlockUrl(url: string): boolean {
-  const config = getConfig();
+function shouldBlockUrl(url: string, config?: RevampConfig): boolean {
+  const effectiveConfig = config || getConfig();
   
   // Check tracking URL patterns
-  if (config.removeTracking) {
+  if (effectiveConfig.removeTracking) {
     const urlLower = url.toLowerCase();
-    for (const pattern of config.trackingUrls) {
+    for (const pattern of effectiveConfig.trackingUrls) {
       if (urlLower.includes(pattern.toLowerCase())) {
         return true;
       }
@@ -281,17 +285,107 @@ function shouldBlockUrl(url: string): boolean {
   return false;
 }
 
+// Config API endpoint path
+const CONFIG_ENDPOINT = '/__revamp__/config';
+
+/**
+ * Handle config API requests
+ * GET - returns current config
+ * POST - updates config
+ * DELETE - resets config to defaults
+ */
+async function handleConfigEndpoint(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<boolean> {
+  const url = req.url || '';
+  
+  // Check if this is a config endpoint request
+  if (!url.startsWith(CONFIG_ENDPOINT)) {
+    return false;
+  }
+  
+  // Set CORS headers for the config endpoint
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Content-Type', 'application/json');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+  
+  // GET - return current config
+  if (req.method === 'GET') {
+    const config = getClientConfig();
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, config }));
+    return true;
+  }
+  
+  // POST - update config
+  if (req.method === 'POST') {
+    try {
+      const body = await readRequestBody(req);
+      const newConfig = JSON.parse(body) as ClientConfig;
+      setClientConfig(newConfig);
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, config: getClientConfig() }));
+    } catch (err) {
+      res.writeHead(400);
+      res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+    }
+    return true;
+  }
+  
+  // DELETE - reset config
+  if (req.method === 'DELETE') {
+    resetClientConfig();
+    res.writeHead(200);
+    res.end(JSON.stringify({ success: true, config: getClientConfig() }));
+    return true;
+  }
+  
+  res.writeHead(405);
+  res.end(JSON.stringify({ success: false, error: 'Method not allowed' }));
+  return true;
+}
+
+/**
+ * Read request body as string
+ */
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
 async function proxyRequest(
   req: IncomingMessage,
   res: ServerResponse,
   targetUrl: string,
   isHttps: boolean
 ): Promise<void> {
-  const config = getConfig();
+  // Check if this is a config endpoint request first
   const parsedUrl = new URL(targetUrl);
+  if (parsedUrl.pathname.startsWith(CONFIG_ENDPOINT)) {
+    // Rewrite req.url for the handler
+    req.url = parsedUrl.pathname + parsedUrl.search;
+    const handled = await handleConfigEndpoint(req, res);
+    if (handled) return;
+  }
+  
+  // Get effective config (merges server defaults with client overrides)
+  const config = getEffectiveConfig();
   
   // Block ad/tracking domains
-  if (shouldBlockDomain(parsedUrl.hostname)) {
+  if (shouldBlockDomain(parsedUrl.hostname, config)) {
     console.log(`🚫 Blocked domain: ${parsedUrl.hostname}`);
     res.writeHead(204); // No Content
     res.end();
@@ -299,7 +393,7 @@ async function proxyRequest(
   }
   
   // Block tracking URLs by pattern
-  if (shouldBlockUrl(targetUrl)) {
+  if (shouldBlockUrl(targetUrl, config)) {
     console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
     res.writeHead(204); // No Content
     res.end();
@@ -388,7 +482,7 @@ async function proxyRequest(
               );
               
               if (contentType !== 'other') {
-                body = Buffer.from(await transformContent(body, contentType, targetUrl, charset));
+                body = Buffer.from(await transformContent(body, contentType, targetUrl, charset, config));
               }
             }
           }

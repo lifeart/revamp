@@ -6,7 +6,7 @@
 import * as cheerio from 'cheerio';
 import { getConfig } from '../config/index.js';
 import { transformJs } from './js.js';
-import { buildPolyfillScript, getErrorOverlayScript, userAgentPolyfill } from './polyfills/index.js';
+import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
 
 /**
  * Common ad/tracking script patterns
@@ -211,6 +211,7 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     if (config.injectPolyfills) {
       const polyfillScript = buildPolyfillScript();
       const errorOverlayScript = getErrorOverlayScript();
+      const configOverlayScript = getConfigOverlayScript();
       
       // Conditionally build user-agent spoof script
       let userAgentScript = '';
@@ -227,6 +228,7 @@ ${userAgentPolyfill}
       
       const head = $('head');
       if (head.length > 0) {
+        head.prepend(configOverlayScript);
         head.prepend(errorOverlayScript);
         head.prepend(polyfillScript);
         if (userAgentScript) {
@@ -235,6 +237,7 @@ ${userAgentPolyfill}
         }
       } else {
         // No head tag, try to add at the beginning
+        $.root().prepend(configOverlayScript);
         $.root().prepend(errorOverlayScript);
         $.root().prepend(polyfillScript);
         if (userAgentScript) {
