@@ -6,7 +6,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
   workers: 1, // Single worker to avoid proxy conflicts
-  reporter: 'html',
+  reporter: [['html'], ['list']],
   
   timeout: 60000, // 60 seconds per test
   expect: {
@@ -14,11 +14,6 @@ export default defineConfig({
   },
   
   use: {
-    // Use HTTP proxy for all requests
-    proxy: {
-      server: 'http://localhost:8080',
-    },
-    
     // Ignore HTTPS errors since we're using self-signed certs
     ignoreHTTPSErrors: true,
     
@@ -35,15 +30,23 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: { 
+        ...devices['Desktop Chrome'],
+        // Use HTTP proxy - Chromium handles CONNECT tunneling automatically
+        proxy: {
+          server: 'http://127.0.0.1:8080',
+        },
+      },
     },
   ],
 
   // Start the proxy server before running tests
   webServer: {
     command: 'pnpm start',
-    port: 8080,
+    url: 'http://127.0.0.1:8080',
     reuseExistingServer: !process.env.CI,
     timeout: 30000,
+    stdout: 'pipe',
+    stderr: 'pipe',
   },
 });

@@ -223,6 +223,12 @@ async function proxyRequest(
           delete headers['connection'];
           delete headers['keep-alive'];
           
+          // Add CORS headers to allow cross-origin requests
+          headers['access-control-allow-origin'] = '*';
+          headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS, HEAD';
+          headers['access-control-allow-headers'] = '*';
+          headers['access-control-expose-headers'] = '*';
+          
           res.writeHead(proxyRes.statusCode || 200, headers);
           res.end(body);
           resolve();
