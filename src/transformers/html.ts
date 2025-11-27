@@ -1371,7 +1371,7 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     
     // Transform inline scripts with Babel for legacy browser compatibility
     if (config.transformJs) {
-      const inlineScripts: Array<{ elem: cheerio.Element; content: string }> = [];
+      const inlineScripts: Array<{ elem: ReturnType<typeof $>[number]; content: string }> = [];
       
       $('script').each((_, elem) => {
         const $script = $(elem);
