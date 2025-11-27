@@ -23,6 +23,7 @@ export { customEventPolyfill } from './custom-event.js';
 export { requestAnimationFramePolyfill } from './request-animation-frame.js';
 export { abortControllerPolyfill } from './abort-controller.js';
 export { textEncoderPolyfill } from './text-encoder.js';
+export { intersectionObserverPolyfill } from './intersection-observer.js';
 
 // Debug tools
 export { errorOverlayScript } from './error-overlay.js';
@@ -45,6 +46,7 @@ import { customEventPolyfill } from './custom-event.js';
 import { requestAnimationFramePolyfill } from './request-animation-frame.js';
 import { abortControllerPolyfill } from './abort-controller.js';
 import { textEncoderPolyfill } from './text-encoder.js';
+import { intersectionObserverPolyfill } from './intersection-observer.js';
 import { errorOverlayScript } from './error-overlay.js';
 
 /**
@@ -72,6 +74,7 @@ export function buildPolyfillScript(): string {
     requestAnimationFramePolyfill,
     abortControllerPolyfill,
     textEncoderPolyfill,
+    intersectionObserverPolyfill,
   ];
 
   return `
@@ -113,7 +116,8 @@ export type PolyfillName =
   | 'customEvent'
   | 'requestAnimationFrame'
   | 'abortController'
-  | 'textEncoder';
+  | 'textEncoder'
+  | 'intersectionObserver';
 
 const polyfillMap: Record<PolyfillName, string> = {
   symbol: symbolPolyfill,
@@ -133,6 +137,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   requestAnimationFrame: requestAnimationFramePolyfill,
   abortController: abortControllerPolyfill,
   textEncoder: textEncoderPolyfill,
+  intersectionObserver: intersectionObserverPolyfill,
 };
 
 /**
