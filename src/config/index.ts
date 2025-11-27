@@ -79,6 +79,8 @@ export const defaultConfig: RevampConfig = {
     'googlesyndication.com',
     'googleadservices.com',
     'adnxs.com',
+    'ads.adfox.ru',
+    'banners.adfox.ru',
     'advertising.com',
     'facebook.com/tr',
     'ads.twitter.com',
