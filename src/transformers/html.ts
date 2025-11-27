@@ -238,6 +238,12 @@ export async function transformHtml(html: string, url?: string): Promise<string>
       $('noscript img').remove(); // Tracking pixels often in noscript
     }
     
+    // Normalize charset to UTF-8 (since we decode content to UTF-8 during transformation)
+    // Update meta charset tag
+    $('meta[charset]').attr('charset', 'UTF-8');
+    // Update http-equiv Content-Type meta tag
+    $('meta[http-equiv="Content-Type"]').attr('content', 'text/html; charset=UTF-8');
+    
     // Inject polyfills at the beginning of <head>
     if (config.injectPolyfills) {
       const head = $('head');

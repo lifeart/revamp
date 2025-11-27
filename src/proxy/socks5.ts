@@ -127,8 +127,7 @@ function createReply(
 // Content type detection
 type ContentType = 'js' | 'css' | 'html' | 'other';
 
-function getCharset(headers: Record<string, string | string[] | undefined>): string {
-  const contentType = (headers['content-type'] as string || '').toLowerCase();
+function getCharset(contentType: string): string {
   // Extract charset from Content-Type header: text/html; charset=utf-8
   const charsetMatch = contentType.match(/charset=([\w-]+)/i);
   if (charsetMatch) {
@@ -841,10 +840,20 @@ async function makeHttpsRequest(
           responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
         }
         
+        // Update Content-Type header to UTF-8 if we transformed the content
+        const updatedHeaders = { ...res.headers };
+        if (contentType !== 'other' && updatedHeaders['content-type']) {
+          const ct = Array.isArray(updatedHeaders['content-type']) 
+            ? updatedHeaders['content-type'][0] 
+            : updatedHeaders['content-type'];
+          // Replace charset with UTF-8 since we converted the content
+          updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+        }
+        
         resolve({
           statusCode: res.statusCode || 200,
           statusMessage: res.statusMessage || 'OK',
-          headers: res.headers,
+          headers: updatedHeaders,
           body: responseBody,
         });
       });
@@ -904,10 +913,20 @@ async function makeHttpRequest(
           responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
         }
         
+        // Update Content-Type header to UTF-8 if we transformed the content
+        const updatedHeaders = { ...res.headers };
+        if (contentType !== 'other' && updatedHeaders['content-type']) {
+          const ct = Array.isArray(updatedHeaders['content-type']) 
+            ? updatedHeaders['content-type'][0] 
+            : updatedHeaders['content-type'];
+          // Replace charset with UTF-8 since we converted the content
+          updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+        }
+        
         resolve({
           statusCode: res.statusCode || 200,
           statusMessage: res.statusMessage || 'OK',
-          headers: res.headers,
+          headers: updatedHeaders,
           body: responseBody,
         });
       });

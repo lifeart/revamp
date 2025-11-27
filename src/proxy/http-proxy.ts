@@ -264,6 +264,15 @@ async function proxyRequest(
           // Copy response headers
           const headers = { ...proxyRes.headers };
           
+          // Update Content-Type header to UTF-8 if we transformed the content
+          if (contentType !== 'other' && headers['content-type']) {
+            const ct = Array.isArray(headers['content-type']) 
+              ? headers['content-type'][0] 
+              : headers['content-type'];
+            // Replace charset with UTF-8 since we converted the content
+            headers['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+          }
+          
           // Remove encoding header since we decompressed
           delete headers['content-encoding'];
           delete headers['transfer-encoding'];
