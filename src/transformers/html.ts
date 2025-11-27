@@ -536,6 +536,251 @@ const POLYFILL_SCRIPT = `
 `;
 
 /**
+ * Error overlay script for debugging on device
+ * Shows a visual overlay with error details when JavaScript errors occur
+ */
+const ERROR_OVERLAY_SCRIPT = `
+<script>
+(function() {
+  // Error overlay state
+  var errors = [];
+  var overlay = null;
+  var isVisible = false;
+  var errorCount = 0;
+  
+  // Create error overlay styles
+  var style = document.createElement('style');
+  style.textContent = 
+    '#revamp-error-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);' +
+    'color:#fff;z-index:2147483647;overflow:auto;font-family:-apple-system,BlinkMacSystemFont,monospace;' +
+    'font-size:13px;line-height:1.5;display:none;padding:0;margin:0;-webkit-overflow-scrolling:touch;}' +
+    '#revamp-error-overlay.visible{display:block;}' +
+    '#revamp-error-header{background:#e74c3c;padding:12px 16px;position:sticky;top:0;z-index:1;' +
+    'display:-webkit-flex;display:flex;-webkit-justify-content:space-between;justify-content:space-between;' +
+    '-webkit-align-items:center;align-items:center;}' +
+    '#revamp-error-header h1{margin:0;font-size:16px;font-weight:600;}' +
+    '#revamp-error-close{background:#c0392b;border:none;color:#fff;padding:8px 16px;border-radius:4px;' +
+    'font-size:14px;cursor:pointer;-webkit-tap-highlight-color:transparent;}' +
+    '#revamp-error-close:active{background:#a93226;}' +
+    '#revamp-error-list{padding:0;margin:0;list-style:none;}' +
+    '.revamp-error-item{border-bottom:1px solid #333;padding:16px;}' +
+    '.revamp-error-item:last-child{border-bottom:none;}' +
+    '.revamp-error-type{color:#e74c3c;font-weight:600;font-size:14px;margin-bottom:4px;}' +
+    '.revamp-error-message{color:#fff;font-size:14px;margin-bottom:8px;word-wrap:break-word;' +
+    'white-space:pre-wrap;background:#1a1a1a;padding:10px;border-radius:4px;overflow-x:auto;}' +
+    '.revamp-error-location{color:#3498db;font-size:12px;margin-bottom:8px;}' +
+    '.revamp-error-stack{color:#888;font-size:11px;white-space:pre-wrap;word-wrap:break-word;' +
+    'background:#111;padding:10px;border-radius:4px;overflow-x:auto;max-height:200px;overflow-y:auto;}' +
+    '.revamp-error-time{color:#666;font-size:11px;margin-top:8px;}' +
+    '#revamp-error-badge{position:fixed;bottom:20px;right:20px;background:#e74c3c;color:#fff;' +
+    'width:50px;height:50px;border-radius:50%;display:-webkit-flex;display:flex;' +
+    '-webkit-align-items:center;align-items:center;-webkit-justify-content:center;justify-content:center;' +
+    'font-weight:bold;font-size:18px;z-index:2147483646;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.4);' +
+    '-webkit-tap-highlight-color:transparent;display:none;}' +
+    '#revamp-error-badge.visible{display:-webkit-flex;display:flex;}' +
+    '#revamp-error-badge:active{-webkit-transform:scale(0.95);transform:scale(0.95);}' +
+    '#revamp-error-clear{background:#2c3e50;border:none;color:#fff;padding:8px 16px;border-radius:4px;' +
+    'font-size:14px;cursor:pointer;margin-left:8px;-webkit-tap-highlight-color:transparent;}' +
+    '#revamp-error-clear:active{background:#1a252f;}';
+  
+  // Create overlay element
+  function createOverlay() {
+    if (overlay) return;
+    
+    document.head.appendChild(style);
+    
+    overlay = document.createElement('div');
+    overlay.id = 'revamp-error-overlay';
+    overlay.innerHTML = 
+      '<div id="revamp-error-header">' +
+        '<h1>⚠️ JavaScript Errors</h1>' +
+        '<div>' +
+          '<button id="revamp-error-clear">Clear</button>' +
+          '<button id="revamp-error-close">Close</button>' +
+        '</div>' +
+      '</div>' +
+      '<ul id="revamp-error-list"></ul>';
+    document.body.appendChild(overlay);
+    
+    // Create error badge
+    var badge = document.createElement('div');
+    badge.id = 'revamp-error-badge';
+    badge.textContent = '0';
+    document.body.appendChild(badge);
+    
+    // Event listeners
+    document.getElementById('revamp-error-close').onclick = function() {
+      hideOverlay();
+    };
+    
+    document.getElementById('revamp-error-clear').onclick = function() {
+      errors = [];
+      errorCount = 0;
+      updateErrorList();
+      updateBadge();
+      hideOverlay();
+    };
+    
+    badge.onclick = function() {
+      if (isVisible) {
+        hideOverlay();
+      } else {
+        showOverlay();
+      }
+    };
+  }
+  
+  function showOverlay() {
+    if (!overlay) createOverlay();
+    overlay.className = 'visible';
+    isVisible = true;
+  }
+  
+  function hideOverlay() {
+    if (overlay) {
+      overlay.className = '';
+    }
+    isVisible = false;
+  }
+  
+  function updateBadge() {
+    var badge = document.getElementById('revamp-error-badge');
+    if (badge) {
+      badge.textContent = errorCount > 99 ? '99+' : errorCount;
+      badge.className = errorCount > 0 ? 'visible' : '';
+    }
+  }
+  
+  function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  
+  function updateErrorList() {
+    var list = document.getElementById('revamp-error-list');
+    if (!list) return;
+    
+    if (errors.length === 0) {
+      list.innerHTML = '<li class="revamp-error-item" style="color:#888;text-align:center;padding:40px;">No errors captured</li>';
+      return;
+    }
+    
+    var html = '';
+    for (var i = errors.length - 1; i >= 0; i--) {
+      var err = errors[i];
+      html += '<li class="revamp-error-item">' +
+        '<div class="revamp-error-type">' + escapeHtml(err.type) + '</div>' +
+        '<div class="revamp-error-message">' + escapeHtml(err.message) + '</div>';
+      
+      if (err.location) {
+        html += '<div class="revamp-error-location">📍 ' + escapeHtml(err.location) + '</div>';
+      }
+      
+      if (err.stack) {
+        html += '<div class="revamp-error-stack">' + escapeHtml(err.stack) + '</div>';
+      }
+      
+      html += '<div class="revamp-error-time">🕐 ' + err.time + '</div>' +
+        '</li>';
+    }
+    list.innerHTML = html;
+  }
+  
+  function formatTime() {
+    var d = new Date();
+    return d.getHours().toString().padStart(2, '0') + ':' +
+           d.getMinutes().toString().padStart(2, '0') + ':' +
+           d.getSeconds().toString().padStart(2, '0') + '.' +
+           d.getMilliseconds().toString().padStart(3, '0');
+  }
+  
+  function addError(type, message, filename, lineno, colno, stack) {
+    var location = '';
+    if (filename) {
+      location = filename;
+      if (lineno) location += ':' + lineno;
+      if (colno) location += ':' + colno;
+    }
+    
+    errors.push({
+      type: type,
+      message: message || 'Unknown error',
+      location: location,
+      stack: stack || '',
+      time: formatTime()
+    });
+    
+    // Keep only last 50 errors
+    if (errors.length > 50) {
+      errors.shift();
+    }
+    
+    errorCount++;
+    
+    if (!overlay) createOverlay();
+    updateErrorList();
+    updateBadge();
+  }
+  
+  // Global error handler
+  window.onerror = function(message, source, lineno, colno, error) {
+    var stack = '';
+    if (error && error.stack) {
+      stack = error.stack;
+    }
+    addError('Error', message, source, lineno, colno, stack);
+    return false; // Don't suppress the error
+  };
+  
+  // Unhandled promise rejection handler
+  window.onunhandledrejection = function(event) {
+    var message = 'Unhandled Promise Rejection';
+    var stack = '';
+    
+    if (event.reason) {
+      if (typeof event.reason === 'string') {
+        message = event.reason;
+      } else if (event.reason.message) {
+        message = event.reason.message;
+        stack = event.reason.stack || '';
+      } else {
+        try {
+          message = JSON.stringify(event.reason);
+        } catch (e) {
+          message = String(event.reason);
+        }
+      }
+    }
+    
+    addError('Promise Rejection', message, '', '', '', stack);
+  };
+  
+  // Console.error interceptor
+  var originalConsoleError = console.error;
+  console.error = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var message = args.map(function(arg) {
+      if (typeof arg === 'object') {
+        try {
+          return JSON.stringify(arg, null, 2);
+        } catch (e) {
+          return String(arg);
+        }
+      }
+      return String(arg);
+    }).join(' ');
+    
+    addError('Console Error', message, '', '', '', '');
+    originalConsoleError.apply(console, arguments);
+  };
+  
+  console.log('[Revamp] Error overlay initialized - errors will show a red badge');
+})();
+</script>
+`;
+
+/**
  * Common ad/tracking script patterns
  */
 const AD_SCRIPT_PATTERNS = [
@@ -685,9 +930,11 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     if (config.injectPolyfills) {
       const head = $('head');
       if (head.length > 0) {
+        head.prepend(ERROR_OVERLAY_SCRIPT);
         head.prepend(POLYFILL_SCRIPT);
       } else {
         // No head tag, try to add at the beginning
+        $.root().prepend(ERROR_OVERLAY_SCRIPT);
         $.root().prepend(POLYFILL_SCRIPT);
       }
     }
