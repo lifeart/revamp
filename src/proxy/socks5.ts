@@ -127,6 +127,16 @@ function createReply(
 // Content type detection
 type ContentType = 'js' | 'css' | 'html' | 'other';
 
+function getCharset(headers: Record<string, string | string[] | undefined>): string {
+  const contentType = (headers['content-type'] as string || '').toLowerCase();
+  // Extract charset from Content-Type header: text/html; charset=utf-8
+  const charsetMatch = contentType.match(/charset=([\w-]+)/i);
+  if (charsetMatch) {
+    return charsetMatch[1].toLowerCase();
+  }
+  return 'utf-8'; // Default to UTF-8
+}
+
 function getContentType(headers: Record<string, string | string[] | undefined>, url: string): ContentType {
   const contentType = (headers['content-type'] as string || '').toLowerCase();
   
@@ -174,7 +184,40 @@ function decompressBody(body: Buffer, encoding: string | undefined): Buffer {
   }
 }
 
-async function transformContent(body: Buffer, contentType: ContentType, url: string): Promise<Buffer> {
+// Windows-1251 (Cyrillic) character map for bytes 128-255
+const WINDOWS_1251_MAP: string[] = [
+  '\u0402', '\u0403', '\u201A', '\u0453', '\u201E', '\u2026', '\u2020', '\u2021', // 128-135
+  '\u20AC', '\u2030', '\u0409', '\u2039', '\u040A', '\u040C', '\u040B', '\u040F', // 136-143
+  '\u0452', '\u2018', '\u2019', '\u201C', '\u201D', '\u2022', '\u2013', '\u2014', // 144-151
+  '\uFFFD', '\u2122', '\u0459', '\u203A', '\u045A', '\u045C', '\u045B', '\u045F', // 152-159
+  '\u00A0', '\u040E', '\u045E', '\u0408', '\u00A4', '\u0490', '\u00A6', '\u00A7', // 160-167
+  '\u0401', '\u00A9', '\u0404', '\u00AB', '\u00AC', '\u00AD', '\u00AE', '\u0407', // 168-175
+  '\u00B0', '\u00B1', '\u0406', '\u0456', '\u0491', '\u00B5', '\u00B6', '\u00B7', // 176-183
+  '\u0451', '\u2116', '\u0454', '\u00BB', '\u0458', '\u0405', '\u0455', '\u0457', // 184-191
+  '\u0410', '\u0411', '\u0412', '\u0413', '\u0414', '\u0415', '\u0416', '\u0417', // 192-199
+  '\u0418', '\u0419', '\u041A', '\u041B', '\u041C', '\u041D', '\u041E', '\u041F', // 200-207
+  '\u0420', '\u0421', '\u0422', '\u0423', '\u0424', '\u0425', '\u0426', '\u0427', // 208-215
+  '\u0428', '\u0429', '\u042A', '\u042B', '\u042C', '\u042D', '\u042E', '\u042F', // 216-223
+  '\u0430', '\u0431', '\u0432', '\u0433', '\u0434', '\u0435', '\u0436', '\u0437', // 224-231
+  '\u0438', '\u0439', '\u043A', '\u043B', '\u043C', '\u043D', '\u043E', '\u043F', // 232-239
+  '\u0440', '\u0441', '\u0442', '\u0443', '\u0444', '\u0445', '\u0446', '\u0447', // 240-247
+  '\u0448', '\u0449', '\u044A', '\u044B', '\u044C', '\u044D', '\u044E', '\u044F', // 248-255
+];
+
+function decodeWindows1251(buffer: Buffer): string {
+  let result = '';
+  for (let i = 0; i < buffer.length; i++) {
+    const byte = buffer[i];
+    if (byte < 128) {
+      result += String.fromCharCode(byte);
+    } else {
+      result += WINDOWS_1251_MAP[byte - 128];
+    }
+  }
+  return result;
+}
+
+async function transformContent(body: Buffer, contentType: ContentType, url: string, charset: string = 'utf-8'): Promise<Buffer> {
   const config = getConfig();
   
   // Check cache first
@@ -185,7 +228,24 @@ async function transformContent(body: Buffer, contentType: ContentType, url: str
   }
   
   let transformed: string;
-  const text = body.toString('utf-8');
+  
+  // Convert buffer to string using the correct charset
+  let text: string;
+  const normalizedCharset = charset.toLowerCase().replace(/[^a-z0-9]/g, '');
+  
+  // Handle common Russian/Cyrillic encodings
+  if (normalizedCharset === 'windows1251' || normalizedCharset === 'cp1251' || normalizedCharset === 'win1251') {
+    // Windows-1251 (Cyrillic) - manually decode
+    text = decodeWindows1251(body);
+  } else if (normalizedCharset === 'koi8r' || normalizedCharset === 'koi8u') {
+    // KOI8-R/KOI8-U - try as UTF-8 first, fallback to latin1
+    text = body.toString('utf-8');
+  } else if (normalizedCharset === 'iso88591' || normalizedCharset === 'latin1') {
+    text = body.toString('latin1');
+  } else {
+    // Default to UTF-8
+    text = body.toString('utf-8');
+  }
   
   switch (contentType) {
     case 'js':
@@ -769,13 +829,16 @@ async function makeHttpsRequest(
         
         // Transform content
         const targetUrl = `https://${hostname}${path}`;
+        const rawContentType = res.headers['content-type'] || '';
+        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        const charset = getCharset(contentTypeValue);
         const contentType = getContentType(
           res.headers as Record<string, string | string[] | undefined>,
           targetUrl
         );
         
         if (contentType !== 'other') {
-          responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl));
+          responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
         }
         
         resolve({
@@ -829,13 +892,16 @@ async function makeHttpRequest(
         responseBody = Buffer.from(decompressBody(responseBody, encoding as string));
         
         const targetUrl = `http://${hostname}${path}`;
+        const rawContentType = res.headers['content-type'] || '';
+        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        const charset = getCharset(contentTypeValue);
         const contentType = getContentType(
           res.headers as Record<string, string | string[] | undefined>,
           targetUrl
         );
         
         if (contentType !== 'other') {
-          responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl));
+          responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
         }
         
         resolve({
