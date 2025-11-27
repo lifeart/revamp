@@ -11,7 +11,6 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { connect } from 'node:net';
 import { TLSSocket, connect as tlsConnect } from 'node:tls';
 import { gzipSync } from 'node:zlib';
-import { getConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import {
   // SOCKS5 Protocol
@@ -27,8 +26,6 @@ import {
   ConnectionState,
   parseAddress,
   createReply,
-  isLikelyHttpRequest,
-  createAuthResponse,
 } from './socks5-protocol.js';
 import {
   // HTTP Client
@@ -51,7 +48,6 @@ import {
   buildCorsPreflightResponse,
   buildCorsHeadersString,
 } from './shared.js';
-import type { ParsedAddress } from './types.js';
 
 // =============================================================================
 // Local Helper for Config Endpoint in SOCKS5 Context

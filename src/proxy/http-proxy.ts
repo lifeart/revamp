@@ -8,13 +8,13 @@
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
-import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
+import { createServer as createHttpsServer } from 'node:https';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { getConfig, getEffectiveConfig, type RevampConfig } from '../config/index.js';
+import { getEffectiveConfig } from '../config/index.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { needsImageTransform, transformImage } from '../transformers/image.js';
@@ -34,7 +34,6 @@ import {
   isConfigEndpoint,
   handleConfigRequest,
 } from './config-endpoint.js';
-import type { ContentType } from './types.js';
 
 // =============================================================================
 // Config Endpoint Handler
@@ -304,26 +303,6 @@ async function proxyRequest(
     // Pipe request body to proxy request
     req.pipe(proxyReq);
   });
-}
-
-// Map to store HTTPS servers for each domain
-const httpsServers = new Map<string, HttpsServer>();
-
-function getOrCreateHttpsServer(hostname: string): HttpsServer {
-  const existing = httpsServers.get(hostname);
-  if (existing) {
-    return existing;
-  }
-  
-  const certPair = generateDomainCert(hostname);
-  
-  const server = createHttpsServer({
-    key: certPair.key,
-    cert: certPair.cert,
-  });
-  
-  httpsServers.set(hostname, server);
-  return server;
 }
 
 /**

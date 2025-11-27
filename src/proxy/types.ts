@@ -3,8 +3,6 @@
  * Shared type definitions for HTTP and SOCKS5 proxies
  */
 
-import type { IncomingHttpHeaders } from 'node:http';
-
 /**
  * Content type categories for transformation decisions
  * - 'js': JavaScript content that needs Babel transformation
