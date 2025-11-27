@@ -199,7 +199,7 @@ describe('decompressBody', () => {
   it('should decompress gzip content', () => {
     const original = Buffer.from('Hello, World!');
     const compressed = gzipSync(original);
-    
+
     const result = decompressBody(compressed, 'gzip');
     expect(result.toString()).toBe('Hello, World!');
   });
@@ -207,7 +207,7 @@ describe('decompressBody', () => {
   it('should decompress brotli content', () => {
     const original = Buffer.from('Hello, World!');
     const compressed = brotliCompressSync(original);
-    
+
     const result = decompressBody(compressed, 'br');
     expect(result.toString()).toBe('Hello, World!');
   });
@@ -215,28 +215,28 @@ describe('decompressBody', () => {
   it('should decompress deflate content', () => {
     const original = Buffer.from('Hello, World!');
     const compressed = deflateSync(original);
-    
+
     const result = decompressBody(compressed, 'deflate');
     expect(result.toString()).toBe('Hello, World!');
   });
 
   it('should return unchanged for no encoding', () => {
     const original = Buffer.from('Hello, World!');
-    
+
     expect(decompressBody(original, undefined)).toBe(original);
     expect(decompressBody(original, '')).toBe(original);
   });
 
   it('should return unchanged for unknown encoding', () => {
     const original = Buffer.from('Hello, World!');
-    
+
     const result = decompressBody(original, 'unknown');
     expect(result).toBe(original);
   });
 
   it('should return original on decompression error', () => {
     const invalidGzip = Buffer.from('not gzip data');
-    
+
     const result = decompressBody(invalidGzip, 'gzip');
     expect(result).toBe(invalidGzip);
   });
@@ -360,7 +360,7 @@ describe('shouldBlockDomain', () => {
 describe('shouldBlockUrl', () => {
   const mockConfig = {
     removeTracking: true,
-    trackingUrls: ['/analytics.js', '/gtag/js', 'utm_source='],
+    trackingUrls: ['/analytics.js', '/gtag/js', 'utm_source=', '/metrics'],
   } as unknown as RevampConfig;
 
   it('should block URLs matching tracking patterns', () => {
@@ -383,6 +383,15 @@ describe('shouldBlockUrl', () => {
     const configNoTracking = { ...mockConfig, removeTracking: false };
     expect(shouldBlockUrl('https://example.com/analytics.js', configNoTracking)).toBe(false);
   });
+
+  it('should never block internal Revamp API endpoints', () => {
+    // Even though /metrics is in the block list, /__revamp__/metrics should NOT be blocked
+    expect(shouldBlockUrl('https://example.com/__revamp__/metrics', mockConfig)).toBe(false);
+    expect(shouldBlockUrl('https://2ip.ru/__revamp__/metrics', mockConfig)).toBe(false);
+    expect(shouldBlockUrl('https://example.com/__revamp__/metrics/json', mockConfig)).toBe(false);
+    expect(shouldBlockUrl('https://example.com/__revamp__/config', mockConfig)).toBe(false);
+    expect(shouldBlockUrl('https://example.com/__revamp__/pac/socks5', mockConfig)).toBe(false);
+  });
 });
 
 describe('SPOOFED_USER_AGENT', () => {
@@ -401,17 +410,17 @@ describe('spoofUserAgent', () => {
     const headers: Record<string, string | string[] | undefined> = {
       'user-agent': 'Safari/9.0',
     };
-    
+
     spoofUserAgent(headers, mockConfig);
-    
+
     expect(headers['user-agent']).toBe(SPOOFED_USER_AGENT);
   });
 
   it('should not add user-agent if not present', () => {
     const headers: Record<string, string | string[] | undefined> = {};
-    
+
     spoofUserAgent(headers, mockConfig);
-    
+
     expect(headers['user-agent']).toBeUndefined();
   });
 
@@ -420,9 +429,9 @@ describe('spoofUserAgent', () => {
     const headers: Record<string, string | string[] | undefined> = {
       'user-agent': 'Safari/9.0',
     };
-    
+
     spoofUserAgent(headers, configNoSpoof);
-    
+
     expect(headers['user-agent']).toBe('Safari/9.0');
   });
 });
@@ -430,7 +439,7 @@ describe('spoofUserAgent', () => {
 describe('buildCorsHeaders', () => {
   it('should return CORS headers with default origin', () => {
     const headers = buildCorsHeaders();
-    
+
     expect(headers['access-control-allow-origin']).toBe('*');
     expect(headers['access-control-allow-credentials']).toBe('true');
     expect(headers['access-control-allow-methods']).toBe(CORS_ALLOWED_METHODS);
@@ -440,7 +449,7 @@ describe('buildCorsHeaders', () => {
 
   it('should use custom origin', () => {
     const headers = buildCorsHeaders('https://example.com');
-    
+
     expect(headers['access-control-allow-origin']).toBe('https://example.com');
   });
 });
@@ -448,7 +457,7 @@ describe('buildCorsHeaders', () => {
 describe('buildCorsPreflightResponse', () => {
   it('should build a 204 No Content response', () => {
     const response = buildCorsPreflightResponse();
-    
+
     expect(response).toContain('HTTP/1.1 204 No Content\r\n');
     expect(response).toContain('Access-Control-Allow-Origin: *\r\n');
     expect(response).toContain('Access-Control-Max-Age: 86400\r\n');
@@ -458,7 +467,7 @@ describe('buildCorsPreflightResponse', () => {
 
   it('should use custom origin', () => {
     const response = buildCorsPreflightResponse('https://example.com');
-    
+
     expect(response).toContain('Access-Control-Allow-Origin: https://example.com\r\n');
   });
 });
@@ -466,7 +475,7 @@ describe('buildCorsPreflightResponse', () => {
 describe('buildCorsHeadersString', () => {
   it('should build CORS headers as string', () => {
     const headers = buildCorsHeadersString();
-    
+
     expect(headers).toContain('Access-Control-Allow-Origin: *\r\n');
     expect(headers).toContain('Access-Control-Allow-Credentials: true\r\n');
     expect(headers).toContain(`Access-Control-Allow-Methods: ${CORS_ALLOWED_METHODS}\r\n`);
@@ -484,9 +493,9 @@ describe('removeCorsHeaders', () => {
       'access-control-allow-credentials': 'true',
       'access-control-max-age': '86400',
     };
-    
+
     removeCorsHeaders(headers);
-    
+
     expect(headers['content-type']).toBe('text/html');
     expect(headers['access-control-allow-origin']).toBeUndefined();
     expect(headers['access-control-allow-methods']).toBeUndefined();
@@ -506,9 +515,9 @@ describe('filterResponseHeaders', () => {
       'connection': 'keep-alive',
       'x-custom': 'value',
     };
-    
+
     const filtered = filterResponseHeaders(headers);
-    
+
     expect(filtered['content-type']).toBe('text/html');
     expect(filtered['x-custom']).toBe('value');
     expect(filtered['transfer-encoding']).toBeUndefined();
@@ -521,9 +530,9 @@ describe('filterResponseHeaders', () => {
       'Content-Type': 'text/html',
       'X-Custom-Header': 'value',
     };
-    
+
     const filtered = filterResponseHeaders(headers);
-    
+
     expect(filtered['content-type']).toBe('text/html');
     expect(filtered['x-custom-header']).toBe('value');
   });
@@ -535,9 +544,9 @@ describe('filterResponseHeaders', () => {
       'x-skip-me': 'should be skipped',
       'x-keep-me': 'should be kept',
     };
-    
+
     const filtered = filterResponseHeaders(headers, customSkip);
-    
+
     expect(filtered['content-type']).toBe('text/html');
     expect(filtered['x-keep-me']).toBe('should be kept');
     expect(filtered['x-skip-me']).toBeUndefined();

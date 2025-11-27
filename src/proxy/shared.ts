@@ -1,6 +1,6 @@
 /**
  * Shared Utilities for HTTP and SOCKS5 Proxies
- * 
+ *
  * This module provides common functionality used by both proxy implementations:
  * - CORS header management
  * - Content type detection and transformation
@@ -8,7 +8,7 @@
  * - Charset handling (including Windows-1251 for Cyrillic)
  * - Domain/URL blocking for ads and tracking
  * - Response header filtering
- * 
+ *
  * @module proxy/shared
  */
 
@@ -51,7 +51,7 @@ export const CORS_EXPOSE_HEADERS = 'Content-Type, Content-Length, Content-Dispos
  */
 export const SKIP_RESPONSE_HEADERS = new Set([
   'transfer-encoding',
-  'content-encoding', 
+  'content-encoding',
   'content-length',
   'connection',
   'keep-alive',
@@ -93,7 +93,7 @@ const COMPRESSIBLE_TYPES = [
 
 /**
  * Check if content type should be gzip compressed
- * 
+ *
  * @param contentType - Content-Type header value
  * @returns true if content should be compressed
  */
@@ -104,7 +104,7 @@ export function shouldCompress(contentType: string): boolean {
 
 /**
  * Check if client accepts gzip encoding
- * 
+ *
  * @param acceptEncoding - Accept-Encoding header value
  * @returns true if client accepts gzip
  */
@@ -118,7 +118,7 @@ export function acceptsGzip(acceptEncoding: string | undefined): boolean {
 
 /**
  * Extract charset from Content-Type header
- * 
+ *
  * @param contentType - Content-Type header value
  * @returns Charset name (defaults to 'utf-8')
  */
@@ -174,10 +174,10 @@ export function decodeWindows1251(buffer: Buffer): string {
  */
 export function getContentType(headers: Record<string, string | string[] | undefined>, url: string): ContentType {
   const contentType = (headers['content-type'] as string || '').toLowerCase();
-  
+
   // Check for binary/non-text content types first - these should never be transformed
-  if (contentType.includes('image/') || 
-      contentType.includes('video/') || 
+  if (contentType.includes('image/') ||
+      contentType.includes('video/') ||
       contentType.includes('audio/') ||
       contentType.includes('font/') ||
       contentType.includes('application/octet-stream') ||
@@ -186,7 +186,7 @@ export function getContentType(headers: Record<string, string | string[] | undef
       contentType.includes('application/gzip')) {
     return 'other';
   }
-  
+
   if (contentType.includes('javascript') || contentType.includes('ecmascript')) {
     return 'js';
   }
@@ -196,12 +196,12 @@ export function getContentType(headers: Record<string, string | string[] | undef
   if (contentType.includes('text/html')) {
     return 'html';
   }
-  
+
   // If we have a content-type but it's not something we transform, skip it
   if (contentType && !contentType.includes('text/')) {
     return 'other';
   }
-  
+
   // Fallback to URL-based detection only if no content-type was provided
   if (!contentType) {
     const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
@@ -215,7 +215,7 @@ export function getContentType(headers: Record<string, string | string[] | undef
       return 'html';
     }
   }
-  
+
   return 'other';
 }
 
@@ -224,7 +224,7 @@ export function getContentType(headers: Record<string, string | string[] | undef
  */
 export function decompressBody(body: Buffer, encoding: string | undefined): Buffer {
   if (!encoding) return body;
-  
+
   try {
     switch (encoding.toLowerCase()) {
       case 'gzip':
@@ -258,7 +258,7 @@ const BINARY_SIGNATURES = [
  */
 export function isBinaryContent(buffer: Buffer): boolean {
   if (buffer.length < 4) return false;
-  
+
   for (const sig of BINARY_SIGNATURES) {
     let match = true;
     for (let i = 0; i < sig.length && i < buffer.length; i++) {
@@ -269,7 +269,7 @@ export function isBinaryContent(buffer: Buffer): boolean {
     }
     if (match) return true;
   }
-  
+
   return false;
 }
 
@@ -278,14 +278,14 @@ export function isBinaryContent(buffer: Buffer): boolean {
  */
 export function decodeBufferToString(body: Buffer, charset: string): string {
   const normalizedCharset = charset.toLowerCase().replace(/[^a-z0-9]/g, '');
-  
+
   // Handle common Russian/Cyrillic encodings
   if (normalizedCharset === 'windows1251' || normalizedCharset === 'cp1251' || normalizedCharset === 'win1251') {
     return decodeWindows1251(body);
   } else if (normalizedCharset === 'iso88591' || normalizedCharset === 'latin1') {
     return body.toString('latin1');
   }
-  
+
   // Default to UTF-8
   return body.toString('utf-8');
 }
@@ -294,20 +294,20 @@ export function decodeBufferToString(body: Buffer, charset: string): string {
  * Transform content (JS, CSS, HTML) based on type and config
  */
 export async function transformContent(
-  body: Buffer, 
-  contentType: ContentType, 
-  url: string, 
+  body: Buffer,
+  contentType: ContentType,
+  url: string,
   charset: string = 'utf-8',
   config?: RevampConfig
 ): Promise<Buffer> {
   const effectiveConfig = config || getConfig();
-  
+
   // Safety check: don't transform binary content even if content-type was wrong
   if (isBinaryContent(body)) {
     console.log(`⏭️ Skipping binary content: ${url}`);
     return body;
   }
-  
+
   // Check cache first (only if cache is enabled in config)
   if (effectiveConfig.cacheEnabled) {
     const cached = await getCached(url, contentType);
@@ -316,10 +316,10 @@ export async function transformContent(
       return cached;
     }
   }
-  
+
   const text = decodeBufferToString(body, charset);
   let transformed: string;
-  
+
   switch (contentType) {
     case 'js':
       if (effectiveConfig.transformJs) {
@@ -348,14 +348,14 @@ export async function transformContent(
     default:
       return body;
   }
-  
+
   const result = Buffer.from(transformed, 'utf-8');
-  
+
   // Cache the result (only if cache is enabled)
   if (effectiveConfig.cacheEnabled) {
     await setCache(url, contentType, result);
   }
-  
+
   return result;
 }
 
@@ -364,7 +364,7 @@ export async function transformContent(
  */
 export function shouldBlockDomain(hostname: string, config?: RevampConfig): boolean {
   const effectiveConfig = config || getConfig();
-  
+
   // Check ad domains
   if (effectiveConfig.removeAds) {
     for (const domain of effectiveConfig.adDomains) {
@@ -373,7 +373,7 @@ export function shouldBlockDomain(hostname: string, config?: RevampConfig): bool
       }
     }
   }
-  
+
   // Check tracking domains
   if (effectiveConfig.removeTracking) {
     for (const domain of effectiveConfig.trackingDomains) {
@@ -382,7 +382,7 @@ export function shouldBlockDomain(hostname: string, config?: RevampConfig): bool
       }
     }
   }
-  
+
   return false;
 }
 
@@ -391,7 +391,12 @@ export function shouldBlockDomain(hostname: string, config?: RevampConfig): bool
  */
 export function shouldBlockUrl(url: string, config?: RevampConfig): boolean {
   const effectiveConfig = config || getConfig();
-  
+
+  // Never block internal Revamp API endpoints
+  if (url.includes('/__revamp__/')) {
+    return false;
+  }
+
   // Check tracking URL patterns
   if (effectiveConfig.removeTracking) {
     const urlLower = url.toLowerCase();
@@ -401,7 +406,7 @@ export function shouldBlockUrl(url: string, config?: RevampConfig): boolean {
       }
     }
   }
-  
+
   return false;
 }
 
