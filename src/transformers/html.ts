@@ -111,6 +111,7 @@ const POLYFILL_SCRIPT = `
  * Common ad/tracking script patterns
  */
 const AD_SCRIPT_PATTERNS = [
+  /atob/i,
   /googletag/i,
   /doubleclick/i,
   /googleadservices/i,
@@ -129,6 +130,7 @@ const AD_SCRIPT_PATTERNS = [
 const TRACKING_SCRIPT_PATTERNS = [
   /google-analytics\.com/i,
   /googletagmanager\.com/i,
+  /metrika\/tag\.js/i,
   /gtag\(/i,
   /gtm\.js/i,
   /analytics\.js/i,
