@@ -24,6 +24,25 @@ const memoryCache = new Map<string, MemoryCacheEntry>();
 const MAX_MEMORY_CACHE_SIZE = 50 * 1024 * 1024; // 50MB
 let currentMemorySize = 0;
 
+// Domains that should never be cached (e.g., iCloud for authentication/sync)
+const NO_CACHE_DOMAINS = [
+  'icloud.com',
+  'apple.com',
+  'icloud-content.com',
+  'me.com',
+];
+
+function shouldSkipCache(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return NO_CACHE_DOMAINS.some(domain => 
+      hostname === domain || hostname.endsWith('.' + domain)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function getCacheKey(url: string, contentType: string): string {
   const hash = createHash('sha256').update(`${url}:${contentType}`).digest('hex');
   return hash;
@@ -57,6 +76,7 @@ function evictOldestFromMemory(): void {
 export async function getCached(url: string, contentType: string): Promise<Buffer | null> {
   const config = getConfig();
   if (!config.cacheEnabled) return null;
+  if (shouldSkipCache(url)) return null;
   
   const key = getCacheKey(url, contentType);
   
@@ -118,6 +138,7 @@ export async function getCached(url: string, contentType: string): Promise<Buffe
 export async function setCache(url: string, contentType: string, data: Buffer): Promise<void> {
   const config = getConfig();
   if (!config.cacheEnabled) return;
+  if (shouldSkipCache(url)) return;
   
   ensureCacheDir();
   
