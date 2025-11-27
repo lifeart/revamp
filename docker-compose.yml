@@ -1,0 +1,41 @@
+services:
+  revamp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "1080:1080"   # SOCKS5 proxy
+      - "8080:8080"   # HTTP proxy
+      - "8888:8888"   # Captive portal
+    volumes:
+      # Persist certificates
+      - revamp-certs:/app/.revamp-certs
+      # Persist cache
+      - revamp-cache:/app/.revamp-cache
+      # Mount custom blocked domains config
+      - ./config:/app/config:ro
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+
+  # Development service with hot-reload
+  revamp-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "1080:1080"
+      - "8080:8080"
+      - "8888:8888"
+    volumes:
+      # Mount source for hot-reload
+      - ./src:/app/src:ro
+      - ./config:/app/config:ro
+      - revamp-certs:/app/.revamp-certs
+      - revamp-cache:/app/.revamp-cache
+    profiles:
+      - dev
+
+volumes:
+  revamp-certs:
+  revamp-cache:

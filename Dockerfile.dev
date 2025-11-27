@@ -1,0 +1,30 @@
+# Revamp Development Environment
+# Includes all development dependencies and hot-reload
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Copy package files
+COPY package.json pnpm-lock.yaml ./
+
+# Install all dependencies (including dev - tsx is included)
+RUN pnpm install --frozen-lockfile
+
+# Copy source files
+COPY . .
+
+# Create directories for certs and cache
+RUN mkdir -p .revamp-certs .revamp-cache
+
+# Expose ports
+EXPOSE 1080 8080 8888
+
+# Set environment
+ENV NODE_ENV=development
+
+# Run with hot-reload
+CMD ["pnpm", "dev"]

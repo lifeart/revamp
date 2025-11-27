@@ -6,6 +6,8 @@
 import postcss, { type Plugin } from 'postcss';
 import postcssPresetEnv from 'postcss-preset-env';
 import { getConfig } from '../config/index.js';
+import { hasGridProperties, transformGridToFlexbox } from './css-grid-fallback.js';
+import { hasDarkModeQueries, stripAllDarkModeCSS } from './dark-mode-strip.js';
 
 // PostCSS processor instance (cached)
 let processor: ReturnType<typeof postcss> | null = null;
@@ -19,7 +21,7 @@ const webkitFlexGridPlugin: Plugin = {
   Declaration(decl) {
     const prop = decl.prop;
     const value = decl.value;
-    
+
     // Flexbox properties that need -webkit- prefix for Safari 9
     const flexboxProps: Record<string, string | undefined> = {
       'flex': '-webkit-flex',
@@ -35,14 +37,14 @@ const webkitFlexGridPlugin: Plugin = {
       'align-content': '-webkit-align-content',
       'order': '-webkit-order',
     };
-    
+
     // Add -webkit- prefix for flexbox properties
-    if (flexboxProps[prop] && !decl.parent?.some(node => 
+    if (flexboxProps[prop] && !decl.parent?.some(node =>
       node.type === 'decl' && (node as typeof decl).prop === flexboxProps[prop]
     )) {
       decl.cloneBefore({ prop: flexboxProps[prop]!, value });
     }
-    
+
     // Handle display: flex and display: grid
     if (prop === 'display') {
       if (value === 'flex' && !decl.parent?.some(node =>
@@ -56,19 +58,19 @@ const webkitFlexGridPlugin: Plugin = {
         decl.cloneBefore({ prop: 'display', value: '-webkit-inline-flex' });
       }
     }
-    
+
     // Gap property fallback for flexbox (Safari 9 doesn't support gap in flexbox)
     // We can't perfectly polyfill this, but we can add margin-based fallback hint
     if (prop === 'gap' || prop === 'row-gap' || prop === 'column-gap') {
       // Check if parent uses flexbox
       const parentRule = decl.parent;
       if (parentRule) {
-        const isFlexbox = parentRule.some(node => 
-          node.type === 'decl' && 
-          (node as typeof decl).prop === 'display' && 
+        const isFlexbox = parentRule.some(node =>
+          node.type === 'decl' &&
+          (node as typeof decl).prop === 'display' &&
           ((node as typeof decl).value === 'flex' || (node as typeof decl).value === '-webkit-flex')
         );
-        
+
         // For grid, autoprefixer handles it. For flexbox, gap isn't supported in Safari 9
         // Just ensure the property exists (PostCSS preset-env should handle this)
       }
@@ -82,9 +84,9 @@ function getProcessor(): ReturnType<typeof postcss> {
   if (processor) {
     return processor;
   }
-  
+
   const config = getConfig();
-  
+
   processor = postcss([
     // First apply our webkit flexbox/grid prefixes
     webkitFlexGridPlugin,
@@ -121,7 +123,7 @@ function getProcessor(): ReturnType<typeof postcss> {
       },
     }),
   ]);
-  
+
   return processor;
 }
 
@@ -130,20 +132,35 @@ function getProcessor(): ReturnType<typeof postcss> {
  */
 export async function transformCss(code: string, filename?: string): Promise<string> {
   const config = getConfig();
-  
+
   if (!config.transformCss) {
     return code;
   }
-  
+
   try {
+    let transformedCode = code;
+
+    // Strip dark mode CSS if configured
+    if (hasDarkModeQueries(transformedCode)) {
+      transformedCode = stripAllDarkModeCSS(transformedCode, {
+        keepScheme: 'light',
+        extractPreferredStyles: true
+      });
+    }
+
+    // Add flexbox fallbacks for CSS Grid
+    if (hasGridProperties(transformedCode)) {
+      transformedCode = transformGridToFlexbox(transformedCode);
+    }
+
     const proc = getProcessor();
-    const result = await proc.process(code, {
+    const result = await proc.process(transformedCode, {
       from: filename || 'input.css',
       to: filename || 'output.css',
       // Don't generate source maps for transformed content
       map: false,
     });
-    
+
     return result.css;
   } catch (error) {
     console.error('❌ PostCSS transform error:', error instanceof Error ? error.message : error);
@@ -203,7 +220,7 @@ export function needsCssTransform(code: string): boolean {
     /place-content:/,         // shorthand for align-content + justify-content
     /place-self:/,            // shorthand for align-self + justify-self
   ];
-  
+
   return modernPatterns.some(pattern => pattern.test(code));
 }
 

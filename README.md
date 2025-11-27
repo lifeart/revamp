@@ -10,6 +10,7 @@ Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern we
 
 ## ✨ Features
 
+### Core Proxy Features
 - **🔧 JavaScript Transpilation** — Babel transforms modern JS (optional chaining, nullish coalescing, async/await) to ES5/ES6
 - **🎨 CSS Transformation** — PostCSS adds vendor prefixes and transforms modern CSS features
 - **📄 HTML Modification** — Injects polyfills and can remove ads/tracking scripts
@@ -20,6 +21,29 @@ Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern we
 - **🎭 User-Agent Spoofing** — Bypass browser detection (optional)
 - **🚫 Ad & Tracking Removal** — Block common ad networks and trackers
 - **📱 Easy Setup** — Built-in captive portal for certificate installation
+
+### Polyfills for Legacy Browsers
+- **Promise.finally, Promise.allSettled** — Modern Promise methods
+- **fetch API** — Full fetch/Headers/Response polyfill
+- **IntersectionObserver** — Lazy loading support
+- **ResizeObserver** — Element resize detection
+- **MutationObserver** — DOM mutation detection (enhanced)
+- **WeakMap/WeakSet** — Weak reference collections
+- **Web Components** — Custom Elements v1 and basic Shadow DOM
+- **Intl API** — Basic DateTimeFormat and NumberFormat
+- **Service Worker Bypass** — Disables SW registration for compatibility
+- **Lazy Loading** — Polyfill for `loading="lazy"` attribute
+
+### CSS Enhancements
+- **CSS Grid → Flexbox Fallback** — Auto-generate flexbox fallbacks for CSS Grid
+- **Dark Mode Stripping** — Remove `prefers-color-scheme` media queries
+- **Vendor Prefixes** — Automatic -webkit- prefixes for Safari 9
+
+### DevOps & Monitoring
+- **📊 Metrics Dashboard** — Real-time web UI at `/__revamp__/metrics`
+- **🐳 Docker Support** — Production and development Dockerfiles
+- **📋 PAC File Generation** — Auto-generate proxy config files
+- **⚙️ External Config** — JSON config for blocked domains
 
 ## 🚀 Quick Start
 
@@ -38,6 +62,20 @@ pnpm start
 
 # Or in development mode (auto-reload)
 pnpm dev
+```
+
+### Docker Installation
+
+```bash
+# Build and run with Docker
+docker build -t revamp .
+docker run -p 1080:1080 -p 8080:8080 -p 8888:8888 revamp
+
+# Or use Docker Compose
+docker-compose up -d
+
+# Development mode with hot-reload
+docker-compose --profile dev up revamp-dev
 ```
 
 ### Device Setup
@@ -166,17 +204,55 @@ src/
 │   ├── socks5-protocol.ts # SOCKS5 protocol implementation
 │   ├── http-client.ts    # HTTP request utilities
 │   ├── shared.ts         # Shared utilities
+│   ├── revamp-api.ts     # API endpoint handler
 │   └── types.ts          # Type definitions
 ├── transformers/         # Content transformation
 │   ├── js.ts             # JavaScript (Babel)
 │   ├── css.ts            # CSS (PostCSS)
+│   ├── css-grid-fallback.ts # CSS Grid → Flexbox
+│   ├── dark-mode-strip.ts # Dark mode CSS removal
 │   ├── html.ts           # HTML (Cheerio)
 │   ├── image.ts          # Image optimization
-│   └── polyfills/        # Polyfill scripts
+│   └── polyfills/        # 25+ polyfill scripts
+├── metrics/              # Metrics collection
+├── pac/                  # PAC file generation
 ├── cache/                # Caching system
 ├── certs/                # Certificate generation
 └── portal/               # Captive portal
 ```
+
+## 🌐 API Endpoints
+
+All API endpoints are available on any proxied domain at `/__revamp__/*`:
+
+| Endpoint | Description |
+|----------|-------------|
+| `/__revamp__/config` | GET/POST/DELETE proxy configuration |
+| `/__revamp__/metrics` | HTML metrics dashboard |
+| `/__revamp__/metrics/json` | JSON metrics data |
+| `/__revamp__/pac/socks5` | SOCKS5 PAC file download |
+| `/__revamp__/pac/http` | HTTP PAC file download |
+| `/__revamp__/pac/combined` | Combined PAC file download |
+
+### Metrics Dashboard
+
+Access real-time statistics at `http://any-proxied-site/__revamp__/metrics`:
+- Uptime and connection stats
+- Cache hit rate
+- Transformation counts (JS/CSS/HTML/Images)
+- Bandwidth usage
+- Blocked requests count
+
+### PAC Files
+
+PAC (Proxy Auto-Config) files make device setup easier:
+
+```bash
+# Get PAC file URL for iOS configuration
+http://YOUR_COMPUTER_IP:8888/__revamp__/pac/socks5
+```
+
+Configure iOS: **Settings → Wi-Fi → [Network] → Configure Proxy → Automatic** → Enter PAC URL
 
 ## 🧪 Testing
 
@@ -189,6 +265,9 @@ pnpm test:unit:run    # Single run
 pnpm test             # Run all
 pnpm test:headed      # With browser
 pnpm test:ui          # Interactive mode
+
+# Type checking
+pnpm typecheck
 ```
 
 ## 🔧 Troubleshooting

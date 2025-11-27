@@ -29,6 +29,14 @@ export { userAgentPolyfill } from './user-agent.js';
 export { esModulesPolyfill } from './es-modules.js';
 export { readableStreamPolyfill } from './readable-stream.js';
 
+// New polyfills
+export { mutationObserverPolyfill } from './mutation-observer.js';
+export { weakCollectionsPolyfill } from './weak-collections.js';
+export { intlPolyfill } from './intl.js';
+export { serviceWorkerBypassPolyfill } from './service-worker-bypass.js';
+export { webComponentsPolyfill } from './web-components.js';
+export { lazyLoadPolyfill } from './lazy-load.js';
+
 // Debug tools
 export { errorOverlayScript } from './error-overlay.js';
 export { configOverlayScript } from './config-overlay.js';
@@ -56,6 +64,12 @@ import { resizeObserverPolyfill } from './resize-observer.js';
 import { userAgentPolyfill } from './user-agent.js';
 import { esModulesPolyfill } from './es-modules.js';
 import { readableStreamPolyfill } from './readable-stream.js';
+import { mutationObserverPolyfill } from './mutation-observer.js';
+import { weakCollectionsPolyfill } from './weak-collections.js';
+import { intlPolyfill } from './intl.js';
+import { serviceWorkerBypassPolyfill } from './service-worker-bypass.js';
+import { webComponentsPolyfill } from './web-components.js';
+import { lazyLoadPolyfill } from './lazy-load.js';
 import { errorOverlayScript } from './error-overlay.js';
 import { configOverlayScript } from './config-overlay.js';
 
@@ -66,9 +80,10 @@ export function buildPolyfillScript(): string {
   const polyfills = [
     // ES Modules compatibility (run first to handle nomodule scripts)
     esModulesPolyfill,
-    
+
     // Core ES6+ polyfills
     symbolPolyfill,
+    weakCollectionsPolyfill,
     arrayPolyfill,
     stringPolyfill,
     objectPolyfill,
@@ -76,10 +91,12 @@ export function buildPolyfillScript(): string {
     mathPolyfill,
     promisePolyfill,
     globalThisPolyfill,
-    
+    intlPolyfill,
+
     // Web API polyfills
     performancePolyfill,
     bigIntPolyfill,
+    mutationObserverPolyfill,
     elementPolyfill,
     fetchPolyfill,
     urlSearchParamsPolyfill,
@@ -90,6 +107,11 @@ export function buildPolyfillScript(): string {
     intersectionObserverPolyfill,
     resizeObserverPolyfill,
     readableStreamPolyfill,
+
+    // Modern API compatibility
+    serviceWorkerBypassPolyfill,
+    webComponentsPolyfill,
+    lazyLoadPolyfill,
   ];
 
   return `
@@ -121,7 +143,7 @@ export function getConfigOverlayScript(): string {
 /**
  * Types for custom polyfill loading
  */
-export type PolyfillName = 
+export type PolyfillName =
   | 'symbol'
   | 'array'
   | 'string'
@@ -143,7 +165,13 @@ export type PolyfillName =
   | 'resizeObserver'
   | 'userAgent'
   | 'esModules'
-  | 'readableStream';
+  | 'readableStream'
+  | 'mutationObserver'
+  | 'weakCollections'
+  | 'intl'
+  | 'serviceWorkerBypass'
+  | 'webComponents'
+  | 'lazyLoad';
 
 const polyfillMap: Record<PolyfillName, string> = {
   symbol: symbolPolyfill,
@@ -168,6 +196,12 @@ const polyfillMap: Record<PolyfillName, string> = {
   userAgent: userAgentPolyfill,
   esModules: esModulesPolyfill,
   readableStream: readableStreamPolyfill,
+  mutationObserver: mutationObserverPolyfill,
+  weakCollections: weakCollectionsPolyfill,
+  intl: intlPolyfill,
+  serviceWorkerBypass: serviceWorkerBypassPolyfill,
+  webComponents: webComponentsPolyfill,
+  lazyLoad: lazyLoadPolyfill,
 };
 
 /**
