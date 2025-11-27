@@ -407,6 +407,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   
   // Handle HTTPS with TLS interception
   function handleHttpsConnection(clientSocket: Socket, hostname: string, addressType: number): void {
+    console.log(`🔒 Starting TLS interception for ${hostname}`);
     // First, tell the client the connection is established
     clientSocket.write(createReply(REPLY_SUCCESS, addressType));
     
@@ -493,7 +494,9 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       
       // Make request to real server
       try {
+        console.log(`📤 Fetching: ${method} ${targetUrl}`);
         const response = await makeHttpsRequest(method, hostname, path, headers, requestBody);
+        console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
         
         // Build response headers, filtering out problematic ones
         const skipHeaders = new Set([
@@ -508,6 +511,13 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'te',
           'trailers',
           'upgrade',
+          // Remove original CORS headers so we can replace with permissive ones
+          'access-control-allow-origin',
+          'access-control-allow-methods',
+          'access-control-allow-headers',
+          'access-control-expose-headers',
+          'access-control-allow-credentials',
+          'access-control-max-age',
         ]);
         
         // Send response back to client
@@ -535,8 +545,17 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         tlsServer.write(response.body);
         tlsServer.end();
       } catch (err) {
-        console.error(`❌ HTTPS request error:`, err);
-        tlsServer.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\n\r\nBad Gateway');
+        const error = err as Error;
+        console.error(`❌ HTTPS request error for ${targetUrl}:`, error.message);
+        const errorResponse = 
+          'HTTP/1.1 502 Bad Gateway\r\n' +
+          'Access-Control-Allow-Origin: *\r\n' +
+          'Content-Type: text/plain\r\n' +
+          'Content-Length: 11\r\n' +
+          'Connection: close\r\n' +
+          '\r\n' +
+          'Bad Gateway';
+        tlsServer.write(errorResponse);
         tlsServer.end();
       }
     });
@@ -548,9 +567,10 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           err.message.includes('certificate') ||
           err.message.includes('handshake')) {
         // These are expected when client hasn't installed CA cert
+        console.log(`⚠️ TLS error for ${hostname}: ${err.message}`);
         return;
       }
-      console.error(`❌ TLS server error: ${err.message}`);
+      console.error(`❌ TLS server error for ${hostname}: ${err.message}`);
     });
     
     tlsServer.on('close', () => {
@@ -635,6 +655,13 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'te',
           'trailers',
           'upgrade',
+          // Remove original CORS headers so we can replace with permissive ones
+          'access-control-allow-origin',
+          'access-control-allow-methods',
+          'access-control-allow-headers',
+          'access-control-expose-headers',
+          'access-control-allow-credentials',
+          'access-control-max-age',
         ]);
         
         let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;

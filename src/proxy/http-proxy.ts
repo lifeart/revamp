@@ -223,7 +223,15 @@ async function proxyRequest(
           delete headers['connection'];
           delete headers['keep-alive'];
           
-          // Add CORS headers to allow cross-origin requests
+          // Remove original CORS headers so we can replace with permissive ones
+          delete headers['access-control-allow-origin'];
+          delete headers['access-control-allow-methods'];
+          delete headers['access-control-allow-headers'];
+          delete headers['access-control-expose-headers'];
+          delete headers['access-control-allow-credentials'];
+          delete headers['access-control-max-age'];
+          
+          // Add permissive CORS headers to allow cross-origin requests
           headers['access-control-allow-origin'] = '*';
           headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS, HEAD';
           headers['access-control-allow-headers'] = '*';
