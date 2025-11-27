@@ -9,7 +9,7 @@ import { TLSSocket, type TLSSocket as TLSSocketType, connect as tlsConnect } fro
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
-import { getConfig } from '../config/index.js';
+import { getConfig, getClientConfig, setClientConfig, resetClientConfig, type ClientConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { getCached, setCache, markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
@@ -42,6 +42,9 @@ const REPLY_NETWORK_UNREACHABLE = 0x03;
 // const REPLY_TTL_EXPIRED = 0x06;
 const REPLY_COMMAND_NOT_SUPPORTED = 0x07;
 const REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08;
+
+// Config API endpoint path
+const CONFIG_ENDPOINT = '/__revamp__/config';
 
 interface ParsedAddress {
   host: string;
@@ -400,6 +403,97 @@ function shouldBlockUrl(url: string): boolean {
   return false;
 }
 
+/**
+ * Handle config API endpoint request in SOCKS5 context
+ * Returns response string if handled, null otherwise
+ */
+function handleConfigEndpoint(method: string, path: string, body: string): string | null {
+  // Check if this is a config endpoint request
+  if (!path.startsWith(CONFIG_ENDPOINT)) {
+    return null;
+  }
+  
+  console.log(`⚙️ Config endpoint: ${method} ${path}`);
+  
+  // Handle preflight
+  if (method === 'OPTIONS') {
+    return 'HTTP/1.1 204 No Content\r\n' +
+      'Access-Control-Allow-Origin: *\r\n' +
+      'Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n' +
+      'Access-Control-Allow-Headers: Content-Type\r\n' +
+      'Cache-Control: no-store, no-cache, must-revalidate\r\n' +
+      'Connection: close\r\n' +
+      '\r\n';
+  }
+  
+  const headers = 
+    'Access-Control-Allow-Origin: *\r\n' +
+    'Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n' +
+    'Access-Control-Allow-Headers: Content-Type\r\n' +
+    'Content-Type: application/json\r\n' +
+    'Cache-Control: no-store, no-cache, must-revalidate\r\n' +
+    'Pragma: no-cache\r\n';
+  
+  // GET - return current config
+  if (method === 'GET') {
+    const config = getClientConfig();
+    const responseBody = JSON.stringify({ success: true, config });
+    console.log(`⚙️ Config GET - returning:`, JSON.stringify(config));
+    return 'HTTP/1.1 200 OK\r\n' +
+      headers +
+      `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
+      'Connection: close\r\n' +
+      '\r\n' +
+      responseBody;
+  }
+  
+  // POST - update config
+  if (method === 'POST') {
+    try {
+      const newConfig = JSON.parse(body) as ClientConfig;
+      console.log(`⚙️ Config POST - saving:`, JSON.stringify(newConfig));
+      setClientConfig(newConfig);
+      const responseBody = JSON.stringify({ success: true, config: getClientConfig() });
+      return 'HTTP/1.1 200 OK\r\n' +
+        headers +
+        `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
+        'Connection: close\r\n' +
+        '\r\n' +
+        responseBody;
+    } catch (err) {
+      const responseBody = JSON.stringify({ success: false, error: 'Invalid JSON' });
+      return 'HTTP/1.1 400 Bad Request\r\n' +
+        headers +
+        `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
+        'Connection: close\r\n' +
+        '\r\n' +
+        responseBody;
+    }
+  }
+  
+  // DELETE - reset config
+  if (method === 'DELETE') {
+    console.log(`⚙️ Config DELETE - resetting`);
+    resetClientConfig();
+    const responseBody = JSON.stringify({ success: true, config: getClientConfig() });
+    return 'HTTP/1.1 200 OK\r\n' +
+      headers +
+      `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
+      'Connection: close\r\n' +
+      '\r\n' +
+      responseBody;
+  }
+  
+  // Method not allowed
+  const responseBody = JSON.stringify({ success: false, error: 'Method not allowed' });
+  return 'HTTP/1.1 405 Method Not Allowed\r\n' +
+    headers +
+    `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
+    'Connection: close\r\n' +
+    '\r\n' +
+    responseBody;
+}
+
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
   let targetSocket: Socket | TLSSocket | null = null;
@@ -627,6 +721,14 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       
       const targetUrl = `https://${hostname}${path}`;
       console.log(`🔐 HTTPS: ${method} ${targetUrl}`);
+      
+      // Check for config endpoint FIRST (before any blocking or external requests)
+      const configResponse = handleConfigEndpoint(method, path, requestBody.toString('utf-8'));
+      if (configResponse) {
+        tlsServer.write(configResponse);
+        tlsServer.end();
+        return;
+      }
       
       // Block tracking URLs by pattern
       if (shouldBlockUrl(targetUrl)) {

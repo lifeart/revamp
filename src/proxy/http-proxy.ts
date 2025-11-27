@@ -379,7 +379,10 @@ async function proxyRequest(
 ): Promise<void> {
   // Check if this is a config endpoint request first
   const parsedUrl = new URL(targetUrl);
-  if (parsedUrl.pathname.startsWith(CONFIG_ENDPOINT)) {
+  const isConfigEndpoint = parsedUrl.pathname.startsWith(CONFIG_ENDPOINT);
+  
+  if (isConfigEndpoint) {
+    console.log(`⚙️ Config endpoint detected: ${targetUrl}`);
     // Rewrite req.url for the handler
     req.url = parsedUrl.pathname + parsedUrl.search;
     const handled = await handleConfigEndpoint(req, res);
