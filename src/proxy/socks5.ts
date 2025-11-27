@@ -895,29 +895,35 @@ async function makeHttpsRequest(
         const encoding = res.headers['content-encoding'];
         responseBody = Buffer.from(decompressBody(responseBody, encoding as string));
         
-        // Transform content
-        const targetUrl = `https://${hostname}${path}`;
-        const rawContentType = res.headers['content-type'] || '';
-        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-        const charset = getCharset(contentTypeValue);
-        const contentType = getContentType(
-          res.headers as Record<string, string | string[] | undefined>,
-          targetUrl
-        );
-        
-        if (contentType !== 'other') {
-          responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-        }
-        
-        // Update Content-Type header to UTF-8 if we transformed the content
-        // (transformation decodes from original charset and re-encodes as UTF-8)
         const updatedHeaders = { ...res.headers };
-        if (contentType !== 'other' && updatedHeaders['content-type']) {
-          const ct = Array.isArray(updatedHeaders['content-type']) 
-            ? updatedHeaders['content-type'][0] 
-            : updatedHeaders['content-type'];
-          // Replace charset with UTF-8 since we converted the content
-          updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+        
+        // Skip transformation for redirect responses (301, 302, 303, 307, 308)
+        const statusCode = res.statusCode || 200;
+        const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+        
+        if (!isRedirect && responseBody.length > 0) {
+          // Transform content only for non-redirect responses with content
+          const targetUrl = `https://${hostname}${path}`;
+          const rawContentType = res.headers['content-type'] || '';
+          const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+          const charset = getCharset(contentTypeValue);
+          const contentType = getContentType(
+            res.headers as Record<string, string | string[] | undefined>,
+            targetUrl
+          );
+          
+          if (contentType !== 'other') {
+            responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
+            
+            // Update Content-Type header to UTF-8 if we transformed the content
+            if (updatedHeaders['content-type']) {
+              const ct = Array.isArray(updatedHeaders['content-type']) 
+                ? updatedHeaders['content-type'][0] 
+                : updatedHeaders['content-type'];
+              // Replace charset with UTF-8 since we converted the content
+              updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+            }
+          }
         }
         
         resolve({
@@ -970,27 +976,35 @@ async function makeHttpRequest(
         const encoding = res.headers['content-encoding'];
         responseBody = Buffer.from(decompressBody(responseBody, encoding as string));
         
-        const targetUrl = `http://${hostname}${path}`;
-        const rawContentType = res.headers['content-type'] || '';
-        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-        const charset = getCharset(contentTypeValue);
-        const contentType = getContentType(
-          res.headers as Record<string, string | string[] | undefined>,
-          targetUrl
-        );
-        
-        if (contentType !== 'other') {
-          responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-        }
-        
-        // Update Content-Type header to UTF-8 if we transformed the content
         const updatedHeaders = { ...res.headers };
-        if (contentType !== 'other' && updatedHeaders['content-type']) {
-          const ct = Array.isArray(updatedHeaders['content-type']) 
-            ? updatedHeaders['content-type'][0] 
-            : updatedHeaders['content-type'];
-          // Replace charset with UTF-8 since we converted the content
-          updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+        
+        // Skip transformation for redirect responses (301, 302, 303, 307, 308)
+        const statusCode = res.statusCode || 200;
+        const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
+        
+        if (!isRedirect && responseBody.length > 0) {
+          // Transform content only for non-redirect responses with content
+          const targetUrl = `http://${hostname}${path}`;
+          const rawContentType = res.headers['content-type'] || '';
+          const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+          const charset = getCharset(contentTypeValue);
+          const contentType = getContentType(
+            res.headers as Record<string, string | string[] | undefined>,
+            targetUrl
+          );
+          
+          if (contentType !== 'other') {
+            responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
+            
+            // Update Content-Type header to UTF-8 if we transformed the content
+            if (updatedHeaders['content-type']) {
+              const ct = Array.isArray(updatedHeaders['content-type']) 
+                ? updatedHeaders['content-type'][0] 
+                : updatedHeaders['content-type'];
+              // Replace charset with UTF-8 since we converted the content
+              updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+            }
+          }
         }
         
         resolve({
