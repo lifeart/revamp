@@ -310,6 +310,8 @@ async function handleConfigEndpoint(
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
   
   // Handle preflight
   if (req.method === 'OPTIONS') {
@@ -321,6 +323,7 @@ async function handleConfigEndpoint(
   // GET - return current config
   if (req.method === 'GET') {
     const config = getClientConfig();
+    console.log(`⚙️ Config GET - returning:`, JSON.stringify(config));
     res.writeHead(200);
     res.end(JSON.stringify({ success: true, config }));
     return true;
@@ -331,6 +334,7 @@ async function handleConfigEndpoint(
     try {
       const body = await readRequestBody(req);
       const newConfig = JSON.parse(body) as ClientConfig;
+      console.log(`⚙️ Config POST - saving:`, JSON.stringify(newConfig));
       setClientConfig(newConfig);
       res.writeHead(200);
       res.end(JSON.stringify({ success: true, config: getClientConfig() }));
@@ -343,6 +347,7 @@ async function handleConfigEndpoint(
   
   // DELETE - reset config
   if (req.method === 'DELETE') {
+    console.log(`⚙️ Config DELETE - resetting`);
     resetClientConfig();
     res.writeHead(200);
     res.end(JSON.stringify({ success: true, config: getClientConfig() }));

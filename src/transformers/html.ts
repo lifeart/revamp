@@ -207,11 +207,20 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     // Update http-equiv Content-Type meta tag
     $('meta[http-equiv="Content-Type"]').attr('content', 'text/html; charset=UTF-8');
     
+    // Always inject config overlay so users can access settings
+    // This must be injected regardless of other settings
+    const configOverlayScript = getConfigOverlayScript();
+    const head = $('head');
+    if (head.length > 0) {
+      head.prepend(configOverlayScript);
+    } else {
+      $.root().prepend(configOverlayScript);
+    }
+    
     // Inject polyfills at the beginning of <head>
     if (config.injectPolyfills) {
       const polyfillScript = buildPolyfillScript();
       const errorOverlayScript = getErrorOverlayScript();
-      const configOverlayScript = getConfigOverlayScript();
       
       // Conditionally build user-agent spoof script
       let userAgentScript = '';
@@ -228,7 +237,6 @@ ${userAgentPolyfill}
       
       const head = $('head');
       if (head.length > 0) {
-        head.prepend(configOverlayScript);
         head.prepend(errorOverlayScript);
         head.prepend(polyfillScript);
         if (userAgentScript) {
@@ -237,7 +245,6 @@ ${userAgentPolyfill}
         }
       } else {
         // No head tag, try to add at the beginning
-        $.root().prepend(configOverlayScript);
         $.root().prepend(errorOverlayScript);
         $.root().prepend(polyfillScript);
         if (userAgentScript) {
