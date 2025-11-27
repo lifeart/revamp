@@ -24,6 +24,7 @@ export { requestAnimationFramePolyfill } from './request-animation-frame.js';
 export { abortControllerPolyfill } from './abort-controller.js';
 export { textEncoderPolyfill } from './text-encoder.js';
 export { intersectionObserverPolyfill } from './intersection-observer.js';
+export { userAgentPolyfill } from './user-agent.js';
 
 // Debug tools
 export { errorOverlayScript } from './error-overlay.js';
@@ -47,6 +48,7 @@ import { requestAnimationFramePolyfill } from './request-animation-frame.js';
 import { abortControllerPolyfill } from './abort-controller.js';
 import { textEncoderPolyfill } from './text-encoder.js';
 import { intersectionObserverPolyfill } from './intersection-observer.js';
+import { userAgentPolyfill } from './user-agent.js';
 import { errorOverlayScript } from './error-overlay.js';
 
 /**
@@ -117,7 +119,8 @@ export type PolyfillName =
   | 'requestAnimationFrame'
   | 'abortController'
   | 'textEncoder'
-  | 'intersectionObserver';
+  | 'intersectionObserver'
+  | 'userAgent';
 
 const polyfillMap: Record<PolyfillName, string> = {
   symbol: symbolPolyfill,
@@ -138,6 +141,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   abortController: abortControllerPolyfill,
   textEncoder: textEncoderPolyfill,
   intersectionObserver: intersectionObserverPolyfill,
+  userAgent: userAgentPolyfill,
 };
 
 /**
