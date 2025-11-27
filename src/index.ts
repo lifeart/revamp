@@ -2,7 +2,7 @@
  * Revamp - Legacy Browser Compatibility Proxy
  * 
  * A SOCKS5 proxy that transforms modern web content for older devices
- * like iPads and iPods running iOS 11.
+ * like iPads and iPods running iOS 9+ (iPad 2) or iOS 11+.
  */
 
 import { getConfig, updateConfig, type RevampConfig } from './config/index.js';

@@ -1,6 +1,6 @@
 /**
  * CSS Transformer using PostCSS
- * Transforms modern CSS to be compatible with iOS 11 Safari
+ * Transforms modern CSS to be compatible with iOS 9+ Safari (iPad 2+)
  */
 
 import postcss from 'postcss';

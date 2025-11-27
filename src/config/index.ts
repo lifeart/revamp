@@ -38,13 +38,13 @@ export interface RevampConfig {
   trackingDomains: string[];
 }
 
-// Default configuration targeting iOS 11
+// Default configuration targeting iOS 9+ (iPad 2) and iOS 11+
 export const defaultConfig: RevampConfig = {
   socks5Port: 1080,
   httpProxyPort: 8080,
   
-  // iOS 11 Safari = Safari 11, roughly Chrome 61 equivalent
-  targets: ['safari 11', 'ios 11'],
+  // iOS 9.3.5 Safari = Safari 9 (iPad 2), iOS 11 Safari = Safari 11
+  targets: ['safari 9', 'ios 9'],
   
   transformJs: true,
   transformCss: true,
