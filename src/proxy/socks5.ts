@@ -477,12 +477,16 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       console.log(`🔐 HTTPS: ${method} ${targetUrl}`);
       
       // Handle CORS preflight requests
+      // Use the Origin header for CORS to support credentials
+      const requestOrigin = headers['origin'] || '*';
+      
       if (method === 'OPTIONS') {
         const corsResponse = 
           'HTTP/1.1 204 No Content\r\n' +
-          'Access-Control-Allow-Origin: *\r\n' +
+          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
           'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
           'Access-Control-Allow-Headers: *\r\n' +
+          'Access-Control-Allow-Credentials: true\r\n' +
           'Access-Control-Max-Age: 86400\r\n' +
           'Content-Length: 0\r\n' +
           'Connection: close\r\n' +
@@ -549,7 +553,8 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         console.error(`❌ HTTPS request error for ${targetUrl}:`, error.message);
         const errorResponse = 
           'HTTP/1.1 502 Bad Gateway\r\n' +
-          'Access-Control-Allow-Origin: *\r\n' +
+          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
+          'Access-Control-Allow-Credentials: true\r\n' +
           'Content-Type: text/plain\r\n' +
           'Content-Length: 11\r\n' +
           'Connection: close\r\n' +
@@ -623,13 +628,17 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       const targetUrl = `http://${hostname}${path}`;
       console.log(`📡 HTTP: ${method} ${targetUrl}`);
       
+      // Use the Origin header for CORS to support credentials
+      const requestOrigin = headers['origin'] || '*';
+
       // Handle CORS preflight requests
       if (method === 'OPTIONS') {
         const corsResponse = 
           'HTTP/1.1 204 No Content\r\n' +
-          'Access-Control-Allow-Origin: *\r\n' +
+          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
           'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
           'Access-Control-Allow-Headers: *\r\n' +
+          'Access-Control-Allow-Credentials: true\r\n' +
           'Access-Control-Max-Age: 86400\r\n' +
           'Content-Length: 0\r\n' +
           'Connection: close\r\n' +
@@ -677,8 +686,9 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         }
         responseHeaders += `Content-Length: ${response.body.length}\r\n`;
         responseHeaders += `Connection: close\r\n`;
-        // Add CORS headers to allow cross-origin requests
-        responseHeaders += `Access-Control-Allow-Origin: *\r\n`;
+        // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
+        responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
+        responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
         responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD\r\n`;
         responseHeaders += `Access-Control-Allow-Headers: *\r\n`;
         responseHeaders += `Access-Control-Expose-Headers: *\r\n`;
@@ -691,7 +701,14 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         requestBuffer = Buffer.alloc(0);
       } catch (err) {
         console.error(`❌ HTTP request error:`, err);
-        clientSocket.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 11\r\n\r\nBad Gateway');
+        const errorResponse = 
+          'HTTP/1.1 502 Bad Gateway\r\n' +
+          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
+          'Access-Control-Allow-Credentials: true\r\n' +
+          'Content-Length: 11\r\n' +
+          '\r\n' +
+          'Bad Gateway';
+        clientSocket.write(errorResponse);
       }
     });
   }

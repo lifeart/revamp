@@ -231,8 +231,10 @@ async function proxyRequest(
           delete headers['access-control-allow-credentials'];
           delete headers['access-control-max-age'];
           
-          // Add permissive CORS headers to allow cross-origin requests
-          headers['access-control-allow-origin'] = '*';
+          // Add CORS headers (use Origin for credentials support)
+          const requestOrigin = req.headers['origin'] || '*';
+          headers['access-control-allow-origin'] = requestOrigin;
+          headers['access-control-allow-credentials'] = 'true';
           headers['access-control-allow-methods'] = 'GET, POST, PUT, DELETE, OPTIONS, HEAD';
           headers['access-control-allow-headers'] = '*';
           headers['access-control-expose-headers'] = '*';
