@@ -24,6 +24,7 @@ export { requestAnimationFramePolyfill } from './request-animation-frame.js';
 export { abortControllerPolyfill } from './abort-controller.js';
 export { textEncoderPolyfill } from './text-encoder.js';
 export { intersectionObserverPolyfill } from './intersection-observer.js';
+export { resizeObserverPolyfill } from './resize-observer.js';
 export { userAgentPolyfill } from './user-agent.js';
 export { esModulesPolyfill } from './es-modules.js';
 export { readableStreamPolyfill } from './readable-stream.js';
@@ -50,6 +51,7 @@ import { requestAnimationFramePolyfill } from './request-animation-frame.js';
 import { abortControllerPolyfill } from './abort-controller.js';
 import { textEncoderPolyfill } from './text-encoder.js';
 import { intersectionObserverPolyfill } from './intersection-observer.js';
+import { resizeObserverPolyfill } from './resize-observer.js';
 import { userAgentPolyfill } from './user-agent.js';
 import { esModulesPolyfill } from './es-modules.js';
 import { readableStreamPolyfill } from './readable-stream.js';
@@ -84,6 +86,7 @@ export function buildPolyfillScript(): string {
     abortControllerPolyfill,
     textEncoderPolyfill,
     intersectionObserverPolyfill,
+    resizeObserverPolyfill,
     readableStreamPolyfill,
   ];
 
@@ -128,6 +131,7 @@ export type PolyfillName =
   | 'abortController'
   | 'textEncoder'
   | 'intersectionObserver'
+  | 'resizeObserver'
   | 'userAgent'
   | 'esModules'
   | 'readableStream';
@@ -151,6 +155,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   abortController: abortControllerPolyfill,
   textEncoder: textEncoderPolyfill,
   intersectionObserver: intersectionObserverPolyfill,
+  resizeObserver: resizeObserverPolyfill,
   userAgent: userAgentPolyfill,
   esModules: esModulesPolyfill,
   readableStream: readableStreamPolyfill,
