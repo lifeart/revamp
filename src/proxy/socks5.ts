@@ -589,6 +589,11 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'access-control-expose-headers',
           'access-control-allow-credentials',
           'access-control-max-age',
+          // Remove CSP headers to allow our injected inline scripts/polyfills
+          'content-security-policy',
+          'content-security-policy-report-only',
+          'x-content-security-policy',
+          'x-webkit-csp',
         ]);
         
         // Send response back to client
