@@ -50,7 +50,7 @@ export const textEncoderPolyfill = `
       return { read: str.length, written: len };
     };
   }
-  
+
   if (typeof TextDecoder === 'undefined') {
     window.TextDecoder = function TextDecoder(encoding, options) {
       this.encoding = (encoding || 'utf-8').toLowerCase();
@@ -64,7 +64,7 @@ export const textEncoderPolyfill = `
     };
     TextDecoder.prototype.decode = function(input, options) {
       if (!input) return '';
-      
+
       var bytes;
       if (input instanceof Uint8Array) {
         bytes = input;
@@ -90,7 +90,7 @@ export const textEncoderPolyfill = `
           bytes = new Uint8Array(0);
         }
       }
-      
+
       // Handle ASCII and Latin-1
       if (this.encoding === 'ascii' || this.encoding === 'iso-8859-1' || this.encoding === 'latin1') {
         var result = '';
@@ -99,21 +99,21 @@ export const textEncoderPolyfill = `
         }
         return result;
       }
-      
+
       // UTF-8 decoding
       var result = '';
       var i = 0;
-      
+
       // Skip BOM if present and not ignored
-      if (!this.ignoreBOM && bytes.length >= 3 && 
+      if (!this.ignoreBOM && bytes.length >= 3 &&
           bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
         i = 3;
       }
-      
+
       while (i < bytes.length) {
         var byte1 = bytes[i++];
         var codePoint;
-        
+
         if (byte1 < 0x80) {
           codePoint = byte1;
         } else if ((byte1 & 0xE0) === 0xC0) {
@@ -127,12 +127,12 @@ export const textEncoderPolyfill = `
           var byte2 = bytes[i++] || 0;
           var byte3 = bytes[i++] || 0;
           var byte4 = bytes[i++] || 0;
-          codePoint = ((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) | 
+          codePoint = ((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) |
                       ((byte3 & 0x3F) << 6) | (byte4 & 0x3F);
         } else {
           codePoint = 0xFFFD; // Replacement character
         }
-        
+
         // Convert code point to string
         if (codePoint > 0xFFFF) {
           // Surrogate pair
@@ -143,7 +143,7 @@ export const textEncoderPolyfill = `
           result += String.fromCharCode(codePoint);
         }
       }
-      
+
       return result;
     };
   }

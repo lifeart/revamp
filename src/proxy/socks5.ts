@@ -372,6 +372,18 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         const response = await makeHttpsRequest(method, hostname, path, headers, requestBody);
         console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
 
+        // Apply gzip compression for text-based content if client supports it
+        let responseBody = response.body;
+        const responseContentType = response.headers['content-type'];
+        const contentTypeStr = Array.isArray(responseContentType) ? responseContentType[0] : (responseContentType || '');
+        const clientAcceptsGzip = acceptsGzip(headers['accept-encoding']);
+        let isGzipped = false;
+
+        if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
+          responseBody = Buffer.from(gzipSync(responseBody));
+          isGzipped = true;
+        }
+
         // Send response back to client
         let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
         for (const [key, value] of Object.entries(response.headers)) {
@@ -384,14 +396,18 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
             }
           }
         }
-        responseHeaders += `Content-Length: ${response.body.length}\r\n`;
+        responseHeaders += `Content-Length: ${responseBody.length}\r\n`;
+        if (isGzipped) {
+          responseHeaders += `Content-Encoding: gzip\r\n`;
+          responseHeaders += `Vary: Accept-Encoding\r\n`;
+        }
         responseHeaders += `Connection: close\r\n`;
         // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
         responseHeaders += buildCorsHeadersString(requestOrigin);
         responseHeaders += '\r\n';
 
         tlsServer.write(responseHeaders);
-        tlsServer.write(response.body);
+        tlsServer.write(responseBody);
         tlsServer.end();
       } catch (err) {
         const error = err as Error;
