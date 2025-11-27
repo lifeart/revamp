@@ -552,7 +552,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'HTTP/1.1 204 No Content\r\n' +
           `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
           'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
-          'Access-Control-Allow-Headers: *\r\n' +
+          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n' +
           'Access-Control-Allow-Credentials: true\r\n' +
           'Access-Control-Max-Age: 86400\r\n' +
           'Content-Length: 0\r\n' +
@@ -613,9 +613,9 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
         responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
         responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
-        responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD\r\n`;
-        responseHeaders += `Access-Control-Allow-Headers: *\r\n`;
-        responseHeaders += `Access-Control-Expose-Headers: *\r\n`;
+        responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n`;
+        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n`;
+        responseHeaders += `Access-Control-Expose-Headers: Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id\r\n`;
         responseHeaders += '\r\n';
         
         tlsServer.write(responseHeaders);
@@ -760,7 +760,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'HTTP/1.1 204 No Content\r\n' +
           `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
           'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
-          'Access-Control-Allow-Headers: *\r\n' +
+          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n' +
           'Access-Control-Allow-Credentials: true\r\n' +
           'Access-Control-Max-Age: 86400\r\n' +
           'Content-Length: 0\r\n' +
@@ -817,9 +817,9 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
         responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
         responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
-        responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD\r\n`;
-        responseHeaders += `Access-Control-Allow-Headers: *\r\n`;
-        responseHeaders += `Access-Control-Expose-Headers: *\r\n`;
+        responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n`;
+        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n`;
+        responseHeaders += `Access-Control-Expose-Headers: Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id\r\n`;
         responseHeaders += '\r\n';
         
         clientSocket.write(responseHeaders);
