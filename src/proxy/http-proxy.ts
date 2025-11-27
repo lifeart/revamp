@@ -406,22 +406,28 @@ async function proxyRequest(
         
         proxyRes.on('error', (err) => {
           console.error(`❌ Proxy response error: ${err.message}`);
-          res.writeHead(502);
-          res.end('Bad Gateway');
+          if (!res.headersSent) {
+            res.writeHead(502);
+            res.end('Bad Gateway');
+          }
           reject(err);
         });
       } catch (err) {
         console.error(`❌ Proxy error: ${err}`);
-        res.writeHead(500);
-        res.end('Internal Server Error');
+        if (!res.headersSent) {
+          res.writeHead(500);
+          res.end('Internal Server Error');
+        }
         reject(err);
       }
     });
     
     proxyReq.on('error', (err) => {
       console.error(`❌ Proxy request error: ${err.message}`);
-      res.writeHead(502);
-      res.end('Bad Gateway');
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end('Bad Gateway');
+      }
       reject(err);
     });
     
@@ -547,8 +553,10 @@ export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): 
       await proxyRequest(req, res, fullUrl, false);
     } catch (err) {
       console.error(`❌ HTTP proxy error: ${err}`);
-      res.writeHead(500);
-      res.end('Internal Server Error');
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end('Internal Server Error');
+      }
     }
   });
   
