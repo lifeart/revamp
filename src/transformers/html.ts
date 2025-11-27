@@ -149,11 +149,12 @@ const POLYFILL_SCRIPT = `
       if (count < 0 || count === Infinity) throw new RangeError('Invalid count value');
       count = Math.floor(count);
       if (this.length === 0 || count === 0) return '';
+      var str = String(this);
       var result = '';
       while (count > 0) {
-        if (count & 1) result += this;
+        if (count & 1) result += str;
         count >>= 1;
-        if (count) this += this;
+        if (count) str += str;
       }
       return result;
     };
