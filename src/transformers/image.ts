@@ -89,13 +89,33 @@ export async function transformImage(
     };
   }
   
+  // Check for empty or invalid buffer
+  if (!imageBuffer || imageBuffer.length === 0) {
+    console.warn(`⚠️ Empty image buffer for ${url}, skipping transformation`);
+    return {
+      data: imageBuffer,
+      contentType: contentType,
+      transformed: false,
+    };
+  }
+  
+  // Minimum size for a valid image (WebP header alone is ~12 bytes)
+  if (imageBuffer.length < 12) {
+    console.warn(`⚠️ Image buffer too small (${imageBuffer.length} bytes) for ${url}, skipping transformation`);
+    return {
+      data: imageBuffer,
+      contentType: contentType,
+      transformed: false,
+    };
+  }
+  
   try {
     // Determine source format for logging
     const isWebPImage = isWebP(contentType) || isWebPUrl(url);
     const isAVIFImage = isAVIF(contentType) || isAVIFUrl(url);
     const sourceFormat = isWebPImage ? 'WebP' : isAVIFImage ? 'AVIF' : 'unknown';
     
-    console.log(`🖼️ Converting ${sourceFormat} to JPEG: ${url}`);
+    console.log(`🖼️ Converting ${sourceFormat} to JPEG: ${url} (${imageBuffer.length} bytes)`);
     
     // Use sharp to convert to JPEG
     // Sharp auto-detects the input format

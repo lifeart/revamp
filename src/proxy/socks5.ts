@@ -1044,36 +1044,38 @@ async function makeHttpsRequest(
         const statusCode = res.statusCode || 200;
         const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
         
+        const targetUrl = `https://${hostname}${path}`;
+        const rawContentType = res.headers['content-type'] || '';
+        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        
         if (!isRedirect && responseBody.length > 0) {
-          // Transform content only for non-redirect responses with content
-          const targetUrl = `https://${hostname}${path}`;
-          const rawContentType = res.headers['content-type'] || '';
-          const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-          const charset = getCharset(contentTypeValue);
-          const contentType = getContentType(
-            res.headers as Record<string, string | string[] | undefined>,
-            targetUrl
-          );
-          
-          if (contentType !== 'other') {
-            responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-            
-            // Update Content-Type header to UTF-8 if we transformed the content
-            if (updatedHeaders['content-type']) {
-              const ct = Array.isArray(updatedHeaders['content-type']) 
-                ? updatedHeaders['content-type'][0] 
-                : updatedHeaders['content-type'];
-              // Replace charset with UTF-8 since we converted the content
-              updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-            }
-          }
-          
           // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+          // Do this BEFORE text transformation, since images shouldn't be transformed as text
           if (needsImageTransform(contentTypeValue, targetUrl)) {
             const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
             if (imageResult.transformed) {
               responseBody = Buffer.from(imageResult.data);
               updatedHeaders['content-type'] = imageResult.contentType;
+            }
+          } else {
+            // Only transform text content (not images)
+            const charset = getCharset(contentTypeValue);
+            const contentType = getContentType(
+              res.headers as Record<string, string | string[] | undefined>,
+              targetUrl
+            );
+            
+            if (contentType !== 'other') {
+              responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
+              
+              // Update Content-Type header to UTF-8 if we transformed the content
+              if (updatedHeaders['content-type']) {
+                const ct = Array.isArray(updatedHeaders['content-type']) 
+                  ? updatedHeaders['content-type'][0] 
+                  : updatedHeaders['content-type'];
+                // Replace charset with UTF-8 since we converted the content
+                updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+              }
             }
           }
         }
@@ -1134,36 +1136,38 @@ async function makeHttpRequest(
         const statusCode = res.statusCode || 200;
         const isRedirect = [301, 302, 303, 307, 308].includes(statusCode);
         
+        const targetUrl = `http://${hostname}${path}`;
+        const rawContentType = res.headers['content-type'] || '';
+        const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        
         if (!isRedirect && responseBody.length > 0) {
-          // Transform content only for non-redirect responses with content
-          const targetUrl = `http://${hostname}${path}`;
-          const rawContentType = res.headers['content-type'] || '';
-          const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-          const charset = getCharset(contentTypeValue);
-          const contentType = getContentType(
-            res.headers as Record<string, string | string[] | undefined>,
-            targetUrl
-          );
-          
-          if (contentType !== 'other') {
-            responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
-            
-            // Update Content-Type header to UTF-8 if we transformed the content
-            if (updatedHeaders['content-type']) {
-              const ct = Array.isArray(updatedHeaders['content-type']) 
-                ? updatedHeaders['content-type'][0] 
-                : updatedHeaders['content-type'];
-              // Replace charset with UTF-8 since we converted the content
-              updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-            }
-          }
-          
           // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+          // Do this BEFORE text transformation, since images shouldn't be transformed as text
           if (needsImageTransform(contentTypeValue, targetUrl)) {
             const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
             if (imageResult.transformed) {
               responseBody = Buffer.from(imageResult.data);
               updatedHeaders['content-type'] = imageResult.contentType;
+            }
+          } else {
+            // Only transform text content (not images)
+            const charset = getCharset(contentTypeValue);
+            const contentType = getContentType(
+              res.headers as Record<string, string | string[] | undefined>,
+              targetUrl
+            );
+            
+            if (contentType !== 'other') {
+              responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
+              
+              // Update Content-Type header to UTF-8 if we transformed the content
+              if (updatedHeaders['content-type']) {
+                const ct = Array.isArray(updatedHeaders['content-type']) 
+                  ? updatedHeaders['content-type'][0] 
+                  : updatedHeaders['content-type'];
+                // Replace charset with UTF-8 since we converted the content
+                updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+              }
             }
           }
         }

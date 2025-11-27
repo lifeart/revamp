@@ -359,22 +359,25 @@ async function proxyRequest(
           // Determine content type and transform
           const rawContentType = proxyRes.headers['content-type'] || '';
           const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-          const charset = getCharset(contentTypeValue);
-          const contentType = getContentType(
-            proxyRes.headers as Record<string, string | string[] | undefined>,
-            targetUrl
-          );
-          
-          if (contentType !== 'other') {
-            body = Buffer.from(await transformContent(body, contentType, targetUrl, charset));
-          }
           
           // Transform WebP/AVIF images to JPEG for legacy browser compatibility
+          // Do this BEFORE text transformation, since images shouldn't be transformed as text
           if (needsImageTransform(contentTypeValue, targetUrl)) {
             const imageResult = await transformImage(body, contentTypeValue, targetUrl);
             if (imageResult.transformed) {
               body = Buffer.from(imageResult.data);
               proxyRes.headers['content-type'] = imageResult.contentType;
+            }
+          } else {
+            // Only transform text content (not images)
+            const charset = getCharset(contentTypeValue);
+            const contentType = getContentType(
+              proxyRes.headers as Record<string, string | string[] | undefined>,
+              targetUrl
+            );
+            
+            if (contentType !== 'other') {
+              body = Buffer.from(await transformContent(body, contentType, targetUrl, charset));
             }
           }
           
@@ -384,8 +387,14 @@ async function proxyRequest(
             headers[key.trim().toLowerCase()] = value;
           }
           
-          // Update Content-Type header to UTF-8 if we transformed the content
-          if (contentType !== 'other' && headers['content-type']) {
+          // Get the final content type for charset update check
+          const finalContentType = getContentType(
+            proxyRes.headers as Record<string, string | string[] | undefined>,
+            targetUrl
+          );
+          
+          // Update Content-Type header to UTF-8 if we transformed the content (not images)
+          if (finalContentType !== 'other' && !needsImageTransform(contentTypeValue, targetUrl) && headers['content-type']) {
             const ct = Array.isArray(headers['content-type']) 
               ? headers['content-type'][0] 
               : headers['content-type'];
