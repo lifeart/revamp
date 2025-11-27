@@ -12,7 +12,9 @@
     "clean": "rm -rf dist .revamp-cache .revamp-certs",
     "test": "playwright test",
     "test:ui": "playwright test --ui",
-    "test:headed": "playwright test --headed"
+    "test:headed": "playwright test --headed",
+    "test:unit": "vitest",
+    "test:unit:run": "vitest run"
   },
   "keywords": [
     "proxy",
@@ -33,7 +35,8 @@
     "@types/sharp": "^0.32.0",
     "playwright": "^1.57.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
   },
   "dependencies": {
     "@babel/core": "^7.28.5",
