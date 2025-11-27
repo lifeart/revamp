@@ -7,6 +7,7 @@
 
 import { getConfig, updateConfig, type RevampConfig } from './config/index.js';
 import { createHttpProxy, createSocks5Proxy } from './proxy/index.js';
+import { createCaptivePortal } from './portal/index.js';
 import { generateCA, getCACert } from './certs/index.js';
 import { clearCache, getCacheStats } from './cache/index.js';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -52,6 +53,7 @@ function printSetupInstructions(config: RevampConfig): void {
   const caCertPath = join(config.certDir, config.caCertFile);
   const localIPs = getLocalIPs();
   const ipList = localIPs.length > 0 ? localIPs.join(', ') : 'Unable to detect';
+  const portalUrl = `http://${localIPs[0] || 'YOUR_IP'}:${config.captivePortalPort}`;
   
   console.log(`
 📱 Device Setup Instructions:
@@ -59,11 +61,16 @@ function printSetupInstructions(config: RevampConfig): void {
 
 🌐 Your Local IP Address(es): ${ipList}
 
+🔗 Easy Setup: Open this URL on your device:
+   ${portalUrl}
+
 1. Install the CA Certificate on your device:
-   - Transfer the certificate file to your device:
+   - Open the URL above on your device to download certificate
+   - Or transfer the certificate file manually:
      ${caCertPath}
    
-   - On iOS: Open the file → Install Profile → Trust Certificate
+   - On iOS: Settings → General → VPN & Device Management
+     Install profile, then go to:
      Settings → General → About → Certificate Trust Settings
      Enable trust for "Revamp Proxy CA"
 
@@ -94,6 +101,7 @@ export interface RevampServer {
 export function createRevampServer(configOverrides?: Partial<RevampConfig>): RevampServer {
   let httpServer: ReturnType<typeof createHttpProxy> | null = null;
   let socks5Server: ReturnType<typeof createSocks5Proxy> | null = null;
+  let portalServer: ReturnType<typeof createCaptivePortal> | null = null;
   
   if (configOverrides) {
     updateConfig(configOverrides);
@@ -125,14 +133,20 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
       console.log('🧦 Starting SOCKS5 proxy...');
       socks5Server = createSocks5Proxy(config.socks5Port, config.httpProxyPort, config.bindAddress);
       
+      // Start captive portal for easy certificate installation
+      console.log('📜 Starting captive portal...');
+      portalServer = createCaptivePortal(config.captivePortalPort, config.bindAddress);
+      
       // Print setup instructions
       printSetupInstructions(config);
       
+      const localIPs = getLocalIPs();
       console.log('✅ Revamp is ready!');
       console.log(`
 🎯 Proxy Status:
-   SOCKS5: ${config.bindAddress}:${config.socks5Port}
-   HTTP:   ${config.bindAddress}:${config.httpProxyPort}
+   SOCKS5:  ${config.bindAddress}:${config.socks5Port}
+   HTTP:    ${config.bindAddress}:${config.httpProxyPort}
+   Portal:  http://${localIPs[0] || 'localhost'}:${config.captivePortalPort}
    
 🔧 Features:
    Transform JS:   ${config.transformJs ? '✅' : '❌'}
@@ -158,6 +172,11 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
       if (socks5Server) {
         socks5Server.close();
         socks5Server = null;
+      }
+      
+      if (portalServer) {
+        portalServer.close();
+        portalServer = null;
       }
       
       console.log('👋 Revamp stopped');
