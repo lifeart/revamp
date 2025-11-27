@@ -159,12 +159,22 @@ export const errorOverlayScript = `
     list.innerHTML = html;
   }
   
+  // Polyfill padStart for older browsers
+  function padStart(str, len, char) {
+    str = String(str);
+    char = char || '0';
+    while (str.length < len) {
+      str = char + str;
+    }
+    return str;
+  }
+  
   function formatTime() {
     var d = new Date();
-    return d.getHours().toString().padStart(2, '0') + ':' +
-           d.getMinutes().toString().padStart(2, '0') + ':' +
-           d.getSeconds().toString().padStart(2, '0') + '.' +
-           d.getMilliseconds().toString().padStart(3, '0');
+    return padStart(d.getHours(), 2, '0') + ':' +
+           padStart(d.getMinutes(), 2, '0') + ':' +
+           padStart(d.getSeconds(), 2, '0') + '.' +
+           padStart(d.getMilliseconds(), 3, '0');
   }
   
   function addError(type, message, filename, lineno, colno, stack) {
