@@ -265,6 +265,22 @@ function shouldBlockDomain(hostname: string): boolean {
   return false;
 }
 
+function shouldBlockUrl(url: string): boolean {
+  const config = getConfig();
+  
+  // Check tracking URL patterns
+  if (config.removeTracking) {
+    const urlLower = url.toLowerCase();
+    for (const pattern of config.trackingUrls) {
+      if (urlLower.includes(pattern.toLowerCase())) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
 async function proxyRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -276,7 +292,15 @@ async function proxyRequest(
   
   // Block ad/tracking domains
   if (shouldBlockDomain(parsedUrl.hostname)) {
-    console.log(`🚫 Blocked: ${parsedUrl.hostname}`);
+    console.log(`🚫 Blocked domain: ${parsedUrl.hostname}`);
+    res.writeHead(204); // No Content
+    res.end();
+    return;
+  }
+  
+  // Block tracking URLs by pattern
+  if (shouldBlockUrl(targetUrl)) {
+    console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
     res.writeHead(204); // No Content
     res.end();
     return;

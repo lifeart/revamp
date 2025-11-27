@@ -384,6 +384,22 @@ function shouldBlockDomain(hostname: string): boolean {
   return false;
 }
 
+function shouldBlockUrl(url: string): boolean {
+  const config = getConfig();
+  
+  // Check tracking URL patterns
+  if (config.removeTracking) {
+    const urlLower = url.toLowerCase();
+    for (const pattern of config.trackingUrls) {
+      if (urlLower.includes(pattern.toLowerCase())) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
   let targetSocket: Socket | TLSSocket | null = null;
@@ -612,6 +628,18 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       const targetUrl = `https://${hostname}${path}`;
       console.log(`🔐 HTTPS: ${method} ${targetUrl}`);
       
+      // Block tracking URLs by pattern
+      if (shouldBlockUrl(targetUrl)) {
+        console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
+        const blockedResponse = 
+          'HTTP/1.1 204 No Content\r\n' +
+          'Connection: close\r\n' +
+          '\r\n';
+        tlsServer.write(blockedResponse);
+        tlsServer.end();
+        return;
+      }
+      
       // Check for WebSocket upgrade request
       const upgradeHeader = headers['upgrade']?.toLowerCase();
       if (upgradeHeader === 'websocket') {
@@ -827,6 +855,18 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       
       const targetUrl = `http://${hostname}${path}`;
       console.log(`📡 HTTP: ${method} ${targetUrl}`);
+      
+      // Block tracking URLs by pattern
+      if (shouldBlockUrl(targetUrl)) {
+        console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
+        const blockedResponse = 
+          'HTTP/1.1 204 No Content\r\n' +
+          'Connection: close\r\n' +
+          '\r\n';
+        clientSocket.write(blockedResponse);
+        requestBuffer = Buffer.alloc(0);
+        return;
+      }
       
       // Use the Origin header for CORS to support credentials
       const requestOrigin = headers['origin'] || '*';

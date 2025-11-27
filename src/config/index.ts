@@ -40,6 +40,7 @@ export interface RevampConfig {
   // Ad/tracking domains to block
   adDomains: string[];
   trackingDomains: string[];
+  trackingUrls: string[]; // Specific URL patterns to block (supports wildcards)
 }
 
 // Default configuration targeting iOS 9+ (iPad 2) and iOS 11+
@@ -94,6 +95,28 @@ export const defaultConfig: RevampConfig = {
     'fullstory.com',
     'mouseflow.com',
     'crazyegg.com',
+    'mindbox.ru',
+    'top-fwz1.mail.ru',
+    'mc.yandex.ru',
+    'counter.yadro.ru',
+  ],
+  
+  // Specific tracking URL patterns to block
+  trackingUrls: [
+    '/tracker.js',
+    '/pixel.gif',
+    '/beacon',
+    '/collect',
+    '/analytics',
+    '/metrics',
+    '/stat/',
+    '/counter/',
+    '/tracking/',
+    '/telemetry/',
+    'js/code.js',
+    '/watch/',
+    '/hit/',
+    '/event/',
   ],
 };
 
