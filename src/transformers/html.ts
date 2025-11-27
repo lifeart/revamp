@@ -112,6 +112,7 @@ const POLYFILL_SCRIPT = `
  */
 const AD_SCRIPT_PATTERNS = [
   /atob/i,
+  /ads\//i,
   /googletag/i,
   /doubleclick/i,
   /googleadservices/i,
@@ -181,6 +182,11 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     
     let removedAds = 0;
     let removedTracking = 0;
+    
+    // Remove integrity attributes from scripts and links since we transform content
+    // (transformed content won't match the original hash)
+    $('script[integrity]').removeAttr('integrity');
+    $('link[integrity]').removeAttr('integrity');
     
     // Process all script tags
     $('script').each((_, elem) => {
