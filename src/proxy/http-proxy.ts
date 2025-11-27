@@ -9,7 +9,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
-import { gunzipSync, brotliDecompressSync, inflateSync } from 'node:zlib';
+import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
 import { getConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { generateDomainCert } from '../certs/index.js';
@@ -17,6 +17,28 @@ import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../tra
 import { needsImageTransform, transformImage } from '../transformers/image.js';
 
 type ContentType = 'js' | 'css' | 'html' | 'other';
+
+// Check if content type should be gzip compressed
+function shouldCompress(contentType: string): boolean {
+  const compressibleTypes = [
+    'text/',
+    'application/json',
+    'application/javascript',
+    'application/xml',
+    'application/xhtml+xml',
+    'application/rss+xml',
+    'application/atom+xml',
+    'image/svg+xml',
+  ];
+  const ct = contentType.toLowerCase();
+  return compressibleTypes.some(type => ct.includes(type));
+}
+
+// Check if client accepts gzip encoding
+function acceptsGzip(req: IncomingMessage): boolean {
+  const acceptEncoding = req.headers['accept-encoding'] || '';
+  return acceptEncoding.includes('gzip');
+}
 
 // Extract charset from Content-Type header
 function getCharset(contentType: string): string {
@@ -286,6 +308,15 @@ async function proxyRequest(
           // Remove encoding header since we decompressed
           delete headers['content-encoding'];
           delete headers['transfer-encoding'];
+          
+          // Apply gzip compression for text-based content if client supports it
+          const currentContentType = headers['content-type'];
+          const contentTypeStr = Array.isArray(currentContentType) ? currentContentType[0] : (currentContentType || '');
+          if (acceptsGzip(req) && shouldCompress(contentTypeStr) && body.length > 1024) {
+            body = Buffer.from(gzipSync(body));
+            headers['content-encoding'] = 'gzip';
+            headers['vary'] = 'Accept-Encoding';
+          }
           
           // Update content length
           headers['content-length'] = String(body.length);

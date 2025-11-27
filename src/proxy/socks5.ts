@@ -8,7 +8,7 @@ import { connect } from 'node:net';
 import { TLSSocket, type TLSSocket as TLSSocketType, connect as tlsConnect } from 'node:tls';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { gunzipSync, brotliDecompressSync, inflateSync } from 'node:zlib';
+import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
 import { getConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
 import { getCached, setCache } from '../cache/index.js';
@@ -47,6 +47,27 @@ interface ParsedAddress {
   host: string;
   port: number;
   addressType: number;
+}
+
+// Check if content type should be gzip compressed
+function shouldCompress(contentType: string): boolean {
+  const compressibleTypes = [
+    'text/',
+    'application/json',
+    'application/javascript',
+    'application/xml',
+    'application/xhtml+xml',
+    'application/rss+xml',
+    'application/atom+xml',
+    'image/svg+xml',
+  ];
+  const ct = contentType.toLowerCase();
+  return compressibleTypes.some(type => ct.includes(type));
+}
+
+// Check if client accepts gzip encoding
+function acceptsGzipEncoding(acceptEncoding: string | undefined): boolean {
+  return (acceptEncoding || '').includes('gzip');
 }
 
 enum ConnectionState {
@@ -803,6 +824,19 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         ]);
         
         let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
+        
+        // Apply gzip compression for text-based content if client supports it
+        let responseBody = response.body;
+        const responseContentType = response.headers['content-type'];
+        const contentTypeStr = Array.isArray(responseContentType) ? responseContentType[0] : (responseContentType || '');
+        const clientAcceptsGzip = acceptsGzipEncoding(headers['accept-encoding']);
+        let isGzipped = false;
+        
+        if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
+          responseBody = Buffer.from(gzipSync(responseBody));
+          isGzipped = true;
+        }
+        
         for (const [key, value] of Object.entries(response.headers)) {
           const lowerKey = key.toLowerCase();
           if (!skipHeaders.has(lowerKey)) {
@@ -813,7 +847,11 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
             }
           }
         }
-        responseHeaders += `Content-Length: ${response.body.length}\r\n`;
+        responseHeaders += `Content-Length: ${responseBody.length}\r\n`;
+        if (isGzipped) {
+          responseHeaders += `Content-Encoding: gzip\r\n`;
+          responseHeaders += `Vary: Accept-Encoding\r\n`;
+        }
         responseHeaders += `Connection: close\r\n`;
         // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
         responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
@@ -824,7 +862,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         responseHeaders += '\r\n';
         
         clientSocket.write(responseHeaders);
-        clientSocket.write(response.body);
+        clientSocket.write(responseBody);
         
         // Reset for next request
         requestBuffer = Buffer.alloc(0);
