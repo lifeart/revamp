@@ -8,12 +8,30 @@ import { connect } from 'node:net';
 import { TLSSocket, type TLSSocket as TLSSocketType, connect as tlsConnect } from 'node:tls';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { gunzipSync, brotliDecompressSync, inflateSync, gzipSync } from 'node:zlib';
+import { gzipSync } from 'node:zlib';
 import { getConfig, getClientConfig, setClientConfig, resetClientConfig, type ClientConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
-import { getCached, setCache, markAsRedirect, isRedirectStatus } from '../cache/index.js';
-import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
+import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { transformImage, needsImageTransform } from '../transformers/image.js';
+import {
+  type ContentType,
+  CONFIG_ENDPOINT,
+  shouldCompress,
+  acceptsGzip,
+  getCharset,
+  getContentType,
+  decompressBody,
+  transformContent,
+  shouldBlockDomain,
+  shouldBlockUrl,
+  CORS_ALLOWED_METHODS,
+  CORS_ALLOWED_HEADERS,
+  CORS_EXPOSE_HEADERS,
+  SKIP_RESPONSE_HEADERS,
+  buildCorsPreflightResponse,
+  buildCorsHeadersString,
+  SPOOFED_USER_AGENT,
+} from './shared.js';
 
 // SOCKS5 constants
 const SOCKS_VERSION = 0x05;
@@ -43,34 +61,10 @@ const REPLY_NETWORK_UNREACHABLE = 0x03;
 const REPLY_COMMAND_NOT_SUPPORTED = 0x07;
 const REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08;
 
-// Config API endpoint path
-const CONFIG_ENDPOINT = '/__revamp__/config';
-
 interface ParsedAddress {
   host: string;
   port: number;
   addressType: number;
-}
-
-// Check if content type should be gzip compressed
-function shouldCompress(contentType: string): boolean {
-  const compressibleTypes = [
-    'text/',
-    'application/json',
-    'application/javascript',
-    'application/xml',
-    'application/xhtml+xml',
-    'application/rss+xml',
-    'application/atom+xml',
-    'image/svg+xml',
-  ];
-  const ct = contentType.toLowerCase();
-  return compressibleTypes.some(type => ct.includes(type));
-}
-
-// Check if client accepts gzip encoding
-function acceptsGzipEncoding(acceptEncoding: string | undefined): boolean {
-  return (acceptEncoding || '').includes('gzip');
 }
 
 enum ConnectionState {
@@ -147,260 +141,6 @@ function createReply(
     addressBuffer,
     portBuffer,
   ]);
-}
-
-// Content type detection
-type ContentType = 'js' | 'css' | 'html' | 'other';
-
-function getCharset(contentType: string): string {
-  // Extract charset from Content-Type header: text/html; charset=utf-8
-  const charsetMatch = contentType.match(/charset=([\w-]+)/i);
-  if (charsetMatch) {
-    return charsetMatch[1].toLowerCase();
-  }
-  return 'utf-8'; // Default to UTF-8
-}
-
-function getContentType(headers: Record<string, string | string[] | undefined>, url: string): ContentType {
-  const contentType = (headers['content-type'] as string || '').toLowerCase();
-  
-  // Check for binary/non-text content types first - these should never be transformed
-  if (contentType.includes('image/') || 
-      contentType.includes('video/') || 
-      contentType.includes('audio/') ||
-      contentType.includes('font/') ||
-      contentType.includes('application/octet-stream') ||
-      contentType.includes('application/pdf') ||
-      contentType.includes('application/zip') ||
-      contentType.includes('application/gzip')) {
-    return 'other';
-  }
-  
-  if (contentType.includes('javascript') || contentType.includes('ecmascript')) {
-    return 'js';
-  }
-  if (contentType.includes('text/css')) {
-    return 'css';
-  }
-  if (contentType.includes('text/html')) {
-    return 'html';
-  }
-  
-  // If we have a content-type but it's not something we transform, skip it
-  if (contentType && !contentType.includes('text/')) {
-    return 'other';
-  }
-  
-  // Fallback to URL-based detection only if no content-type was provided
-  if (!contentType) {
-    const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
-    if (pathname.endsWith('.js') || pathname.endsWith('.mjs')) {
-      return 'js';
-    }
-    if (pathname.endsWith('.css')) {
-      return 'css';
-    }
-    if (pathname.endsWith('.html') || pathname.endsWith('.htm') || pathname === '/') {
-      return 'html';
-    }
-  }
-  
-  return 'other';
-}
-
-function decompressBody(body: Buffer, encoding: string | undefined): Buffer {
-  if (!encoding) return body;
-  
-  try {
-    switch (encoding.toLowerCase()) {
-      case 'gzip':
-        return gunzipSync(body);
-      case 'br':
-        return brotliDecompressSync(body);
-      case 'deflate':
-        return inflateSync(body);
-      default:
-        return body;
-    }
-  } catch {
-    return body;
-  }
-}
-
-// Windows-1251 (Cyrillic) character map for bytes 128-255
-const WINDOWS_1251_MAP: string[] = [
-  '\u0402', '\u0403', '\u201A', '\u0453', '\u201E', '\u2026', '\u2020', '\u2021', // 128-135
-  '\u20AC', '\u2030', '\u0409', '\u2039', '\u040A', '\u040C', '\u040B', '\u040F', // 136-143
-  '\u0452', '\u2018', '\u2019', '\u201C', '\u201D', '\u2022', '\u2013', '\u2014', // 144-151
-  '\uFFFD', '\u2122', '\u0459', '\u203A', '\u045A', '\u045C', '\u045B', '\u045F', // 152-159
-  '\u00A0', '\u040E', '\u045E', '\u0408', '\u00A4', '\u0490', '\u00A6', '\u00A7', // 160-167
-  '\u0401', '\u00A9', '\u0404', '\u00AB', '\u00AC', '\u00AD', '\u00AE', '\u0407', // 168-175
-  '\u00B0', '\u00B1', '\u0406', '\u0456', '\u0491', '\u00B5', '\u00B6', '\u00B7', // 176-183
-  '\u0451', '\u2116', '\u0454', '\u00BB', '\u0458', '\u0405', '\u0455', '\u0457', // 184-191
-  '\u0410', '\u0411', '\u0412', '\u0413', '\u0414', '\u0415', '\u0416', '\u0417', // 192-199
-  '\u0418', '\u0419', '\u041A', '\u041B', '\u041C', '\u041D', '\u041E', '\u041F', // 200-207
-  '\u0420', '\u0421', '\u0422', '\u0423', '\u0424', '\u0425', '\u0426', '\u0427', // 208-215
-  '\u0428', '\u0429', '\u042A', '\u042B', '\u042C', '\u042D', '\u042E', '\u042F', // 216-223
-  '\u0430', '\u0431', '\u0432', '\u0433', '\u0434', '\u0435', '\u0436', '\u0437', // 224-231
-  '\u0438', '\u0439', '\u043A', '\u043B', '\u043C', '\u043D', '\u043E', '\u043F', // 232-239
-  '\u0440', '\u0441', '\u0442', '\u0443', '\u0444', '\u0445', '\u0446', '\u0447', // 240-247
-  '\u0448', '\u0449', '\u044A', '\u044B', '\u044C', '\u044D', '\u044E', '\u044F', // 248-255
-];
-
-function decodeWindows1251(buffer: Buffer): string {
-  let result = '';
-  for (let i = 0; i < buffer.length; i++) {
-    const byte = buffer[i];
-    if (byte < 128) {
-      result += String.fromCharCode(byte);
-    } else {
-      result += WINDOWS_1251_MAP[byte - 128];
-    }
-  }
-  return result;
-}
-
-// Check if buffer contains binary content by looking for common binary file signatures
-function isBinaryContent(buffer: Buffer): boolean {
-  if (buffer.length < 4) return false;
-  
-  // Check for common binary file signatures (magic bytes)
-  const signatures = [
-    [0x47, 0x49, 0x46, 0x38],       // GIF (GIF87a, GIF89a)
-    [0x89, 0x50, 0x4E, 0x47],       // PNG
-    [0xFF, 0xD8, 0xFF],              // JPEG
-    [0x52, 0x49, 0x46, 0x46],       // WEBP (RIFF)
-    [0x00, 0x00, 0x00],              // Various (MP4, etc.)
-    [0x50, 0x4B, 0x03, 0x04],       // ZIP/XLSX/DOCX
-    [0x25, 0x50, 0x44, 0x46],       // PDF
-    [0x1F, 0x8B],                    // GZIP
-  ];
-  
-  for (const sig of signatures) {
-    let match = true;
-    for (let i = 0; i < sig.length && i < buffer.length; i++) {
-      if (buffer[i] !== sig[i]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) return true;
-  }
-  
-  return false;
-}
-
-async function transformContent(body: Buffer, contentType: ContentType, url: string, charset: string = 'utf-8'): Promise<Buffer> {
-  const config = getConfig();
-  
-  // Safety check: don't transform binary content even if content-type was wrong
-  if (isBinaryContent(body)) {
-    console.log(`⏭️ Skipping binary content: ${url}`);
-    return body;
-  }
-  
-  // Check cache first
-  const cached = await getCached(url, contentType);
-  if (cached) {
-    console.log(`📦 Cache hit: ${url}`);
-    return cached;
-  }
-  
-  let transformed: string;
-  
-  // Convert buffer to string using the correct charset
-  let text: string;
-  const normalizedCharset = charset.toLowerCase().replace(/[^a-z0-9]/g, '');
-  
-  // Handle common Russian/Cyrillic encodings
-  if (normalizedCharset === 'windows1251' || normalizedCharset === 'cp1251' || normalizedCharset === 'win1251') {
-    // Windows-1251 (Cyrillic) - manually decode
-    text = decodeWindows1251(body);
-  } else if (normalizedCharset === 'koi8r' || normalizedCharset === 'koi8u') {
-    // KOI8-R/KOI8-U - try as UTF-8 first, fallback to latin1
-    text = body.toString('utf-8');
-  } else if (normalizedCharset === 'iso88591' || normalizedCharset === 'latin1') {
-    text = body.toString('latin1');
-  } else {
-    // Default to UTF-8
-    text = body.toString('utf-8');
-  }
-  
-  switch (contentType) {
-    case 'js':
-      if (config.transformJs) {
-        console.log(`🔧 Transforming JS: ${url}`);
-        transformed = await transformJs(text, url);
-      } else {
-        transformed = text;
-      }
-      break;
-    case 'css':
-      if (config.transformCss) {
-        console.log(`🎨 Transforming CSS: ${url}`);
-        transformed = await transformCss(text, url);
-      } else {
-        transformed = text;
-      }
-      break;
-    case 'html':
-      if (config.transformHtml && isHtmlDocument(text)) {
-        console.log(`📄 Transforming HTML: ${url}`);
-        transformed = await transformHtml(text, url);
-      } else {
-        transformed = text;
-      }
-      break;
-    default:
-      return body;
-  }
-  
-  const result = Buffer.from(transformed, 'utf-8');
-  
-  // Cache the result
-  await setCache(url, contentType, result);
-  
-  return result;
-}
-
-function shouldBlockDomain(hostname: string): boolean {
-  const config = getConfig();
-  
-  // Check ad domains
-  if (config.removeAds) {
-    for (const domain of config.adDomains) {
-      if (hostname.includes(domain)) {
-        return true;
-      }
-    }
-  }
-  
-  // Check tracking domains
-  if (config.removeTracking) {
-    for (const domain of config.trackingDomains) {
-      if (hostname.includes(domain)) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
-}
-
-function shouldBlockUrl(url: string): boolean {
-  const config = getConfig();
-  
-  // Check tracking URL patterns
-  if (config.removeTracking) {
-    const urlLower = url.toLowerCase();
-    for (const pattern of config.trackingUrls) {
-      if (urlLower.includes(pattern.toLowerCase())) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
 }
 
 /**
@@ -755,16 +495,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       const requestOrigin = headers['origin'] || '*';
       
       if (method === 'OPTIONS') {
-        const corsResponse = 
-          'HTTP/1.1 204 No Content\r\n' +
-          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
-          'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
-          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n' +
-          'Access-Control-Allow-Credentials: true\r\n' +
-          'Access-Control-Max-Age: 86400\r\n' +
-          'Content-Length: 0\r\n' +
-          'Connection: close\r\n' +
-          '\r\n';
+        const corsResponse = buildCorsPreflightResponse(requestOrigin);
         tlsServer.write(corsResponse);
         tlsServer.end();
         return;
@@ -776,38 +507,11 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         const response = await makeHttpsRequest(method, hostname, path, headers, requestBody);
         console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
         
-        // Build response headers, filtering out problematic ones
-        const skipHeaders = new Set([
-          'transfer-encoding',
-          'content-encoding', 
-          'content-length',
-          'connection',
-          'keep-alive',
-          'proxy-connection',
-          'proxy-authenticate',
-          'proxy-authorization',
-          'te',
-          'trailers',
-          'upgrade',
-          // Remove original CORS headers so we can replace with permissive ones
-          'access-control-allow-origin',
-          'access-control-allow-methods',
-          'access-control-allow-headers',
-          'access-control-expose-headers',
-          'access-control-allow-credentials',
-          'access-control-max-age',
-          // Remove CSP headers to allow our injected inline scripts/polyfills
-          'content-security-policy',
-          'content-security-policy-report-only',
-          'x-content-security-policy',
-          'x-webkit-csp',
-        ]);
-        
         // Send response back to client
         let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
         for (const [key, value] of Object.entries(response.headers)) {
           const lowerKey = key.toLowerCase();
-          if (!skipHeaders.has(lowerKey)) {
+          if (!SKIP_RESPONSE_HEADERS.has(lowerKey)) {
             if (Array.isArray(value)) {
               responseHeaders += `${key}: ${value.join(', ')}\r\n`;
             } else if (value !== undefined && value !== null) {
@@ -818,11 +522,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         responseHeaders += `Content-Length: ${response.body.length}\r\n`;
         responseHeaders += `Connection: close\r\n`;
         // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
-        responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
-        responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
-        responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n`;
-        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n`;
-        responseHeaders += `Access-Control-Expose-Headers: Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id\r\n`;
+        responseHeaders += buildCorsHeadersString(requestOrigin);
         responseHeaders += '\r\n';
         
         tlsServer.write(responseHeaders);
@@ -975,16 +675,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
 
       // Handle CORS preflight requests
       if (method === 'OPTIONS') {
-        const corsResponse = 
-          'HTTP/1.1 204 No Content\r\n' +
-          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
-          'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
-          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n' +
-          'Access-Control-Allow-Credentials: true\r\n' +
-          'Access-Control-Max-Age: 86400\r\n' +
-          'Content-Length: 0\r\n' +
-          'Connection: close\r\n' +
-          '\r\n';
+        const corsResponse = buildCorsPreflightResponse(requestOrigin);
         clientSocket.write(corsResponse);
         requestBuffer = Buffer.alloc(0);
         return;
@@ -993,40 +684,13 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       try {
         const response = await makeHttpRequest(method, hostname, port, path, headers, requestBody);
         
-        // Build response headers, filtering out problematic ones
-        const skipHeaders = new Set([
-          'transfer-encoding',
-          'content-encoding', 
-          'content-length',
-          'connection',
-          'keep-alive',
-          'proxy-connection',
-          'proxy-authenticate',
-          'proxy-authorization',
-          'te',
-          'trailers',
-          'upgrade',
-          // Remove original CORS headers so we can replace with permissive ones
-          'access-control-allow-origin',
-          'access-control-allow-methods',
-          'access-control-allow-headers',
-          'access-control-expose-headers',
-          'access-control-allow-credentials',
-          'access-control-max-age',
-          // Remove CSP headers to allow our injected inline scripts/polyfills
-          'content-security-policy',
-          'content-security-policy-report-only',
-          'x-content-security-policy',
-          'x-webkit-csp',
-        ]);
-        
         let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
         
         // Apply gzip compression for text-based content if client supports it
         let responseBody = response.body;
         const responseContentType = response.headers['content-type'];
         const contentTypeStr = Array.isArray(responseContentType) ? responseContentType[0] : (responseContentType || '');
-        const clientAcceptsGzip = acceptsGzipEncoding(headers['accept-encoding']);
+        const clientAcceptsGzip = acceptsGzip(headers['accept-encoding']);
         let isGzipped = false;
         
         if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
@@ -1036,7 +700,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         
         for (const [key, value] of Object.entries(response.headers)) {
           const lowerKey = key.toLowerCase();
-          if (!skipHeaders.has(lowerKey)) {
+          if (!SKIP_RESPONSE_HEADERS.has(lowerKey)) {
             if (Array.isArray(value)) {
               responseHeaders += `${key}: ${value.join(', ')}\r\n`;
             } else if (value !== undefined && value !== null) {
@@ -1051,11 +715,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         }
         responseHeaders += `Connection: close\r\n`;
         // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
-        responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
-        responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
-        responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n`;
-        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n`;
-        responseHeaders += `Access-Control-Expose-Headers: Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id\r\n`;
+        responseHeaders += buildCorsHeadersString(requestOrigin);
         responseHeaders += '\r\n';
         
         clientSocket.write(responseHeaders);
