@@ -82,6 +82,7 @@ export const defaultConfig: RevampConfig = {
     'ads.adfox.ru',
     'banners.adfox.ru',
     'advertising.com',
+    'ads.betweendigital.com',
     'facebook.com/tr',
     'ads.twitter.com',
     'amazon-adsystem.com',

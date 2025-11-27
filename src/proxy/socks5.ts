@@ -759,7 +759,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'HTTP/1.1 204 No Content\r\n' +
           `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
           'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
-          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n' +
+          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n' +
           'Access-Control-Allow-Credentials: true\r\n' +
           'Access-Control-Max-Age: 86400\r\n' +
           'Content-Length: 0\r\n' +
@@ -821,7 +821,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
         responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
         responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n`;
-        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n`;
+        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n`;
         responseHeaders += `Access-Control-Expose-Headers: Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id\r\n`;
         responseHeaders += '\r\n';
         
@@ -850,9 +850,9 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       if (err.message.includes('ECONNRESET') || 
           err.message.includes('unknown ca') ||
           err.message.includes('certificate') ||
-          err.message.includes('handshake')) {
-        // These are expected when client hasn't installed CA cert
-        console.log(`⚠️ TLS error for ${hostname}: ${err.message}`);
+          err.message.includes('handshake') ||
+          err.message.includes('write after end')) {
+        // These are expected when client hasn't installed CA cert or connection was closed
         return;
       }
       console.error(`❌ TLS server error for ${hostname}: ${err.message}`);
@@ -979,7 +979,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
           'HTTP/1.1 204 No Content\r\n' +
           `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
           'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n' +
-          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n' +
+          'Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n' +
           'Access-Control-Allow-Credentials: true\r\n' +
           'Access-Control-Max-Age: 86400\r\n' +
           'Content-Length: 0\r\n' +
@@ -1054,7 +1054,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         responseHeaders += `Access-Control-Allow-Origin: ${requestOrigin}\r\n`;
         responseHeaders += `Access-Control-Allow-Credentials: true\r\n`;
         responseHeaders += `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH\r\n`;
-        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version\r\n`;
+        responseHeaders += `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, X-File-Name, X-File-Size, X-File-Type, X-Client-Data, X-Goog-Api-Key, X-Goog-AuthUser, X-Goog-Visitor-Id, X-Origin, X-Referer, X-Same-Domain, X-Upload-Content-Type, X-Upload-Content-Length, X-YouTube-Client-Name, X-YouTube-Client-Version, pwa\r\n`;
         responseHeaders += `Access-Control-Expose-Headers: Content-Type, Content-Length, Content-Disposition, Cache-Control, ETag, Last-Modified, X-Request-Id\r\n`;
         responseHeaders += '\r\n';
         
@@ -1078,7 +1078,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   }
   
   clientSocket.on('error', (err) => {
-    if (!err.message.includes('ECONNRESET')) {
+    if (!err.message.includes('ECONNRESET') && !err.message.includes('write after end')) {
       console.error(`❌ Client socket error: ${err.message}`);
     }
     if (targetSocket && !targetSocket.destroyed) {
