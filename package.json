@@ -8,7 +8,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "rm -rf .revamp-cache && tsc",
     "clean": "rm -rf dist .revamp-cache .revamp-certs",
     "test": "playwright test",
     "test:ui": "playwright test --ui",

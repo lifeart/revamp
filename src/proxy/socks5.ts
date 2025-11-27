@@ -841,6 +841,7 @@ async function makeHttpsRequest(
         }
         
         // Update Content-Type header to UTF-8 if we transformed the content
+        // (transformation decodes from original charset and re-encodes as UTF-8)
         const updatedHeaders = { ...res.headers };
         if (contentType !== 'other' && updatedHeaders['content-type']) {
           const ct = Array.isArray(updatedHeaders['content-type']) 
