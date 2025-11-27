@@ -5,7 +5,7 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { connect } from 'node:net';
-import { TLSSocket, type TLSSocket as TLSSocketType } from 'node:tls';
+import { TLSSocket, type TLSSocket as TLSSocketType, connect as tlsConnect } from 'node:tls';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { gunzipSync, brotliDecompressSync, inflateSync } from 'node:zlib';
@@ -535,6 +535,14 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       const targetUrl = `https://${hostname}${path}`;
       console.log(`🔐 HTTPS: ${method} ${targetUrl}`);
       
+      // Check for WebSocket upgrade request
+      const upgradeHeader = headers['upgrade']?.toLowerCase();
+      if (upgradeHeader === 'websocket') {
+        console.log(`🔌 WebSocket upgrade request: ${targetUrl}`);
+        handleWebSocketUpgrade(tlsServer, hostname, path, headers, requestBuffer);
+        return;
+      }
+      
       // Handle CORS preflight requests
       // Use the Origin header for CORS to support credentials
       const requestOrigin = headers['origin'] || '*';
@@ -639,6 +647,56 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
     
     tlsServer.on('close', () => {
       clientSocket.destroy();
+    });
+  }
+  
+  // Handle WebSocket upgrade requests - proxy directly without transformation
+  function handleWebSocketUpgrade(
+    tlsClient: TLSSocket, 
+    hostname: string, 
+    path: string, 
+    headers: Record<string, string>,
+    initialRequest: Buffer
+  ): void {
+    console.log(`🌐 Establishing WebSocket connection to ${hostname}`);
+    
+    // Connect to the real server via TLS
+    const tlsServer = tlsConnect({
+      host: hostname,
+      port: 443,
+      rejectUnauthorized: false,
+    });
+    
+    tlsServer.on('secureConnect', () => {
+      console.log(`🔗 WebSocket TLS connection established to ${hostname}`);
+      
+      // Forward the original upgrade request to the server
+      tlsServer.write(initialRequest);
+      
+      // Set up bidirectional piping
+      tlsClient.pipe(tlsServer);
+      tlsServer.pipe(tlsClient);
+    });
+    
+    tlsServer.on('error', (err: Error) => {
+      console.error(`❌ WebSocket server connection error for ${hostname}: ${err.message}`);
+      tlsClient.end();
+    });
+    
+    tlsServer.on('close', () => {
+      console.log(`🔌 WebSocket connection closed for ${hostname}`);
+      tlsClient.end();
+    });
+    
+    tlsClient.on('error', (err: Error) => {
+      if (!err.message.includes('ECONNRESET')) {
+        console.error(`❌ WebSocket client error for ${hostname}: ${err.message}`);
+      }
+      tlsServer.end();
+    });
+    
+    tlsClient.on('close', () => {
+      tlsServer.end();
     });
   }
   
