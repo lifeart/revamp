@@ -23,8 +23,7 @@ let pool: Tinypool | null = null;
 
 /**
  * Resolve the worker file path.
- * When running with tsx (development), the worker needs to be in dist/.
- * When running compiled code, it's in the same directory.
+ * Looks for compiled js-worker.js in same directory or dist/.
  */
 function resolveWorkerPath(): string {
   // First try the same directory (for compiled code)

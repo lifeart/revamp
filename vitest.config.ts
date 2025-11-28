@@ -7,9 +7,11 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/dist/**'],
     testTimeout: 30000,
+    // Build before running tests to ensure worker files exist
+    globalSetup: './vitest.setup.ts',
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'json', 'html'],
+      reporter: ['text', 'json', 'html', 'lcov'],
       include: [
         'src/**/*.ts',
       ],

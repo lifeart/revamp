@@ -83,13 +83,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Build (required for worker files)
+        run: pnpm build
+
       - name: Run tests with coverage
         run: pnpm test:unit:run --coverage
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v5
         with:
-          file: ./coverage/lcov.info
+          files: ./coverage/lcov.info
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
