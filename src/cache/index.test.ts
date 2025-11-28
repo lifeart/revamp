@@ -3,6 +3,7 @@ import {
   getCached,
   setCache,
   clearCache,
+  clearMemoryCache,
   getCacheStats,
   isRedirectStatus,
   markAsRedirect,
@@ -453,8 +454,8 @@ describe('file cache operations', () => {
     // Wait a bit for async file write
     await new Promise(resolve => setTimeout(resolve, 100));
 
-    // Clear memory cache
-    clearCache();
+    // Clear memory cache only (preserve file cache)
+    clearMemoryCache();
 
     // Should retrieve from file cache
     const result = await getCached(url, 'text/html');
@@ -478,7 +479,7 @@ describe('file cache operations', () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
 
     // Clear memory to force file cache read
-    clearCache();
+    clearMemoryCache();
 
     // Should return null for expired entry
     const result = await getCached(url, 'text/html');
@@ -591,8 +592,8 @@ describe('multi-client cache isolation', () => {
     // Wait for async file write
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    // Clear memory cache
-    clearCache();
+    // Clear memory cache only (preserve file cache)
+    clearMemoryCache();
 
     // Should retrieve from file cache
     const result = await getCached(url, contentType, clientIp);

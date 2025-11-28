@@ -258,10 +258,18 @@ export async function setCache(url: string, contentType: string, data: Buffer, c
   })();
 }
 
-export function clearCache(): void {
-  // Clear memory cache (sync)
+/**
+ * Clear only the in-memory cache, preserving file cache
+ * Useful for testing file cache persistence
+ */
+export function clearMemoryCache(): void {
   memoryCache.clear();
   currentMemorySize = 0;
+}
+
+export function clearCache(): void {
+  // Clear memory cache (sync)
+  clearMemoryCache();
   cacheDirInitialized = false;
 
   // Clear file cache async (fire and forget)
