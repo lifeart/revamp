@@ -13,7 +13,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
-import { getEffectiveConfig } from '../config/index.js';
+import { getEffectiveConfig, getConfig } from '../config/index.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import {
   recordRequest,
@@ -50,6 +50,7 @@ import {
 import {
   shouldLogJsonRequest,
   logJsonRequest,
+  isJsonContentType,
 } from '../logger/json-request-logger.js';
 
 // =============================================================================
@@ -180,6 +181,22 @@ async function proxyRequest(
     return;
   }
 
+  // Check if we need to log JSON requests (affects how we handle request body)
+  const globalConfig = getConfig();
+  const jsonLoggingEnabled = globalConfig.logJsonRequests;
+
+  // Only buffer request body if JSON logging is enabled
+  // Otherwise we'll pipe the request directly for better performance
+  let requestBody: Buffer | null = null;
+  if (jsonLoggingEnabled) {
+    const requestBodyChunks: Buffer[] = [];
+    await new Promise<void>((resolve) => {
+      req.on('data', (chunk: Buffer) => requestBodyChunks.push(chunk));
+      req.on('end', () => resolve());
+    });
+    requestBody = Buffer.concat(requestBodyChunks);
+  }
+
   const requestFn = isHttps ? httpsRequest : httpRequest;
 
   // Copy and clean headers
@@ -299,6 +316,12 @@ async function proxyRequest(
           delete headers['trailer'];
           delete headers['te'];
 
+          // Check if JSON logging is needed BEFORE compression (to avoid unnecessary work)
+          // Use jsonLoggingEnabled from outer scope (already checked at request start)
+          const shouldLog = jsonLoggingEnabled && isJsonContentType(headers['content-type']);
+          // Only save reference if we need to log (no memory overhead when disabled)
+          const decompressedBody = shouldLog ? body : null;
+
           // Apply gzip compression for text-based content if client supports it
           const currentContentType = headers['content-type'];
           const contentTypeStr = Array.isArray(currentContentType) ? currentContentType[0] : (currentContentType || '');
@@ -327,15 +350,18 @@ async function proxyRequest(
           res.writeHead(proxyRes.statusCode || 200, headers);
           res.end(body);
 
-          // Log JSON requests if enabled
-          if (shouldLogJsonRequest(headers)) {
-            // Use the decompressed body before any transformation for logging
+          // Log JSON requests if enabled (use decompressed body, not re-compressed)
+          if (shouldLog && decompressedBody) {
+            // Create headers copy without content-encoding for logging since we log decompressed data
+            const headersForLogging = { ...headers };
+            delete headersForLogging['content-encoding'];
             logJsonRequest(
               effectiveClientIp,
               targetUrl,
               req.headers,
-              headers,
-              body
+              headersForLogging,
+              decompressedBody,
+              requestBody ?? undefined
             );
           }
 
@@ -376,8 +402,17 @@ async function proxyRequest(
       reject(err);
     });
 
-    // Pipe request body to proxy request
-    req.pipe(proxyReq);
+    // Send request body to upstream
+    if (requestBody) {
+      // Buffered mode (JSON logging enabled) - write buffered body
+      if (requestBody.length > 0) {
+        proxyReq.write(requestBody);
+      }
+      proxyReq.end();
+    } else {
+      // Streaming mode (JSON logging disabled) - pipe directly for better performance
+      req.pipe(proxyReq);
+    }
   });
 }
 

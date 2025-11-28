@@ -79,7 +79,8 @@ export async function makeHttpsRequest(
             Buffer.concat(chunks),
             `https://${hostname}${path}`,
             clientIp,
-            requestHeaders
+            requestHeaders,
+            body
           );
           resolve(response);
         } catch (err) {
@@ -142,7 +143,8 @@ export async function makeHttpRequest(
             Buffer.concat(chunks),
             `http://${hostname}${path}`,
             clientIp,
-            headers
+            headers,
+            body
           );
           resolve(response);
         } catch (err) {
@@ -169,6 +171,7 @@ export async function makeHttpRequest(
  * @param targetUrl - Full target URL for logging and transformation
  * @param clientIp - Optional client IP for per-client cache separation
  * @param requestHeaders - Optional request headers for JSON logging
+ * @param requestBody - Optional request body for JSON logging
  * @returns Processed HttpResponse
  */
 async function processResponse(
@@ -176,13 +179,21 @@ async function processResponse(
   rawBody: Buffer,
   targetUrl: string,
   clientIp?: string,
-  requestHeaders?: RequestHeaders
+  requestHeaders?: RequestHeaders,
+  requestBody?: Buffer
 ): Promise<HttpResponse> {
   // Decompress if needed
   const encoding = res.headers['content-encoding'];
-  let responseBody = await decompressBody(rawBody, encoding as string);
+  const encodingStr = Array.isArray(encoding) ? encoding[0] : encoding;
+  let responseBody = await decompressBody(rawBody, encodingStr);
+  const wasDecompressed = responseBody !== rawBody;
 
+  // Copy headers and remove content-encoding if we decompressed
   const updatedHeaders = { ...res.headers };
+  if (wasDecompressed) {
+    // Decompression succeeded, remove the encoding header
+    delete updatedHeaders['content-encoding'];
+  }
 
   // Check for redirect responses (301, 302, 303, 307, 308)
   const statusCode = res.statusCode || 200;
@@ -203,7 +214,8 @@ async function processResponse(
       targetUrl,
       requestHeaders,
       updatedHeaders,
-      responseBody
+      responseBody,
+      requestBody
     );
   }
 

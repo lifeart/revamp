@@ -9,6 +9,7 @@
  * - url: Full URL with query parameters
  * - timestamp: ISO timestamp of the request
  * - requestHeaders: All request headers
+ * - requestBody: Request body (for POST/PUT/PATCH requests)
  * - responseHeaders: All response headers
  * - data: Decoded JSON response body
  *
@@ -30,6 +31,8 @@ export interface JsonRequestLog {
   timestamp: string;
   /** Request headers */
   requestHeaders: Record<string, string | string[] | undefined>;
+  /** Request body (for POST/PUT/PATCH requests) */
+  requestBody?: unknown;
   /** Response headers */
   responseHeaders: Record<string, string | string[] | undefined>;
   /** Decoded JSON response data */
@@ -134,13 +137,15 @@ function buildLogPath(
  * @param requestHeaders - Request headers
  * @param responseHeaders - Response headers
  * @param responseBody - Response body (will be parsed as JSON)
+ * @param requestBody - Optional request body (for POST/PUT/PATCH requests)
  */
 export async function logJsonRequest(
   clientIp: string,
   url: string,
   requestHeaders: Record<string, string | string[] | undefined>,
   responseHeaders: Record<string, string | string[] | undefined>,
-  responseBody: Buffer | string
+  responseBody: Buffer | string,
+  requestBody?: Buffer | string
 ): Promise<void> {
   const config = getConfig();
 
@@ -167,11 +172,28 @@ export async function logJsonRequest(
         : responseBody.toString('utf-8');
     }
 
+    // Parse the request body if provided
+    let parsedRequestBody: unknown = undefined;
+    if (requestBody && (typeof requestBody === 'string' ? requestBody.length > 0 : requestBody.length > 0)) {
+      try {
+        const reqBodyStr = typeof requestBody === 'string'
+          ? requestBody
+          : requestBody.toString('utf-8');
+        parsedRequestBody = JSON.parse(reqBodyStr);
+      } catch {
+        // If parsing fails, store as raw string
+        parsedRequestBody = typeof requestBody === 'string'
+          ? requestBody
+          : requestBody.toString('utf-8');
+      }
+    }
+
     // Build the log entry
     const logEntry: JsonRequestLog = {
       url,
       timestamp: timestamp.toISOString(),
       requestHeaders,
+      ...(parsedRequestBody !== undefined && { requestBody: parsedRequestBody }),
       responseHeaders,
       data,
     };

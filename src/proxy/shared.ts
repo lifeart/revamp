@@ -233,8 +233,10 @@ export function getContentType(headers: Record<string, string | string[] | undef
 export async function decompressBody(body: Buffer, encoding: string | undefined): Promise<Buffer> {
   if (!encoding) return body;
 
+  const normalizedEncoding = encoding.toLowerCase().trim();
+
   try {
-    switch (encoding.toLowerCase()) {
+    switch (normalizedEncoding) {
       case 'gzip':
         return await gunzipAsync(body);
       case 'br':
@@ -245,6 +247,7 @@ export async function decompressBody(body: Buffer, encoding: string | undefined)
         return body;
     }
   } catch {
+    // Decompression failed, return original body
     return body;
   }
 }

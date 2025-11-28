@@ -19,6 +19,7 @@ import {
 import { gzipSync, deflateSync } from 'node:zlib';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { makeHttpRequest, makeHttpsRequest } from './http-client.js';
 import { updateConfig, resetConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
@@ -120,6 +121,28 @@ function createRequestHandler() {
       } else if (url === '/error') {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Internal Server Error');
+      } else if (url === '/gzip-json') {
+        // Gzip-compressed JSON response - for testing SOCKS5 decompression logging
+        const jsonData = JSON.stringify({ compressed: true, message: 'This was gzip compressed' });
+        const compressed = gzipSync(Buffer.from(jsonData));
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Encoding': 'gzip',
+        });
+        res.end(compressed);
+      } else if (url === '/echo-json') {
+        // Echo JSON request body back as response
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (body.length > 0) {
+          try {
+            const parsed = JSON.parse(body.toString('utf-8'));
+            res.end(JSON.stringify({ received: parsed, timestamp: Date.now() }));
+          } catch {
+            res.end(JSON.stringify({ error: 'Invalid JSON', raw: body.toString('utf-8') }));
+          }
+        } else {
+          res.end(JSON.stringify({ received: null }));
+        }
       } else {
         res.writeHead(404);
         res.end('Not Found');
@@ -327,6 +350,14 @@ describe('HTTP Client Integration Tests', () => {
   describe('JSON Request Logging (SOCKS5 integration)', () => {
     const testLogDir = './.test-http-client-json-logs';
 
+    beforeEach(async () => {
+      resetConfig();
+      // Clean up test directory before each test
+      if (existsSync(testLogDir)) {
+        await rm(testLogDir, { recursive: true, force: true });
+      }
+    });
+
     afterEach(async () => {
       resetConfig();
       // Clean up test directory
@@ -349,6 +380,8 @@ describe('HTTP Client Integration Tests', () => {
       );
 
       expect(response.statusCode).toBe(200);
+      // Wait for async logging to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
       // Should have created the log directory
       expect(existsSync(testLogDir)).toBe(true);
     });
@@ -387,6 +420,96 @@ describe('HTTP Client Integration Tests', () => {
       expect(response.statusCode).toBe(200);
       // Should NOT have created the log directory for plain text
       expect(existsSync(testLogDir)).toBe(false);
+    });
+
+    it('should log decompressed JSON data for gzip responses (SOCKS5 flow)', async () => {
+      // This test verifies that when the upstream server sends gzip-compressed JSON,
+      // the logged data is the DECOMPRESSED JSON, not raw gzip bytes
+      // This simulates what happens in SOCKS5 flow via makeHttpsRequest
+      updateConfig({ logJsonRequests: true, jsonLogDir: testLogDir });
+
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/gzip-json',
+        { 'accept': 'application/json', 'accept-encoding': 'gzip' },
+        Buffer.alloc(0),
+        '192.168.1.100'
+      );
+
+      expect(response.statusCode).toBe(200);
+
+      // Wait for async logging to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Find and read the log file
+      expect(existsSync(testLogDir)).toBe(true);
+      const ipDir = join(testLogDir, '192.168.1.100', '127.0.0.1');
+      expect(existsSync(ipDir)).toBe(true);
+
+      const { readdirSync, readFileSync } = await import('node:fs');
+      const dateDirs = readdirSync(ipDir);
+      expect(dateDirs.length).toBeGreaterThan(0);
+      const timeDirs = readdirSync(join(ipDir, dateDirs[0]));
+      expect(timeDirs.length).toBeGreaterThan(0);
+      const files = readdirSync(join(ipDir, dateDirs[0], timeDirs[0]));
+      expect(files.length).toBeGreaterThan(0);
+
+      const logContent = readFileSync(join(ipDir, dateDirs[0], timeDirs[0], files[0]), 'utf-8');
+      const logData = JSON.parse(logContent);
+
+      // The logged data should be parsed JSON, NOT gzip bytes
+      expect(typeof logData.data).toBe('object');
+      expect(logData.data).toHaveProperty('compressed');
+      expect(logData.data.compressed).toBe(true);
+
+      // Response headers should NOT have content-encoding (removed after decompression)
+      expect(logData.responseHeaders['content-encoding']).toBeUndefined();
+    });
+
+    it('should include request body in logs for POST requests (SOCKS5 flow)', async () => {
+      updateConfig({ logJsonRequests: true, jsonLogDir: testLogDir });
+
+      const requestBody = JSON.stringify({ action: 'test', value: 123 });
+
+      const response = await makeHttpRequest(
+        'POST',
+        '127.0.0.1',
+        httpPort,
+        '/echo-json',
+        {
+          'content-type': 'application/json',
+          'accept': 'application/json'
+        },
+        Buffer.from(requestBody),
+        '192.168.1.200'
+      );
+
+      expect(response.statusCode).toBe(200);
+
+      // Wait for async logging to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Find and read the log file
+      const ipDir = join(testLogDir, '192.168.1.200', '127.0.0.1');
+      expect(existsSync(ipDir)).toBe(true);
+
+      const { readdirSync, readFileSync } = await import('node:fs');
+      const dateDirs = readdirSync(ipDir);
+      const timeDirs = readdirSync(join(ipDir, dateDirs[0]));
+      const files = readdirSync(join(ipDir, dateDirs[0], timeDirs[0]));
+
+      const logContent = readFileSync(join(ipDir, dateDirs[0], timeDirs[0], files[0]), 'utf-8');
+      const logData = JSON.parse(logContent);
+
+      // Should have logged the request body
+      expect(logData.requestBody).toBeDefined();
+      expect(logData.requestBody.action).toBe('test');
+      expect(logData.requestBody.value).toBe(123);
+
+      // Should also have response data
+      expect(logData.data).toBeDefined();
     });
   });
 });
