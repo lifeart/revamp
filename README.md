@@ -1,5 +1,13 @@
 # Revamp 🔄
 
+
+
+<img align="right" width="95" height="95"
+     alt="ReVamp logo"
+     src="public/revamp-logo.png">
+
+
+
 [![CI](https://github.com/lifeart/revamp/actions/workflows/ci.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/ci.yml)
 [![Docker](https://github.com/lifeart/revamp/actions/workflows/docker.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/docker.yml)
 [![codecov](https://codecov.io/gh/lifeart/revamp/branch/master/graph/badge.svg)](https://codecov.io/gh/lifeart/revamp)
