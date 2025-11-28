@@ -348,12 +348,12 @@ async function handleHttpRequestSocks5(
   request: ParsedHttpRequest,
   socket: Socket | TLSSocket,
   hostname: string,
-  port: number | undefined,
+  port: number,
   clientIp: string,
   makeRequest: (
     method: string,
     hostname: string,
-    port: number | undefined,
+    port: number,
     path: string,
     headers: Record<string, string>,
     body: Buffer,
@@ -361,7 +361,7 @@ async function handleHttpRequestSocks5(
   ) => Promise<HttpResponse>
 ): Promise<void> {
   const { method, path, headers, body: requestBody } = request;
-  const isHttps = port === 443 || port === undefined;
+  const isHttps = port === 443;
   const targetUrl = `${isHttps ? 'https' : 'http'}://${hostname}${path}`;
 
   console.log(`${isHttps ? '🔐 HTTPS' : '📡 HTTP'}: ${method} ${targetUrl}`);
@@ -791,7 +791,7 @@ function handleRequest(
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
   let targetSocket: Socket | TLSSocket | null = null;
-  let buffer = Buffer.alloc(0);
+  let buffer: Buffer = Buffer.alloc(0);
 
   updateConnections(1);
 

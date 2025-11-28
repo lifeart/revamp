@@ -538,7 +538,7 @@ async function proxyRequest(
 
         proxyRes.on('end', async () => {
           try {
-            let body = Buffer.concat(chunks);
+            let body: Buffer = Buffer.concat(chunks);
 
             // Decompress response
             const encoding = proxyRes.headers['content-encoding'] as string | undefined;
