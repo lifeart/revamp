@@ -72,43 +72,43 @@ function isTrackingScript(src: string | undefined, content: string): boolean {
  */
 export async function transformHtml(html: string, url?: string): Promise<string> {
   const config = getConfig();
-  
+
   if (!config.transformHtml) {
     return html;
   }
-  
+
   try {
     const $ = cheerio.load(html, {
       xml: false,
     });
-    
+
     let removedAds = 0;
     let removedTracking = 0;
-    
+
     // Remove integrity attributes from scripts and links since we transform content
     // (transformed content won't match the original hash)
     $('script[integrity]').removeAttr('integrity');
     $('link[integrity]').removeAttr('integrity');
-    
+
     // Process all script tags
     $('script').each((_, elem) => {
       const $script = $(elem);
       const src = $script.attr('src') || '';
       const content = $script.html() || '';
       const type = $script.attr('type') || '';
-      
+
       // Skip JSON data scripts (application/json, application/ld+json, etc.)
       if (type.includes('json')) {
         return;
       }
-      
+
       // Remove ad scripts
       if (config.removeAds && isAdScript(src, content)) {
         $script.remove();
         removedAds++;
         return;
       }
-      
+
       // Remove tracking scripts
       if (config.removeTracking && isTrackingScript(src, content)) {
         $script.remove();
@@ -116,21 +116,21 @@ export async function transformHtml(html: string, url?: string): Promise<string>
         return;
       }
     });
-    
+
     // Transform inline scripts with Babel for legacy browser compatibility
     if (config.transformJs) {
       const inlineScripts: Array<{ elem: ReturnType<typeof $>[number]; content: string }> = [];
-      
+
       $('script').each((_, elem) => {
         const $script = $(elem);
         const src = $script.attr('src');
         const type = $script.attr('type') || '';
         const content = $script.html() || '';
-        
+
         // Only transform inline scripts (no src) with JavaScript content
         // Skip JSON, templates, and other non-JS types
-        if (!src && content.trim() && 
-            !type.includes('json') && 
+        if (!src && content.trim() &&
+            !type.includes('json') &&
             !type.includes('template') &&
             !type.includes('text/html') &&
             !type.includes('x-template') &&
@@ -138,7 +138,7 @@ export async function transformHtml(html: string, url?: string): Promise<string>
           inlineScripts.push({ elem, content });
         }
       });
-      
+
       // Transform each inline script
       for (const { elem, content } of inlineScripts) {
         try {
@@ -146,21 +146,21 @@ export async function transformHtml(html: string, url?: string): Promise<string>
           if (content.includes('[Revamp]') || content.includes('revamp-error')) {
             continue;
           }
-          
+
           // Skip content that looks like HTML templates (starts with < followed by tag name)
           // This catches cases where HTML is stored in script tags as templates
           const trimmedContent = content.trim();
           if (/^<[a-zA-Z]/.test(trimmedContent)) {
             continue;
           }
-          
+
           // Skip content that's mostly HTML (contains many HTML tags)
           const htmlTagCount = (content.match(/<[a-zA-Z][^>]*>/g) || []).length;
           const jsKeywordCount = (content.match(/\b(function|var|let|const|if|else|for|while|return|this)\b/g) || []).length;
           if (htmlTagCount > 3 && htmlTagCount > jsKeywordCount) {
             continue;
           }
-          
+
           const transformed = await transformJs(content, url ? `${url}#inline` : 'inline.js');
           $(elem).html(transformed);
         } catch (err) {
@@ -169,23 +169,36 @@ export async function transformHtml(html: string, url?: string): Promise<string>
         }
       }
     }
-    
+
     // Remove common ad containers
+    // NOTE: We use specific patterns to avoid removing legitimate elements
+    // e.g., "download-btn" contains "ad-" but is not an ad element
     if (config.removeAds) {
       const adSelectors = [
-        '[class*="ad-"]',
-        '[class*="-ad"]',
-        '[class*="ads-"]',
-        '[class*="-ads"]',
+        // Specific ad-related classes (avoid substring matches that catch words like "download")
+        '[class^="ad-"]',           // Class starts with "ad-"
+        '[class$="-ad"]',           // Class ends with "-ad"
+        '[class~="ad"]',            // Class is exactly "ad"
+        '[class^="ads-"]',          // Class starts with "ads-"
+        '[class$="-ads"]',          // Class ends with "-ads"
+        '[class~="ads"]',           // Class is exactly "ads"
+        '.advertisement',
+        '.ad-container',
+        '.ad-wrapper',
+        '.ad-banner',
+        '.ad-unit',
+        '.advert',
         '[id*="google_ads"]',
         '[id*="ad-container"]',
         '[id*="ad_container"]',
+        '[id^="ad-"]',              // ID starts with "ad-"
+        '[id$="-ad"]',              // ID ends with "-ad"
         'ins.adsbygoogle',
         '[data-ad]',
         '[data-ad-slot]',
         '[data-ad-client]',
       ];
-      
+
       adSelectors.forEach(selector => {
         try {
           $(selector).remove();
@@ -194,7 +207,7 @@ export async function transformHtml(html: string, url?: string): Promise<string>
         }
       });
     }
-    
+
     // Remove tracking pixels (1x1 images, invisible iframes)
     if (config.removeTracking) {
       $('img[width="1"][height="1"]').remove();
@@ -206,13 +219,13 @@ export async function transformHtml(html: string, url?: string): Promise<string>
       $('iframe[style*="display: none"]').remove();
       $('noscript img').remove(); // Tracking pixels often in noscript
     }
-    
+
     // Normalize charset to UTF-8 (since we decode content to UTF-8 during transformation)
     // Update meta charset tag
     $('meta[charset]').attr('charset', 'UTF-8');
     // Update http-equiv Content-Type meta tag
     $('meta[http-equiv="Content-Type"]').attr('content', 'text/html; charset=UTF-8');
-    
+
     // Always inject config overlay so users can access settings
     // This must be injected regardless of other settings
     const configOverlayScript = getConfigOverlayScript();
@@ -222,12 +235,12 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     } else {
       $.root().prepend(configOverlayScript);
     }
-    
+
     // Inject polyfills at the beginning of <head>
     if (config.injectPolyfills) {
       const polyfillScript = buildPolyfillScript();
       const errorOverlayScript = getErrorOverlayScript();
-      
+
       // Conditionally build user-agent spoof script
       let userAgentScript = '';
       if (config.spoofUserAgentInJs) {
@@ -240,7 +253,7 @@ ${userAgentPolyfill}
 </script>
 `;
       }
-      
+
       const head = $('head');
       if (head.length > 0) {
         head.prepend(errorOverlayScript);
@@ -258,11 +271,11 @@ ${userAgentPolyfill}
         }
       }
     }
-    
+
     // Add a comment showing what Revamp did
     const revampComment = `<!-- Revamp Proxy: Removed ${removedAds} ad scripts, ${removedTracking} tracking scripts -->`;
     $('head').append(revampComment);
-    
+
     return $.html();
   } catch (error) {
     console.error('❌ HTML transform error:', error instanceof Error ? error.message : error);
@@ -275,7 +288,7 @@ ${userAgentPolyfill}
  */
 export function isHtmlDocument(content: string): boolean {
   const trimmed = content.trim().toLowerCase();
-  return trimmed.startsWith('<!doctype') || 
+  return trimmed.startsWith('<!doctype') ||
          trimmed.startsWith('<html') ||
          /<html[\s>]/i.test(content);
 }

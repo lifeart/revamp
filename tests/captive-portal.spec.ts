@@ -214,4 +214,132 @@ test.describe('Captive Portal', () => {
       console.log('✅ Portal serves correct content type');
     });
   });
+
+  test.describe('Download Button Visibility', () => {
+    test('should have visible download certificate button', async ({ page }) => {
+      await page.goto(PORTAL_BASE, { timeout: 30000 });
+
+      // Find the download button by text content
+      const downloadButton = page.locator('a:has-text("Download CA Certificate")');
+
+      // Button should exist
+      await expect(downloadButton).toBeVisible({ timeout: 5000 });
+
+      // Button should link to certificate
+      const href = await downloadButton.getAttribute('href');
+      expect(href).toBe('/cert/revamp-ca.crt');
+
+      console.log('✅ Download certificate button is visible');
+    });
+
+    test('download button should be clickable and not obscured', async ({ page }) => {
+      await page.goto(PORTAL_BASE, { timeout: 30000 });
+
+      const downloadButton = page.locator('a:has-text("Download CA Certificate")');
+
+      // Check the button is visible and enabled
+      await expect(downloadButton).toBeVisible({ timeout: 5000 });
+      await expect(downloadButton).toBeEnabled();
+
+      // Get bounding box to verify it has proper size
+      const boundingBox = await downloadButton.boundingBox();
+      expect(boundingBox).not.toBeNull();
+      expect(boundingBox!.width).toBeGreaterThan(50);
+      expect(boundingBox!.height).toBeGreaterThan(30);
+
+      console.log(`✅ Download button is clickable (${boundingBox!.width}x${boundingBox!.height})`);
+    });
+
+    test('download button should have proper styling (not hidden by CSS)', async ({ page }) => {
+      await page.goto(PORTAL_BASE, { timeout: 30000 });
+
+      const downloadButton = page.locator('a:has-text("Download CA Certificate")');
+      await expect(downloadButton).toBeVisible({ timeout: 5000 });
+
+      // Check computed styles
+      const styles = await downloadButton.evaluate((el) => {
+        const computed = window.getComputedStyle(el);
+        return {
+          display: computed.display,
+          visibility: computed.visibility,
+          opacity: computed.opacity,
+          pointerEvents: computed.pointerEvents,
+          width: computed.width,
+          height: computed.height,
+        };
+      });
+
+      // Verify button is not hidden by CSS
+      expect(styles.display).not.toBe('none');
+      expect(styles.visibility).not.toBe('hidden');
+      expect(parseFloat(styles.opacity)).toBeGreaterThan(0);
+      expect(styles.pointerEvents).not.toBe('none');
+
+      console.log(`✅ Download button has proper CSS (display: ${styles.display}, visibility: ${styles.visibility})`);
+    });
+  });
+
+  test.describe('Portal Access Through Proxy', () => {
+    // These tests access the portal THROUGH the proxy to verify transformations don't break it
+    test.use({ proxy: { server: 'http://127.0.0.1:8080' } });
+
+    test('should have visible download button when accessed through proxy', async ({ page }) => {
+      // Access captive portal through the HTTP proxy
+      await page.goto(PORTAL_BASE, { timeout: 30000 });
+
+      // Find the download button
+      const downloadButton = page.locator('a:has-text("Download CA Certificate")');
+
+      // Button should exist and be visible even after proxy transformation
+      await expect(downloadButton).toBeVisible({ timeout: 5000 });
+
+      const href = await downloadButton.getAttribute('href');
+      expect(href).toBe('/cert/revamp-ca.crt');
+
+      console.log('✅ Download button visible through proxy');
+    });
+
+    test('download button should be clickable through proxy', async ({ page }) => {
+      await page.goto(PORTAL_BASE, { timeout: 30000 });
+
+      const downloadButton = page.locator('a:has-text("Download CA Certificate")');
+
+      await expect(downloadButton).toBeVisible({ timeout: 5000 });
+      await expect(downloadButton).toBeEnabled();
+
+      // Verify bounding box (button has proper size)
+      const boundingBox = await downloadButton.boundingBox();
+      expect(boundingBox).not.toBeNull();
+      expect(boundingBox!.width).toBeGreaterThan(50);
+      expect(boundingBox!.height).toBeGreaterThan(30);
+
+      console.log(`✅ Download button clickable through proxy (${boundingBox!.width}x${boundingBox!.height})`);
+    });
+
+    test('portal CSS should not be broken by proxy transformations', async ({ page }) => {
+      await page.goto(PORTAL_BASE, { timeout: 30000 });
+
+      const downloadButton = page.locator('a:has-text("Download CA Certificate")');
+      await expect(downloadButton).toBeVisible({ timeout: 5000 });
+
+      const styles = await downloadButton.evaluate((el) => {
+        const computed = window.getComputedStyle(el);
+        return {
+          display: computed.display,
+          visibility: computed.visibility,
+          opacity: computed.opacity,
+          backgroundColor: computed.backgroundColor,
+          pointerEvents: computed.pointerEvents,
+        };
+      });
+
+      // Button should not be hidden by CSS transformations
+      expect(styles.display).not.toBe('none');
+      expect(styles.visibility).not.toBe('hidden');
+      expect(parseFloat(styles.opacity)).toBeGreaterThan(0);
+      expect(styles.pointerEvents).not.toBe('none');
+
+      console.log(`✅ Portal CSS intact through proxy (display: ${styles.display})`);
+    });
+  });
 });

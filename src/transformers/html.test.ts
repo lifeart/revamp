@@ -452,4 +452,38 @@ describe('transformHtml', () => {
     // Script with mostly HTML should be skipped
     expect(result).toContain('<div>');
   });
+
+  it('should NOT remove elements with "ad" as substring in class names', async () => {
+    // This tests that we don't falsely match things like "download", "padding", "loading"
+    updateConfig({ removeAds: true });
+    const html = `
+      <html><head></head><body>
+        <a href="/cert" class="download-btn">Download Certificate</a>
+        <div class="loading-indicator">Loading...</div>
+        <button class="upload-btn">Upload</button>
+        <div class="padding-wrapper">Padded content</div>
+        <span class="cascade-effect">Cascade</span>
+        <div class="broadcast-list">Broadcast</div>
+        <div class="thread-item">Thread</div>
+        <p class="readable-content">Readable</p>
+        <div class="ad-container">Real Ad</div>
+        <p>Real content</p>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    // Should preserve elements with "ad" as part of larger words
+    expect(result).toContain('download-btn');
+    expect(result).toContain('Download Certificate');
+    expect(result).toContain('loading-indicator');
+    expect(result).toContain('upload-btn');
+    expect(result).toContain('padding-wrapper');
+    expect(result).toContain('cascade-effect');
+    expect(result).toContain('broadcast-list');
+    expect(result).toContain('thread-item');
+    expect(result).toContain('readable-content');
+    // But should remove actual ad containers
+    expect(result).not.toContain('ad-container');
+    expect(result).not.toContain('Real Ad');
+    expect(result).toContain('Real content');
+  });
 });
