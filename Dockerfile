@@ -39,9 +39,6 @@ RUN pnpm install --frozen-lockfile --prod
 # Copy built files
 COPY --from=builder /app/dist ./dist
 
-# Copy config files if they exist
-COPY config ./config
-
 # Create directories for certs and cache
 RUN mkdir -p .revamp-certs .revamp-cache
 
