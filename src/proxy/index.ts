@@ -1,18 +1,18 @@
 /**
  * Proxy Module
- * 
+ *
  * Main entry point for the proxy functionality.
  * Provides HTTP and SOCKS5 proxy servers with content transformation.
- * 
+ *
  * @module proxy
- * 
+ *
  * @example
  * ```typescript
  * import { createHttpProxy, createSocks5Proxy } from './proxy';
- * 
+ *
  * // Start HTTP proxy on port 8080
  * const httpServer = createHttpProxy(8080);
- * 
+ *
  * // Start SOCKS5 proxy on port 1080
  * const socks5Server = createSocks5Proxy(1080, 8080);
  * ```
@@ -29,7 +29,7 @@ export { createSocks5Proxy } from './socks5.js';
 // Types
 // =============================================================================
 
-export type { 
+export type {
   ContentType,
   HttpResponse,
   ParsedAddress,
@@ -94,16 +94,17 @@ export {
   buildCorsPreflightResponse,
   buildCorsHeadersString,
   removeCorsHeaders,
-  
+
   // Headers
   SKIP_RESPONSE_HEADERS,
   filterResponseHeaders,
-  
+
   // Compression
   shouldCompress,
   acceptsGzip,
   decompressBody,
-  
+  compressGzip,
+
   // Content
   getCharset,
   getContentType,
@@ -111,11 +112,11 @@ export {
   decodeWindows1251,
   decodeBufferToString,
   transformContent,
-  
+
   // Blocking
   shouldBlockDomain,
   shouldBlockUrl,
-  
+
   // User Agent
   SPOOFED_USER_AGENT,
   spoofUserAgent,

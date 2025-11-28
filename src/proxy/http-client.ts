@@ -164,7 +164,7 @@ async function processResponse(
 ): Promise<HttpResponse> {
   // Decompress if needed
   const encoding = res.headers['content-encoding'];
-  let responseBody = decompressBody(rawBody, encoding as string);
+  let responseBody = await decompressBody(rawBody, encoding as string);
 
   const updatedHeaders = { ...res.headers };
 

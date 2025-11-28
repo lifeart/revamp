@@ -12,7 +12,14 @@
  * @module proxy/shared
  */
 
-import { gunzipSync, brotliDecompressSync, inflateSync } from 'node:zlib';
+import { gunzip, brotliDecompress, inflate, gzip } from 'node:zlib';
+import { promisify } from 'node:util';
+
+// Promisified zlib functions for non-blocking compression/decompression
+const gunzipAsync = promisify(gunzip);
+const brotliDecompressAsync = promisify(brotliDecompress);
+const inflateAsync = promisify(inflate);
+const gzipAsync = promisify(gzip);
 import { URL } from 'node:url';
 import { getConfig, type RevampConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
@@ -221,25 +228,32 @@ export function getContentType(headers: Record<string, string | string[] | undef
 }
 
 /**
- * Decompress response body based on encoding
+ * Decompress response body based on encoding (async, non-blocking)
  */
-export function decompressBody(body: Buffer, encoding: string | undefined): Buffer {
+export async function decompressBody(body: Buffer, encoding: string | undefined): Promise<Buffer> {
   if (!encoding) return body;
 
   try {
     switch (encoding.toLowerCase()) {
       case 'gzip':
-        return gunzipSync(body);
+        return await gunzipAsync(body);
       case 'br':
-        return brotliDecompressSync(body);
+        return await brotliDecompressAsync(body);
       case 'deflate':
-        return inflateSync(body);
+        return await inflateAsync(body);
       default:
         return body;
     }
   } catch {
     return body;
   }
+}
+
+/**
+ * Compress body with gzip (async, non-blocking)
+ */
+export async function compressGzip(body: Buffer): Promise<Buffer> {
+  return await gzipAsync(body);
 }
 
 // Binary file signatures (magic bytes)

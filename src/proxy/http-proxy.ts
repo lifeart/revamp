@@ -13,7 +13,6 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import { URL } from 'node:url';
-import { gzipSync } from 'node:zlib';
 import { getEffectiveConfig } from '../config/index.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import {
@@ -33,6 +32,7 @@ import {
   getCharset,
   getContentType,
   decompressBody,
+  compressGzip,
   transformContent,
   shouldBlockDomain,
   shouldBlockUrl,
@@ -194,7 +194,7 @@ async function proxyRequest(
 
           // Decompress if needed
           const encoding = proxyRes.headers['content-encoding'];
-          body = Buffer.from(decompressBody(body, encoding as string));
+          body = Buffer.from(await decompressBody(body, encoding as string));
 
           // Check if this is a redirect response
           const statusCode = proxyRes.statusCode || 200;
@@ -270,7 +270,7 @@ async function proxyRequest(
           const contentTypeStr = Array.isArray(currentContentType) ? currentContentType[0] : (currentContentType || '');
           const acceptEncoding = req.headers['accept-encoding'] as string | undefined;
           if (acceptsGzip(acceptEncoding) && shouldCompress(contentTypeStr) && body.length > 1024) {
-            body = Buffer.from(gzipSync(body));
+            body = await compressGzip(body);
             headers['content-encoding'] = 'gzip';
             headers['vary'] = 'Accept-Encoding';
           }

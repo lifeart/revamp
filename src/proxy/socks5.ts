@@ -10,7 +10,6 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { connect } from 'node:net';
 import { TLSSocket, connect as tlsConnect } from 'node:tls';
-import { gzipSync } from 'node:zlib';
 import { generateDomainCert } from '../certs/index.js';
 import {
   // SOCKS5 Protocol
@@ -48,6 +47,7 @@ import {
   // Shared Utilities
   shouldCompress,
   acceptsGzip,
+  compressGzip,
   shouldBlockDomain,
   shouldBlockUrl,
   SKIP_RESPONSE_HEADERS,
@@ -380,7 +380,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         let isGzipped = false;
 
         if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
-          responseBody = Buffer.from(gzipSync(responseBody));
+          responseBody = await compressGzip(responseBody);
           isGzipped = true;
         }
 
@@ -588,7 +588,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
         let isGzipped = false;
 
         if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
-          responseBody = Buffer.from(gzipSync(responseBody));
+          responseBody = await compressGzip(responseBody);
           isGzipped = true;
         }
 

@@ -196,48 +196,48 @@ describe('getContentType', () => {
 });
 
 describe('decompressBody', () => {
-  it('should decompress gzip content', () => {
+  it('should decompress gzip content', async () => {
     const original = Buffer.from('Hello, World!');
     const compressed = gzipSync(original);
 
-    const result = decompressBody(compressed, 'gzip');
+    const result = await decompressBody(compressed, 'gzip');
     expect(result.toString()).toBe('Hello, World!');
   });
 
-  it('should decompress brotli content', () => {
+  it('should decompress brotli content', async () => {
     const original = Buffer.from('Hello, World!');
     const compressed = brotliCompressSync(original);
 
-    const result = decompressBody(compressed, 'br');
+    const result = await decompressBody(compressed, 'br');
     expect(result.toString()).toBe('Hello, World!');
   });
 
-  it('should decompress deflate content', () => {
+  it('should decompress deflate content', async () => {
     const original = Buffer.from('Hello, World!');
     const compressed = deflateSync(original);
 
-    const result = decompressBody(compressed, 'deflate');
+    const result = await decompressBody(compressed, 'deflate');
     expect(result.toString()).toBe('Hello, World!');
   });
 
-  it('should return unchanged for no encoding', () => {
+  it('should return unchanged for no encoding', async () => {
     const original = Buffer.from('Hello, World!');
 
-    expect(decompressBody(original, undefined)).toBe(original);
-    expect(decompressBody(original, '')).toBe(original);
+    expect(await decompressBody(original, undefined)).toBe(original);
+    expect(await decompressBody(original, '')).toBe(original);
   });
 
-  it('should return unchanged for unknown encoding', () => {
+  it('should return unchanged for unknown encoding', async () => {
     const original = Buffer.from('Hello, World!');
 
-    const result = decompressBody(original, 'unknown');
+    const result = await decompressBody(original, 'unknown');
     expect(result).toBe(original);
   });
 
-  it('should return original on decompression error', () => {
+  it('should return original on decompression error', async () => {
     const invalidGzip = Buffer.from('not gzip data');
 
-    const result = decompressBody(invalidGzip, 'gzip');
+    const result = await decompressBody(invalidGzip, 'gzip');
     expect(result).toBe(invalidGzip);
   });
 });
