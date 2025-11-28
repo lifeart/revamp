@@ -5,6 +5,11 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  // Proxy servers
+  createHttpProxy,
+  createSocks5Proxy,
+  proxyRequest,
+
   // Config endpoint
   CONFIG_ENDPOINT,
   isConfigEndpoint,
@@ -62,6 +67,20 @@ import {
 } from './index.js';
 
 describe('proxy index exports', () => {
+  describe('proxy server exports', () => {
+    it('should export createHttpProxy function', () => {
+      expect(typeof createHttpProxy).toBe('function');
+    });
+
+    it('should export createSocks5Proxy function', () => {
+      expect(typeof createSocks5Proxy).toBe('function');
+    });
+
+    it('should export proxyRequest function', () => {
+      expect(typeof proxyRequest).toBe('function');
+    });
+  });
+
   describe('config endpoint exports', () => {
     it('should export CONFIG_ENDPOINT', () => {
       expect(CONFIG_ENDPOINT).toBe('/__revamp__/config');

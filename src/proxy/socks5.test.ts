@@ -453,8 +453,98 @@ describe('SOCKS5 Proxy Integration Tests', () => {
           resolve();
         });
       });
+    });
+  });
 
-      // Note: Connection count may vary depending on timing
+  describe('Domain-based connections', () => {
+    it('should handle domain name address type', async () => {
+      // Connect using domain name instead of IP
+      const { socket, greeting, connectReply } = await makeSocks5Connection(
+        'localhost',
+        targetPort,
+        true // use domain
+      );
+
+      expect(greeting[0]).toBe(SOCKS_VERSION);
+      expect(greeting[1]).toBe(AUTH_NO_AUTH);
+      // Connection should succeed
+      expect(connectReply[0]).toBe(SOCKS_VERSION);
+
+      socket.destroy();
+    });
+  });
+
+  describe('Error scenarios', () => {
+    it('should handle incomplete SOCKS greeting', async () => {
+      const socket = connect(socks5Port, '127.0.0.1');
+
+      await new Promise<void>((resolve) => {
+        socket.on('connect', () => {
+          // Send only 1 byte - incomplete greeting
+          socket.write(Buffer.from([SOCKS_VERSION]));
+          // Wait a bit then close
+          setTimeout(() => {
+            socket.destroy();
+            resolve();
+          }, 100);
+        });
+
+        socket.on('error', () => resolve());
+      });
+    });
+
+    it('should handle partial connect request', async () => {
+      const socket = connect(socks5Port, '127.0.0.1');
+
+      await new Promise<void>((resolve) => {
+        let step = 0;
+
+        socket.on('connect', () => {
+          socket.write(createSocks5Greeting());
+        });
+
+        socket.on('data', () => {
+          if (step === 0) {
+            step++;
+            // Send partial connect request - only first few bytes
+            socket.write(Buffer.from([SOCKS_VERSION, CMD_CONNECT, 0x00]));
+            // Wait and close
+            setTimeout(() => {
+              socket.destroy();
+              resolve();
+            }, 100);
+          }
+        });
+
+        socket.on('error', () => resolve());
+      });
+    });
+
+    it('should handle invalid SOCKS version in request', async () => {
+      const socket = connect(socks5Port, '127.0.0.1');
+
+      await new Promise<void>((resolve) => {
+        let step = 0;
+
+        socket.on('connect', () => {
+          socket.write(createSocks5Greeting());
+        });
+
+        socket.on('data', () => {
+          if (step === 0) {
+            step++;
+            // Send connect request with wrong version
+            socket.write(Buffer.from([0x04, CMD_CONNECT, 0x00, ADDR_IPV4, 127, 0, 0, 1, 0x00, 0x50]));
+          } else {
+            // Should close connection
+            socket.destroy();
+            resolve();
+          }
+        });
+
+        socket.on('close', () => resolve());
+        socket.on('error', () => resolve());
+      });
     });
   });
 
