@@ -1,192 +1,167 @@
 import { test, expect } from '@playwright/test';
+import {
+  API_PATHS,
+  goToMockServer,
+  fetchJson,
+  expectTitleContains,
+  logSuccess,
+  logInfo,
+} from './helpers/test-utils';
 
 /**
  * Test suite for the Metrics Dashboard and Stats API
  * Tests the /__revamp__/metrics endpoint functionality
- *
- * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-const TEST_SITE = 'http://127.0.0.1:9080';
-const METRICS_HTML_PATH = '/__revamp__/metrics';
-const METRICS_JSON_PATH = '/__revamp__/metrics/json';
+/** Metrics JSON structure */
+interface MetricsJson {
+  uptime: number;
+  startTime: number;
+  requests: { total: number; blocked: number; cached: number; transformed: number };
+  transforms: { js: number; css: number; html: number; images: number };
+  bandwidth: { totalBytesIn: number; totalBytesOut: number; savedBytes: number };
+  activeConnections: number;
+  peakConnections: number;
+  cacheHitRate: number;
+  transformRate: number;
+  errors: number;
+}
 
 test.describe('Metrics Dashboard', () => {
   test.describe('HTML Dashboard', () => {
     test('should load metrics dashboard', async ({ page }) => {
-      // First navigate through proxy to establish connection
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Navigate to metrics dashboard
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await expectTitleContains(page, 'Revamp');
+      await expectTitleContains(page, 'Metrics');
 
-      // Check page content
-      const title = await page.title();
-      expect(title).toContain('Revamp');
-      expect(title).toContain('Metrics');
-
-      console.log(`✅ Metrics dashboard loaded - Title: "${title}"`);
+      logSuccess(`Metrics dashboard loaded - Title: "${await page.title()}"`);
     });
 
     test('should display uptime statistics', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for uptime card
       await expect(page.locator('text=Uptime')).toBeVisible();
-
-      // Should show start time
       const content = await page.content();
       expect(content).toContain('Since');
 
-      console.log('✅ Uptime statistics displayed');
+      logSuccess('Uptime statistics displayed');
     });
 
     test('should display request statistics', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for request stats
       await expect(page.locator('text=Total Requests')).toBeVisible();
       await expect(page.locator('text=active connections')).toBeVisible();
 
-      console.log('✅ Request statistics displayed');
+      logSuccess('Request statistics displayed');
     });
 
     test('should display cache hit rate', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for cache stats
       await expect(page.locator('text=Cache Hit Rate')).toBeVisible();
+      await expect(page.locator('.progress-bar')).toBeVisible();
 
-      // Should have progress bar
-      const progressBar = page.locator('.progress-bar');
-      await expect(progressBar).toBeVisible();
-
-      console.log('✅ Cache hit rate displayed');
+      logSuccess('Cache hit rate displayed');
     });
 
     test('should display blocked requests count', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for blocked stats
       await expect(page.locator('text=Blocked Requests')).toBeVisible();
       await expect(page.locator('text=Ads & trackers blocked')).toBeVisible();
 
-      console.log('✅ Blocked requests count displayed');
+      logSuccess('Blocked requests count displayed');
     });
 
     test('should display transformation counts', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for transformation stats
       await expect(page.locator('text=Transformations')).toBeVisible();
-      // Use exact match for stat labels to avoid matching config items
-      await expect(page.locator('.stat-label', { hasText: 'JavaScript' })).toBeVisible();
-      await expect(page.locator('.stat-label', { hasText: 'CSS' })).toBeVisible();
-      await expect(page.locator('.stat-label', { hasText: 'HTML' })).toBeVisible();
-      await expect(page.locator('.stat-label', { hasText: 'Images' })).toBeVisible();
 
-      console.log('✅ Transformation counts displayed');
+      const statLabels = ['JavaScript', 'CSS', 'HTML', 'Images'];
+      for (const label of statLabels) {
+        await expect(page.locator('.stat-label', { hasText: label })).toBeVisible();
+      }
+
+      logSuccess('Transformation counts displayed');
     });
 
     test('should display bandwidth statistics', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for bandwidth stats
-      await expect(page.locator('text=Bandwidth')).toBeVisible();
-      await expect(page.locator('text=Downloaded')).toBeVisible();
-      await expect(page.locator('text=Sent to Client')).toBeVisible();
-      await expect(page.locator('text=Saved')).toBeVisible();
+      const expectedTexts = ['Bandwidth', 'Downloaded', 'Sent to Client', 'Saved'];
+      for (const text of expectedTexts) {
+        await expect(page.locator(`text=${text}`)).toBeVisible();
+      }
 
-      console.log('✅ Bandwidth statistics displayed');
+      logSuccess('Bandwidth statistics displayed');
     });
 
     test('should display server info', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for server info
-      await expect(page.locator('text=Server Info')).toBeVisible();
-      await expect(page.locator('text=SOCKS5 Port')).toBeVisible();
-      await expect(page.locator('text=HTTP Port')).toBeVisible();
-      await expect(page.locator('text=Local IP')).toBeVisible();
+      const expectedTexts = ['Server Info', 'SOCKS5 Port', 'HTTP Port', 'Local IP', '1080', '8080'];
+      for (const text of expectedTexts) {
+        await expect(page.locator(`text=${text}`)).toBeVisible();
+      }
 
-      // Should show port numbers
-      await expect(page.locator('text=1080')).toBeVisible();
-      await expect(page.locator('text=8080')).toBeVisible();
-
-      console.log('✅ Server info displayed');
+      logSuccess('Server info displayed');
     });
 
     test('should display active configuration', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for configuration section
       await expect(page.locator('text=Active Configuration')).toBeVisible();
 
-      // Should show config items with ON/OFF status (using full labels from client-options.ts)
       const content = await page.content();
       expect(content).toContain('Transform JavaScript');
       expect(content).toContain('Transform CSS');
       expect(content).toContain('Remove Ads');
 
-      console.log('✅ Active configuration displayed');
+      logSuccess('Active configuration displayed');
     });
 
     test('should have links to JSON API and PAC file', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.goto(`${TEST_SITE}${METRICS_HTML_PATH}`, { waitUntil: 'domcontentloaded' });
+      await goToMockServer(page);
+      await goToMockServer(page, API_PATHS.metricsHtml);
 
-      // Check for links
-      const jsonLink = page.locator('a[href*="metrics/json"]');
-      await expect(jsonLink).toBeVisible();
+      await expect(page.locator('a[href*="metrics/json"]')).toBeVisible();
+      await expect(page.locator('a[href*="pac"]')).toBeVisible();
 
-      const pacLink = page.locator('a[href*="pac"]');
-      await expect(pacLink).toBeVisible();
-
-      console.log('✅ Dashboard has links to JSON API and PAC file');
+      logSuccess('Dashboard has links to JSON API and PAC file');
     });
   });
 
   test.describe('JSON API', () => {
     test('should return JSON metrics', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await goToMockServer(page);
 
-      const response = await page.evaluate(async (path) => {
-        const res = await fetch(path);
-        return {
-          status: res.status,
-          contentType: res.headers.get('content-type'),
-          body: await res.json()
-        };
-      }, METRICS_JSON_PATH);
+      const metrics = await fetchJson<MetricsJson>(page, API_PATHS.metricsJson);
 
-      expect(response.status).toBe(200);
-      expect(response.contentType).toContain('application/json');
+      expect(metrics).toHaveProperty('uptime');
+      expect(metrics).toHaveProperty('requests');
+      expect(metrics).toHaveProperty('transforms');
+      expect(metrics).toHaveProperty('bandwidth');
 
-      // Check for expected fields
-      expect(response.body).toHaveProperty('uptime');
-      expect(response.body).toHaveProperty('requests');
-      expect(response.body).toHaveProperty('transforms');
-      expect(response.body).toHaveProperty('bandwidth');
-
-      console.log('✅ JSON metrics API returns valid data');
-      console.log(`   Uptime: ${response.body.uptime}s, Requests: ${response.body.requests.total}`);
+      logSuccess('JSON metrics API returns valid data');
+      logInfo(`Uptime: ${metrics.uptime}s, Requests: ${metrics.requests.total}`);
     });
 
     test('should have complete metrics structure', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await goToMockServer(page);
 
-      const metrics = await page.evaluate(async (path) => {
-        const res = await fetch(path);
-        return res.json();
-      }, METRICS_JSON_PATH);
+      const metrics = await fetchJson<MetricsJson>(page, API_PATHS.metricsJson);
 
       // Check requests structure
       expect(metrics.requests).toHaveProperty('total');
@@ -206,40 +181,36 @@ test.describe('Metrics Dashboard', () => {
       expect(metrics.bandwidth).toHaveProperty('savedBytes');
 
       // Check other fields
-      expect(metrics).toHaveProperty('activeConnections');
-      expect(metrics).toHaveProperty('peakConnections');
-      expect(metrics).toHaveProperty('cacheHitRate');
-      expect(metrics).toHaveProperty('transformRate');
-      expect(metrics).toHaveProperty('errors');
-      expect(metrics).toHaveProperty('startTime');
-      expect(metrics).toHaveProperty('uptime');
+      const expectedFields = [
+        'activeConnections',
+        'peakConnections',
+        'cacheHitRate',
+        'transformRate',
+        'errors',
+        'startTime',
+        'uptime',
+      ];
+      for (const field of expectedFields) {
+        expect(metrics).toHaveProperty(field);
+      }
 
-      console.log('✅ Metrics JSON has complete structure');
+      logSuccess('Metrics JSON has complete structure');
     });
 
     test('should update metrics after activity', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await goToMockServer(page);
 
-      // Get initial metrics
-      const initialMetrics = await page.evaluate(async (path) => {
-        const res = await fetch(path);
-        return res.json();
-      }, METRICS_JSON_PATH);
+      const initialMetrics = await fetchJson<MetricsJson>(page, API_PATHS.metricsJson);
 
-      // Navigate to another page to generate activity (using about instead of external domain)
-      await page.goto(`${TEST_SITE}/about`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Navigate to another page to generate activity
+      await goToMockServer(page, '/about');
 
-      // Get updated metrics
-      const updatedMetrics = await page.evaluate(async (path) => {
-        const res = await fetch(path);
-        return res.json();
-      }, METRICS_JSON_PATH);
+      const updatedMetrics = await fetchJson<MetricsJson>(page, API_PATHS.metricsJson);
 
-      // Total requests should have increased
       expect(updatedMetrics.requests.total).toBeGreaterThan(initialMetrics.requests.total);
 
-      console.log('✅ Metrics update after activity');
-      console.log(`   Initial requests: ${initialMetrics.requests.total}, Updated: ${updatedMetrics.requests.total}`);
+      logSuccess('Metrics update after activity');
+      logInfo(`Initial requests: ${initialMetrics.requests.total}, Updated: ${updatedMetrics.requests.total}`);
     });
   });
 });

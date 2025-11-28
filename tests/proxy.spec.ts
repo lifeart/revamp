@@ -1,165 +1,92 @@
 import { test, expect } from '@playwright/test';
+import {
+  MOCK_SERVER,
+  goToMockServer,
+  expectTitleContains,
+  logSuccess,
+} from './helpers/test-utils';
 
 /**
  * Test suite for verifying pages work through Revamp proxy
  * Tests that pages load correctly and content is transformed
- *
- * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-// Mock server URL (started by playwright via webServer config)
-const MOCK_SERVER = 'http://127.0.0.1:9080';
-
 test.describe('Revamp Proxy - Page Verification', () => {
-
   test.describe('Mock Server - Main Test Page', () => {
     test('should load the homepage', async ({ page }) => {
-      const response = await page.goto(`${MOCK_SERVER}/`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-
-      const status = response?.status() ?? 0;
-
-      // Verify page loaded successfully (mock server should never return 5xx)
-      expect(status).toBeLessThan(400);
-
-      // Check page has content
-      const title = await page.title();
-      expect(title).toBeTruthy();
-      expect(title).toContain('Mock Test Page');
-
-      // Verify the page has main content
-      const body = await page.locator('body');
-      await expect(body).toBeVisible();
-
-      console.log(`✅ Mock server loaded - Title: "${title}"`);
+      await goToMockServer(page);
+      await expectTitleContains(page, 'Mock Test Page');
+      await expect(page.locator('body')).toBeVisible();
+      logSuccess(`Mock server loaded - Title: "${await page.title()}"`);
     });
 
     test('should have polyfills injected', async ({ page }) => {
-      await page.goto(`${MOCK_SERVER}/`, {
-        waitUntil: 'domcontentloaded',
-      });
+      await goToMockServer(page);
 
-      // Check that our polyfills are present
       const hasPolyfills = await page.evaluate(() => {
-        // Check for Array.prototype.flat polyfill marker or native
         return typeof Array.prototype.flat === 'function';
       });
 
       expect(hasPolyfills).toBe(true);
-      console.log('✅ Mock server - Polyfills verified');
+      logSuccess('Mock server - Polyfills verified');
     });
   });
 
   test.describe('Mock Server - Search Page', () => {
     test('should load the search page', async ({ page }) => {
-      const response = await page.goto(`${MOCK_SERVER}/search`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-
-      // Verify page loaded successfully
-      expect(response?.status()).toBeLessThan(400);
-
-      // Check page has content
-      const title = await page.title();
-      expect(title).toBeTruthy();
-
-      // Verify the page has main content
-      const body = await page.locator('body');
-      await expect(body).toBeVisible();
-
-      console.log(`✅ Search page loaded - Title: "${title}"`);
+      await goToMockServer(page, '/search');
+      await expect(page.locator('body')).toBeVisible();
+      logSuccess(`Search page loaded - Title: "${await page.title()}"`);
     });
 
     test('should have a search input on main page', async ({ page }) => {
-      await page.goto(`${MOCK_SERVER}/`, {
-        waitUntil: 'domcontentloaded',
-      });
+      await goToMockServer(page);
 
-      // Main page should have a search form
       const searchInput = page.locator('input[type="search"], input[name="q"]').first();
+      const hasSearch = (await searchInput.count()) > 0;
 
-      // Check if search exists
-      const hasSearch = await searchInput.count() > 0;
       expect(hasSearch).toBe(true);
-      console.log(`✅ Mock server - Search input present: ${hasSearch}`);
+      logSuccess(`Mock server - Search input present: ${hasSearch}`);
     });
   });
 
   test.describe('Mock Server - About Page', () => {
     test('should load the about page', async ({ page }) => {
-      const response = await page.goto(`${MOCK_SERVER}/about`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-
-      // Verify page loaded successfully
-      expect(response?.status()).toBeLessThan(400);
-
-      // Check page has content
-      const title = await page.title();
-      expect(title).toBeTruthy();
-
-      // Verify the page has main content
-      const body = await page.locator('body');
-      await expect(body).toBeVisible();
-
-      console.log(`✅ About page loaded - Title: "${title}"`);
+      await goToMockServer(page, '/about');
+      await expect(page.locator('body')).toBeVisible();
+      logSuccess(`About page loaded - Title: "${await page.title()}"`);
     });
 
     test('should display content', async ({ page }) => {
-      await page.goto(`${MOCK_SERVER}/about`, {
-        waitUntil: 'domcontentloaded',
-      });
-
-      // Wait for some content to appear
+      await goToMockServer(page, '/about');
       await page.waitForTimeout(500);
 
-      // Check that the page has some visible text content
       const bodyText = await page.locator('body').innerText();
       expect(bodyText.length).toBeGreaterThan(10);
 
-      console.log(`✅ About page - Content loaded (${bodyText.length} chars)`);
+      logSuccess(`About page - Content loaded (${bodyText.length} chars)`);
     });
 
     test('should have transformed JavaScript', async ({ page }) => {
-      await page.goto(`${MOCK_SERVER}/`, {
-        waitUntil: 'domcontentloaded',
-      });
+      await goToMockServer(page);
 
-      // Verify JavaScript is functioning
       const jsWorks = await page.evaluate(() => {
         return typeof window !== 'undefined' && typeof document !== 'undefined';
       });
 
       expect(jsWorks).toBe(true);
-      console.log('✅ Mock server - JavaScript functioning');
+      logSuccess('Mock server - JavaScript functioning');
     });
   });
 
   test.describe('Cross-page verification', () => {
     test('should handle multiple pages in sequence', async ({ page }) => {
-      const pages = [
-        `${MOCK_SERVER}/`,
-        `${MOCK_SERVER}/about`,
-        `${MOCK_SERVER}/search`,
-      ];
+      const paths = ['/', '/about', '/search'];
 
-      for (const pageUrl of pages) {
-        const response = await page.goto(pageUrl, {
-          waitUntil: 'domcontentloaded',
-          timeout: 30000,
-        });
-
-        const status = response?.status() ?? 0;
-
-        // All mock server pages should load successfully
-        expect(status).toBeLessThan(400);
-
+      for (const path of paths) {
+        await goToMockServer(page, path);
         const title = await page.title();
-        console.log(`✅ ${pageUrl} - Title: "${title}"`);
+        logSuccess(`${MOCK_SERVER}${path} - Title: "${title}"`);
       }
     });
   });

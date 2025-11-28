@@ -88,8 +88,8 @@ When writing CSS selectors for ad/tracking removal in `src/transformers/html.ts`
 - **Coverage**: `npm run test:coverage`
 
 ### Current Test Counts
-- Unit tests: ~674 tests across 24 files
-- E2E tests: ~98 tests (including 23 captive portal tests)
+- Unit tests: 674 tests across 24 files
+- E2E tests: 98 tests (including 23 captive portal tests)
 
 ### Running Tests
 
