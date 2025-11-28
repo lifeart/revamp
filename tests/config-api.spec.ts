@@ -3,10 +3,12 @@ import { test, expect, request } from '@playwright/test';
 /**
  * Test suite for the Config API
  * Tests the /__revamp__/config endpoint functionality
+ *
+ * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-// Use a real site that we can access through the proxy
-const TEST_SITE = 'https://ya.ru';
+// Mock server URL (started by playwright via webServer config)
+const TEST_SITE = 'http://127.0.0.1:9080';
 const CONFIG_PATH = '/__revamp__/config';
 
 test.describe('Config API', () => {
@@ -185,8 +187,8 @@ test.describe('Config API', () => {
         });
       }, { endpoint: CONFIG_PATH, value: testValue });
 
-      // Navigate to different page
-      await page.goto('https://pikabu.ru/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Navigate to different page (using about instead of external domain)
+      await page.goto(`${TEST_SITE}/about`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       // Check config again from different domain (API returns { success, config })
       const persistedResponse = await page.evaluate(async (endpoint) => {

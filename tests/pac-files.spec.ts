@@ -3,9 +3,11 @@ import { test, expect } from '@playwright/test';
 /**
  * Test suite for PAC (Proxy Auto-Configuration) Files
  * Tests the /__revamp__/pac/* endpoints
+ *
+ * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-const TEST_SITE = 'https://ya.ru';
+const TEST_SITE = 'http://127.0.0.1:9080';
 const PAC_SOCKS5_PATH = '/__revamp__/pac/socks5';
 const PAC_HTTP_PATH = '/__revamp__/pac/http';
 const PAC_COMBINED_PATH = '/__revamp__/pac/combined';
@@ -214,9 +216,9 @@ test.describe('PAC Files', () => {
       console.log('✅ PAC files have CORS headers');
     });
 
-    test('should work from different domain context', async ({ page }) => {
-      // Navigate to different site
-      await page.goto('https://pikabu.ru/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    test('should work from different page context', async ({ page }) => {
+      // Navigate to different page (using about instead of external domain)
+      await page.goto(`${TEST_SITE}/about`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       // Fetch PAC file from this domain context
       const pacContent = await page.evaluate(async (path) => {
@@ -226,7 +228,7 @@ test.describe('PAC Files', () => {
 
       expect(pacContent).toContain('FindProxyForURL');
 
-      console.log('✅ PAC files accessible from any domain through proxy');
+      console.log('✅ PAC files accessible from any page through proxy');
     });
   });
 });

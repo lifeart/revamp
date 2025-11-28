@@ -3,9 +3,11 @@ import { test, expect } from '@playwright/test';
 /**
  * Test suite for Config and Error Overlays
  * Tests the injected overlay scripts functionality
+ *
+ * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-const TEST_SITE = 'https://pikabu.ru';
+const TEST_SITE = 'http://127.0.0.1:9080';
 
 test.describe('Config Overlay', () => {
   test.describe('Overlay Injection', () => {

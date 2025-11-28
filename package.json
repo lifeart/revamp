@@ -25,6 +25,7 @@
     "test:unit:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
+    "mock-server": "tsx --no-warnings tests/mock-server.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

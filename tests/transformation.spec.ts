@@ -3,9 +3,11 @@ import { test, expect } from '@playwright/test';
 /**
  * Test suite for HTML Transformation
  * Tests that transformers inject overlays and polyfills correctly
+ *
+ * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-const TEST_SITE = 'https://ya.ru';
+const TEST_SITE = 'http://127.0.0.1:9080';
 
 test.describe('HTML Transformation', () => {
   test.describe('Overlay Injection', () => {

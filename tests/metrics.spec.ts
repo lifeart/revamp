@@ -3,9 +3,11 @@ import { test, expect } from '@playwright/test';
 /**
  * Test suite for the Metrics Dashboard and Stats API
  * Tests the /__revamp__/metrics endpoint functionality
+ *
+ * Uses a local mock server (http://127.0.0.1:9080) to avoid external dependencies
  */
 
-const TEST_SITE = 'https://ya.ru';
+const TEST_SITE = 'http://127.0.0.1:9080';
 const METRICS_HTML_PATH = '/__revamp__/metrics';
 const METRICS_JSON_PATH = '/__revamp__/metrics/json';
 
@@ -223,8 +225,8 @@ test.describe('Metrics Dashboard', () => {
         return res.json();
       }, METRICS_JSON_PATH);
 
-      // Navigate to another page to generate activity
-      await page.goto('https://pikabu.ru/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // Navigate to another page to generate activity (using about instead of external domain)
+      await page.goto(`${TEST_SITE}/about`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       // Get updated metrics
       const updatedMetrics = await page.evaluate(async (path) => {

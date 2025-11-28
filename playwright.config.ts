@@ -40,17 +40,26 @@ export default defineConfig({
     },
   ],
 
-  // Start the proxy server before running tests
-  webServer: {
-    command: 'pnpm start',
-    // Use captive portal port for ready check since it responds to direct HTTP requests
-    // The HTTP proxy port (8080) expects proxied requests, not direct ones
-    url: 'http://127.0.0.1:8888',
-    // Set to false to ensure Playwright stops the server when tests complete
-    // Set to true if you want to run tests against a manually started server
-    reuseExistingServer: false,
-    timeout: 30000,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  },
+  // Start both the proxy server and mock server before running tests
+  webServer: [
+    {
+      command: 'pnpm start',
+      // Use captive portal port for ready check since it responds to direct HTTP requests
+      // The HTTP proxy port (8080) expects proxied requests, not direct ones
+      url: 'http://127.0.0.1:8888',
+      reuseExistingServer: false,
+      timeout: 30000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+    {
+      command: 'pnpm mock-server',
+      // Mock server HTTP port for ready check
+      url: 'http://127.0.0.1:9080',
+      reuseExistingServer: false,
+      timeout: 10000,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    },
+  ],
 });

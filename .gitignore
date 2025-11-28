@@ -39,6 +39,7 @@ test-results/
 playwright-report/
 coverage/
 .nyc_output/
+tests/mock-server.js
 
 # Misc
 *.tgz
