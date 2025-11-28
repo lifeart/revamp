@@ -46,7 +46,9 @@ export default defineConfig({
     // Use captive portal port for ready check since it responds to direct HTTP requests
     // The HTTP proxy port (8080) expects proxied requests, not direct ones
     url: 'http://127.0.0.1:8888',
-    reuseExistingServer: !process.env.CI,
+    // Set to false to ensure Playwright stops the server when tests complete
+    // Set to true if you want to run tests against a manually started server
+    reuseExistingServer: false,
     timeout: 30000,
     stdout: 'pipe',
     stderr: 'pipe',
