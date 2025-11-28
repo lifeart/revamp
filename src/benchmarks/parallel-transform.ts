@@ -12,29 +12,29 @@ import { compressGzip, decompressBody } from '../proxy/shared.js';
 import { updateConfig } from '../config/index.js';
 
 // Sample JavaScript code with modern features (needs transformation)
-const SAMPLE_JS = `
-const data = { name: 'test', value: 42 };
-const copy = { ...data, extra: true };
-const getName = () => copy?.name ?? 'default';
-const result = async () => {
-  const items = [1, 2, 3, 4, 5];
-  const doubled = items.map(x => x * 2);
-  for await (const item of asyncIterator()) {
-    console.log(item);
+// Each iteration is wrapped in an IIFE to avoid duplicate declarations
+const SAMPLE_JS = Array.from({ length: 10 }, (_, i) => `
+(function sample${i}() {
+  const data${i} = { name: 'test', value: ${42 + i} };
+  const copy${i} = { ...data${i}, extra: true };
+  const getName${i} = () => copy${i}?.name ?? 'default';
+  const result${i} = async () => {
+    const items = [1, 2, 3, 4, 5];
+    const doubled = items.map(x => x * 2);
+    return doubled;
+  };
+  class MyClass${i} {
+    #privateField = ${123 + i};
+    static staticField = 'hello';
+    getPrivate() { return this.#privateField; }
   }
-  return doubled;
-};
-class MyClass {
-  #privateField = 123;
-  static staticField = 'hello';
-  getPrivate() { return this.#privateField; }
-}
-const arr = [1, [2, [3]]];
-const flat = arr.flat(2);
-const entries = Object.fromEntries([['a', 1], ['b', 2]]);
-globalThis.myGlobal = 'test';
-export default result;
-`.repeat(10); // Repeat to make it more substantial
+  const arr${i} = [1, [2, [3]]];
+  const flat${i} = arr${i}.flat(2);
+  const entries${i} = Object.fromEntries([['a', 1], ['b', 2]]);
+  globalThis.myGlobal${i} = 'test';
+  return result${i};
+})();
+`).join('\n');
 
 // Sample CSS with modern features
 const SAMPLE_CSS = `
@@ -50,7 +50,7 @@ const SAMPLE_CSS = `
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   aspect-ratio: 16 / 9;
-  color-mix(in oklch, red 50%, blue);
+  background-color: color-mix(in oklch, red 50%, blue);
 }
 
 @media (prefers-color-scheme: dark) {
