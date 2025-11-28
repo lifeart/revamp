@@ -46,7 +46,7 @@
   "author": "Alex Kanunnikov",
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",
