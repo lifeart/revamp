@@ -2,6 +2,8 @@
  * Cache implementation for transformed content
  * Uses file-based caching with in-memory LRU for hot data
  * All file operations are async for non-blocking I/O
+ *
+ * @module cache
  */
 
 import { createHash } from 'node:crypto';
@@ -9,6 +11,11 @@ import { access, mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:
 import { join } from 'node:path';
 import { getConfig } from '../config/index.js';
 
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Base cache entry structure */
 interface CacheEntry {
   data: Buffer;
   contentType: string;
@@ -16,16 +23,22 @@ interface CacheEntry {
   url: string;
 }
 
+/** Memory cache entry with size tracking for LRU eviction */
 interface MemoryCacheEntry extends CacheEntry {
   size: number;
 }
 
-// In-memory LRU cache for hot data
-const memoryCache = new Map<string, MemoryCacheEntry>();
-const MAX_MEMORY_CACHE_SIZE = 100 * 1024 * 1024; // 100MB (increased for better hit rate)
-let currentMemorySize = 0;
+// =============================================================================
+// Constants
+// =============================================================================
 
-// Domains that should never be cached (e.g., iCloud for authentication/sync)
+/** Maximum memory cache size (100MB) */
+const MAX_MEMORY_CACHE_SIZE = 100 * 1024 * 1024;
+
+/** Redirect status codes that should not be cached */
+const REDIRECT_STATUS_CODES = [301, 302, 303, 307, 308];
+
+/** Domains that should never be cached (authentication/sync) */
 const NO_CACHE_DOMAINS = [
   'icloud.com',
   'apple.com',
@@ -33,17 +46,31 @@ const NO_CACHE_DOMAINS = [
   'me.com',
 ];
 
-// URLs that are known to redirect - we shouldn't cache these
+// =============================================================================
+// State
+// =============================================================================
+
+/** In-memory LRU cache for hot data */
+const memoryCache = new Map<string, MemoryCacheEntry>();
+
+/** Current memory usage in bytes */
+let currentMemorySize = 0;
+
+/** URLs that are known to redirect - we shouldn't cache these */
 const redirectUrls = new Set<string>();
 
-// Redirect status codes
-const REDIRECT_STATUS_CODES = [301, 302, 303, 307, 308];
-
-// Track if cache dir has been created
+/** Track if cache dir has been created */
 let cacheDirInitialized = false;
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
 
 /**
  * Check if file exists (async)
+ *
+ * @param path - File path to check
+ * @returns true if file exists
  */
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -144,6 +171,18 @@ function evictOldestFromMemory(): void {
   }
 }
 
+// =============================================================================
+// Public API
+// =============================================================================
+
+/**
+ * Get cached content for a URL.
+ *
+ * @param url - URL to look up
+ * @param contentType - Content type for cache key
+ * @param clientIp - Optional client IP for per-client cache separation
+ * @returns Cached buffer or null if not found
+ */
 export async function getCached(url: string, contentType: string, clientIp?: string): Promise<Buffer | null> {
   const config = getConfig();
   if (!config.cacheEnabled) return null;

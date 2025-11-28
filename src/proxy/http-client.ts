@@ -185,7 +185,7 @@ async function processResponse(
   // Decompress if needed
   const encoding = res.headers['content-encoding'];
   const encodingStr = Array.isArray(encoding) ? encoding[0] : encoding;
-  let responseBody = await decompressBody(rawBody, encodingStr);
+  let responseBody: Buffer = await decompressBody(rawBody, encodingStr);
   const wasDecompressed = responseBody !== rawBody;
 
   // Copy headers and remove content-encoding if we decompressed

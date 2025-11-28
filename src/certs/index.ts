@@ -1,6 +1,8 @@
 /**
  * Certificate generation for HTTPS interception
  * Creates CA certificate and per-domain certificates on the fly
+ *
+ * @module certs
  */
 
 import forge from 'node-forge';
@@ -8,17 +10,38 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config/index.js';
 
+// =============================================================================
+// Types
+// =============================================================================
+
+/**
+ * Certificate key-pair (PEM format)
+ */
 interface CertificatePair {
   key: string;
   cert: string;
 }
 
-// Cache for generated domain certificates
+// =============================================================================
+// State
+// =============================================================================
+
+/** Cache for generated domain certificates */
 const certCache = new Map<string, CertificatePair>();
 
+/** CA private key (loaded on first use) */
 let caKey: forge.pki.rsa.PrivateKey | null = null;
+
+/** CA certificate (loaded on first use) */
 let caCert: forge.pki.Certificate | null = null;
 
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/**
+ * Ensure certificate directory exists
+ */
 function ensureCertDir(): void {
   const config = getConfig();
   if (!existsSync(config.certDir)) {
@@ -26,50 +49,56 @@ function ensureCertDir(): void {
   }
 }
 
+// =============================================================================
+// CA Certificate Functions
+// =============================================================================
+
 /**
- * Generate the CA (Certificate Authority) certificate
- * This needs to be installed on the client device to trust our proxy
+ * Generate the CA (Certificate Authority) certificate.
+ * This needs to be installed on the client device to trust our proxy.
+ *
+ * @returns Certificate key-pair in PEM format
  */
 export function generateCA(): CertificatePair {
   const config = getConfig();
   ensureCertDir();
-  
+
   const caKeyPath = join(config.certDir, config.caKeyFile);
   const caCertPath = join(config.certDir, config.caCertFile);
-  
+
   // Check if CA already exists
   if (existsSync(caKeyPath) && existsSync(caCertPath)) {
     const keyPem = readFileSync(caKeyPath, 'utf-8');
     const certPem = readFileSync(caCertPath, 'utf-8');
-    
+
     caKey = forge.pki.privateKeyFromPem(keyPem);
     caCert = forge.pki.certificateFromPem(certPem);
-    
+
     return { key: keyPem, cert: certPem };
   }
-  
+
   console.log('🔐 Generating new CA certificate...');
-  
+
   // Generate new CA
   const keys = forge.pki.rsa.generateKeyPair(2048);
   const cert = forge.pki.createCertificate();
-  
+
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';
   cert.validity.notBefore = new Date();
   cert.validity.notAfter = new Date();
   cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10);
-  
+
   const attrs = [
     { name: 'commonName', value: 'Revamp Proxy CA' },
     { name: 'countryName', value: 'US' },
     { name: 'organizationName', value: 'Revamp' },
     { name: 'organizationalUnitName', value: 'Revamp Proxy' },
   ];
-  
+
   cert.setSubject(attrs);
   cert.setIssuer(attrs);
-  
+
   cert.setExtensions([
     {
       name: 'basicConstraints',
@@ -87,28 +116,36 @@ export function generateCA(): CertificatePair {
       name: 'subjectKeyIdentifier',
     },
   ]);
-  
+
   // Self-sign the CA certificate
   cert.sign(keys.privateKey, forge.md.sha256.create());
-  
+
   const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
   const certPem = forge.pki.certificateToPem(cert);
-  
+
   // Save to disk
   writeFileSync(caKeyPath, keyPem);
   writeFileSync(caCertPath, certPem);
-  
+
   caKey = keys.privateKey;
   caCert = cert;
-  
+
   console.log(`✅ CA certificate saved to: ${caCertPath}`);
   console.log('📱 Install this certificate on your device to trust the proxy');
-  
+
   return { key: keyPem, cert: certPem };
 }
 
+// =============================================================================
+// Domain Certificate Functions
+// =============================================================================
+
 /**
- * Generate a certificate for a specific domain, signed by our CA
+ * Generate a certificate for a specific domain, signed by our CA.
+ * Results are cached for performance.
+ *
+ * @param domain - Domain name to generate certificate for
+ * @returns Certificate key-pair in PEM format
  */
 export function generateDomainCert(domain: string): CertificatePair {
   // Check cache first
@@ -116,34 +153,34 @@ export function generateDomainCert(domain: string): CertificatePair {
   if (cached) {
     return cached;
   }
-  
+
   // Ensure CA is loaded
   if (!caKey || !caCert) {
     generateCA();
   }
-  
+
   if (!caKey || !caCert) {
     throw new Error('CA not initialized');
   }
-  
+
   // Generate domain certificate
   const keys = forge.pki.rsa.generateKeyPair(2048);
   const cert = forge.pki.createCertificate();
-  
+
   cert.publicKey = keys.publicKey;
   cert.serialNumber = Date.now().toString(16);
   cert.validity.notBefore = new Date();
   cert.validity.notAfter = new Date();
   cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
-  
+
   const attrs = [
     { name: 'commonName', value: domain },
     { name: 'organizationName', value: 'Revamp' },
   ];
-  
+
   cert.setSubject(attrs);
   cert.setIssuer(caCert.subject.attributes);
-  
+
   cert.setExtensions([
     {
       name: 'basicConstraints',
@@ -166,33 +203,40 @@ export function generateDomainCert(domain: string): CertificatePair {
       ],
     },
   ]);
-  
+
   // Sign with CA key
   cert.sign(caKey, forge.md.sha256.create());
-  
+
   const result: CertificatePair = {
     key: forge.pki.privateKeyToPem(keys.privateKey),
     cert: forge.pki.certificateToPem(cert),
   };
-  
+
   // Cache the certificate
   certCache.set(domain, result);
-  
+
   return result;
 }
 
+// =============================================================================
+// Public API
+// =============================================================================
+
 /**
- * Get the CA certificate for installation on client devices
+ * Get the CA certificate for installation on client devices.
+ *
+ * @returns CA certificate in PEM format
+ * @throws Error if CA is not initialized
  */
 export function getCACert(): string {
   if (!caCert) {
     generateCA();
   }
-  
+
   if (!caCert) {
     throw new Error('CA not initialized');
   }
-  
+
   return forge.pki.certificateToPem(caCert);
 }
 
