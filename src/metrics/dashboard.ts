@@ -4,8 +4,21 @@
  */
 
 import { getMetrics, formatBytes, formatDuration } from './index.js';
-import { getConfig } from '../config/index.js';
+import { getConfig, CLIENT_CONFIG_OPTIONS } from '../config/index.js';
 import { getLocalIpAddress } from '../pac/generator.js';
+import type { RevampConfig } from '../config/index.js';
+
+/**
+ * Generate config items HTML from client options metadata
+ */
+function generateConfigItemsHtml(config: RevampConfig): string {
+  return CLIENT_CONFIG_OPTIONS.map((opt) => {
+    const value = config[opt.key as keyof RevampConfig] as boolean;
+    const cssClass = value ? 'config-on' : 'config-off';
+    const status = value ? 'ON' : 'OFF';
+    return `<span class="config-item ${cssClass}">${opt.label}: ${status}</span>`;
+  }).join('\n        ');
+}
 
 /**
  * Generate the metrics dashboard HTML
@@ -219,14 +232,7 @@ export function generateDashboardHtml(): string {
     <div class="card">
       <div class="card-title">⚙️ Active Configuration</div>
       <div class="config-section">
-        <span class="config-item ${config.transformJs ? 'config-on' : 'config-off'}">Transform JS: ${config.transformJs ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.transformCss ? 'config-on' : 'config-off'}">Transform CSS: ${config.transformCss ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.transformHtml ? 'config-on' : 'config-off'}">Transform HTML: ${config.transformHtml ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.removeAds ? 'config-on' : 'config-off'}">Remove Ads: ${config.removeAds ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.removeTracking ? 'config-on' : 'config-off'}">Remove Tracking: ${config.removeTracking ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.injectPolyfills ? 'config-on' : 'config-off'}">Inject Polyfills: ${config.injectPolyfills ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.spoofUserAgent ? 'config-on' : 'config-off'}">Spoof User-Agent: ${config.spoofUserAgent ? 'ON' : 'OFF'}</span>
-        <span class="config-item ${config.cacheEnabled ? 'config-on' : 'config-off'}">Cache: ${config.cacheEnabled ? 'ON' : 'OFF'}</span>
+        ${generateConfigItemsHtml(config)}
       </div>
     </div>
 

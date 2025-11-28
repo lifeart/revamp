@@ -102,7 +102,7 @@ describe('generateDashboardHtml', () => {
   it('should reflect config changes', () => {
     updateConfig({ transformJs: false });
     const html = generateDashboardHtml();
-    expect(html).toContain('Transform JS');
+    expect(html).toContain('Transform JavaScript');
     expect(html).toContain('OFF');
   });
 

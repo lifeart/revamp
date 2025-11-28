@@ -84,10 +84,11 @@ test.describe('Metrics Dashboard', () => {
 
       // Check for transformation stats
       await expect(page.locator('text=Transformations')).toBeVisible();
-      await expect(page.locator('text=JavaScript')).toBeVisible();
-      await expect(page.locator('text=CSS').first()).toBeVisible();
-      await expect(page.locator('text=HTML').first()).toBeVisible();
-      await expect(page.locator('text=Images')).toBeVisible();
+      // Use exact match for stat labels to avoid matching config items
+      await expect(page.locator('.stat-label', { hasText: 'JavaScript' })).toBeVisible();
+      await expect(page.locator('.stat-label', { hasText: 'CSS' })).toBeVisible();
+      await expect(page.locator('.stat-label', { hasText: 'HTML' })).toBeVisible();
+      await expect(page.locator('.stat-label', { hasText: 'Images' })).toBeVisible();
 
       console.log('✅ Transformation counts displayed');
     });
@@ -129,9 +130,9 @@ test.describe('Metrics Dashboard', () => {
       // Check for configuration section
       await expect(page.locator('text=Active Configuration')).toBeVisible();
 
-      // Should show config items with ON/OFF status
+      // Should show config items with ON/OFF status (using full labels from client-options.ts)
       const content = await page.content();
-      expect(content).toContain('Transform JS');
+      expect(content).toContain('Transform JavaScript');
       expect(content).toContain('Transform CSS');
       expect(content).toContain('Remove Ads');
 

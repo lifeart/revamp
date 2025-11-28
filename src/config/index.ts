@@ -3,6 +3,8 @@
  * Central configuration for the proxy server
  */
 
+import { CLIENT_CONFIG_OPTIONS, getClientConfigKeys } from './client-options.js';
+
 export interface RevampConfig {
   // Server settings
   socks5Port: number;
@@ -152,6 +154,7 @@ export function resetConfig(): void {
 
 /**
  * Client-side config options that can be overridden via API
+ * Keys are derived from CLIENT_CONFIG_OPTIONS for consistency
  */
 export interface ClientConfig {
   transformJs?: boolean;
@@ -165,6 +168,9 @@ export interface ClientConfig {
   cacheEnabled?: boolean;
 }
 
+// Re-export client options for easy access
+export { CLIENT_CONFIG_OPTIONS, getClientConfigKeys } from './client-options.js';
+
 /**
  * Get the current client config for a specific client IP
  * Returns only the explicitly set client overrides, or defaults from server config if none set
@@ -176,18 +182,13 @@ export function getClientConfig(clientIp?: string): ClientConfig {
 
   if (!clientConfig) {
     // Return defaults from server config when no client-specific config is set
+    // Use CLIENT_CONFIG_OPTIONS to ensure all keys are included
     const serverConfig = getConfig();
-    return {
-      transformJs: serverConfig.transformJs,
-      transformCss: serverConfig.transformCss,
-      transformHtml: serverConfig.transformHtml,
-      removeAds: serverConfig.removeAds,
-      removeTracking: serverConfig.removeTracking,
-      injectPolyfills: serverConfig.injectPolyfills,
-      spoofUserAgent: serverConfig.spoofUserAgent,
-      spoofUserAgentInJs: serverConfig.spoofUserAgentInJs,
-      cacheEnabled: serverConfig.cacheEnabled,
-    };
+    const result: ClientConfig = {};
+    for (const opt of CLIENT_CONFIG_OPTIONS) {
+      result[opt.key as keyof ClientConfig] = serverConfig[opt.key as keyof RevampConfig] as boolean;
+    }
+    return result;
   }
   return clientConfig;
 }
@@ -235,16 +236,13 @@ export function getEffectiveConfig(clientIp?: string): RevampConfig {
   }
 
   // Merge client config overrides with server config
-  return {
-    ...serverConfig,
-    ...(clientConfig.transformJs !== undefined && { transformJs: clientConfig.transformJs }),
-    ...(clientConfig.transformCss !== undefined && { transformCss: clientConfig.transformCss }),
-    ...(clientConfig.transformHtml !== undefined && { transformHtml: clientConfig.transformHtml }),
-    ...(clientConfig.removeAds !== undefined && { removeAds: clientConfig.removeAds }),
-    ...(clientConfig.removeTracking !== undefined && { removeTracking: clientConfig.removeTracking }),
-    ...(clientConfig.injectPolyfills !== undefined && { injectPolyfills: clientConfig.injectPolyfills }),
-    ...(clientConfig.spoofUserAgent !== undefined && { spoofUserAgent: clientConfig.spoofUserAgent }),
-    ...(clientConfig.spoofUserAgentInJs !== undefined && { spoofUserAgentInJs: clientConfig.spoofUserAgentInJs }),
-    ...(clientConfig.cacheEnabled !== undefined && { cacheEnabled: clientConfig.cacheEnabled }),
-  };
+  // Use CLIENT_CONFIG_OPTIONS to dynamically apply overrides
+  const result = { ...serverConfig };
+  for (const opt of CLIENT_CONFIG_OPTIONS) {
+    const key = opt.key as keyof ClientConfig;
+    if (clientConfig[key] !== undefined) {
+      (result as Record<string, unknown>)[key] = clientConfig[key];
+    }
+  }
+  return result;
 }
