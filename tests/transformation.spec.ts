@@ -13,13 +13,12 @@ test.describe('HTML Transformation', () => {
   test.describe('Overlay Injection', () => {
     test('should inject config overlay script', async ({ page }) => {
       await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(300);
 
-      // Check for config overlay element
+      // Check for config overlay element - actual IDs used by the overlay
       const hasConfigOverlay = await page.evaluate(() => {
-        return document.querySelector('[data-revamp-config-overlay]') !== null ||
-               document.getElementById('__revamp_config_btn__') !== null ||
-               // Check for injected script
-               Array.from(document.scripts).some(s => s.textContent?.includes('__revamp_config'));
+        return document.getElementById('revamp-config-badge') !== null ||
+               document.getElementById('revamp-config-overlay') !== null;
       });
 
       expect(hasConfigOverlay).toBe(true);
@@ -29,13 +28,18 @@ test.describe('HTML Transformation', () => {
 
     test('should inject error overlay script', async ({ page }) => {
       await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(300);
 
-      // Check for error overlay functionality
+      // Trigger an error to create error overlay (created lazily)
+      await page.evaluate(() => {
+        setTimeout(() => { throw new Error('Test error'); }, 0);
+      });
+      await page.waitForTimeout(200);
+
+      // Check for error overlay element - actual IDs used by the overlay
       const hasErrorOverlay = await page.evaluate(() => {
-        return document.querySelector('[data-revamp-error-overlay]') !== null ||
-               document.getElementById('__revamp_error_btn__') !== null ||
-               // Check for injected script
-               Array.from(document.scripts).some(s => s.textContent?.includes('__revamp_error'));
+        return document.getElementById('revamp-error-badge') !== null ||
+               document.getElementById('revamp-error-overlay') !== null;
       });
 
       expect(hasErrorOverlay).toBe(true);
@@ -61,80 +65,84 @@ test.describe('HTML Transformation', () => {
   });
 
   test.describe('Config Toggle Functionality', () => {
-    test('should toggle minification via config', async ({ page }) => {
+    test('should toggle transformJs via config', async ({ page }) => {
       await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       // Get current config
-      const initialConfig = await page.evaluate(async () => {
+      const initialResponse = await page.evaluate(async () => {
         const res = await fetch('/__revamp__/config');
         return res.json();
       });
+      const initialConfig = initialResponse.config;
 
-      // Toggle minification
-      const newMinify = !(initialConfig.minifyTransformedJs ?? true);
-      await page.evaluate(async (minify) => {
+      // Toggle transformJs
+      const newValue = !initialConfig.transformJs;
+      await page.evaluate(async (val) => {
         await fetch('/__revamp__/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ minifyTransformedJs: minify })
+          body: JSON.stringify({ transformJs: val })
         });
-      }, newMinify);
+      }, newValue);
 
       // Verify config changed
-      const updatedConfig = await page.evaluate(async () => {
+      const updatedResponse = await page.evaluate(async () => {
         const res = await fetch('/__revamp__/config');
         return res.json();
       });
+      const updatedConfig = updatedResponse.config;
 
-      expect(updatedConfig.minifyTransformedJs).toBe(newMinify);
+      expect(updatedConfig.transformJs).toBe(newValue);
 
       // Restore
-      await page.evaluate(async (minify) => {
+      await page.evaluate(async (val) => {
         await fetch('/__revamp__/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ minifyTransformedJs: minify })
+          body: JSON.stringify({ transformJs: val })
         });
-      }, initialConfig.minifyTransformedJs);
+      }, initialConfig.transformJs);
 
-      console.log('✅ Minification toggle works');
+      console.log('✅ transformJs toggle works');
     });
 
     test('should toggle polyfill injection via config', async ({ page }) => {
       await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
       // Get current config
-      const initialConfig = await page.evaluate(async () => {
+      const initialResponse = await page.evaluate(async () => {
         const res = await fetch('/__revamp__/config');
         return res.json();
       });
+      const initialConfig = initialResponse.config;
 
-      // Toggle polyfill
-      const newPolyfill = !(initialConfig.injectPolyfill ?? true);
+      // Toggle polyfill (note: key is injectPolyfills, not injectPolyfill)
+      const newPolyfill = !initialConfig.injectPolyfills;
       await page.evaluate(async (inject) => {
         await fetch('/__revamp__/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ injectPolyfill: inject })
+          body: JSON.stringify({ injectPolyfills: inject })
         });
       }, newPolyfill);
 
       // Verify config changed
-      const updatedConfig = await page.evaluate(async () => {
+      const updatedResponse = await page.evaluate(async () => {
         const res = await fetch('/__revamp__/config');
         return res.json();
       });
+      const updatedConfig = updatedResponse.config;
 
-      expect(updatedConfig.injectPolyfill).toBe(newPolyfill);
+      expect(updatedConfig.injectPolyfills).toBe(newPolyfill);
 
       // Restore
       await page.evaluate(async (inject) => {
         await fetch('/__revamp__/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ injectPolyfill: inject })
+          body: JSON.stringify({ injectPolyfills: inject })
         });
-      }, initialConfig.injectPolyfill);
+      }, initialConfig.injectPolyfills);
 
       console.log('✅ Polyfill injection toggle works');
     });

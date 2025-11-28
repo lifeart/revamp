@@ -10,7 +10,7 @@ export default defineConfig({
 
   timeout: 5000, // 5 seconds per test
   expect: {
-    timeout: 10000,
+    timeout: 3000,
   },
 
   use: {

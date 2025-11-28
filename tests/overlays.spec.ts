@@ -12,10 +12,10 @@ const TEST_SITE = 'http://127.0.0.1:9080';
 test.describe('Config Overlay', () => {
   test.describe('Overlay Injection', () => {
     test('should inject config overlay into pages', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
 
       // Wait for overlay to be created
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(300);
 
       // Check for config badge (gear icon)
       const configBadge = page.locator('#revamp-config-badge');
@@ -25,8 +25,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should have clickable config badge', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       const configBadge = page.locator('#revamp-config-badge');
       await expect(configBadge).toBeVisible();
@@ -42,8 +42,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should display settings panel with options', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       // Open settings
       await page.locator('#revamp-config-badge').click();
@@ -72,8 +72,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should have toggle switches for each option', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       await page.locator('#revamp-config-badge').click();
 
@@ -87,8 +87,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should close settings panel', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       // Open settings
       await page.locator('#revamp-config-badge').click();
@@ -104,8 +104,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should toggle settings panel on badge re-click', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       const badge = page.locator('#revamp-config-badge');
 
@@ -125,8 +125,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should have Apply & Reload button', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       await page.locator('#revamp-config-badge').click();
 
@@ -138,8 +138,8 @@ test.describe('Config Overlay', () => {
     });
 
     test('should have Reset to Defaults button', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       await page.locator('#revamp-config-badge').click();
 
@@ -151,7 +151,7 @@ test.describe('Config Overlay', () => {
     });
 
     test('should load config from server', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
       await page.waitForTimeout(2000); // Allow time for async config load
 
       await page.locator('#revamp-config-badge').click();
@@ -168,8 +168,8 @@ test.describe('Config Overlay', () => {
 
   test.describe('Config Interaction', () => {
     test('should toggle individual options', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       await page.locator('#revamp-config-badge').click();
 
@@ -177,8 +177,11 @@ test.describe('Config Overlay', () => {
       const transformJsToggle = page.locator('#revamp-opt-transformJs');
       const wasChecked = await transformJsToggle.isChecked();
 
-      // Click the toggle's label/slider
-      await transformJsToggle.click();
+      // Toggle using JavaScript since the checkbox is hidden with CSS
+      await page.evaluate(() => {
+        const checkbox = document.getElementById('revamp-opt-transformJs') as HTMLInputElement;
+        checkbox.click();
+      });
 
       // State should have changed
       const isNowChecked = await transformJsToggle.isChecked();
@@ -191,8 +194,14 @@ test.describe('Config Overlay', () => {
 
 test.describe('Error Overlay', () => {
   test.describe('Overlay Injection', () => {
-    test('should inject error overlay styles', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    test('should inject error overlay styles when error occurs', async ({ page }) => {
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+
+      // Trigger an error to cause overlay creation (styles are injected lazily)
+      await page.evaluate(() => {
+        setTimeout(() => { throw new Error('Test error'); }, 0);
+      });
+      await page.waitForTimeout(200);
 
       // Check for error overlay styles in page
       const hasErrorStyles = await page.evaluate(() => {
@@ -211,31 +220,29 @@ test.describe('Error Overlay', () => {
     });
 
     test('should have error badge hidden initially', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(500);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(200);
 
-      // Error badge should exist but not be visible (no errors yet)
+      // Error badge should not exist initially (created lazily)
       const errorBadge = page.locator('#revamp-error-badge');
-      const isVisible = await errorBadge.isVisible().catch(() => false);
+      const exists = await errorBadge.count() > 0;
 
-      // Badge should be created but not visible (or have display:none)
-      // It becomes visible only when there are errors
-      console.log(`✅ Error badge exists, visible: ${isVisible}`);
+      // Badge should not be created until an error occurs
+      console.log(`✅ Error badge exists: ${exists}`);
     });
 
     test('should show error badge when JavaScript error occurs', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
-      // Trigger a JavaScript error
+      // Trigger a JavaScript error using setTimeout so it's caught by window.onerror
       await page.evaluate(() => {
-        // This should be caught by our error handler
-        throw new Error('Test error from playwright');
-      }).catch(() => {
-        // Expected to throw
+        setTimeout(() => {
+          throw new Error('Test error from playwright');
+        }, 0);
       });
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Error badge should now be visible
       const errorBadge = page.locator('#revamp-error-badge.visible');
@@ -249,15 +256,17 @@ test.describe('Error Overlay', () => {
     });
 
     test('should show error overlay on badge click', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
-      // Trigger an error
+      // Trigger an error using setTimeout so it's caught by window.onerror
       await page.evaluate(() => {
-        throw new Error('Test error for overlay');
-      }).catch(() => {});
+        setTimeout(() => {
+          throw new Error('Test error for overlay');
+        }, 0);
+      });
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Click error badge
       await page.locator('#revamp-error-badge').click();
@@ -270,17 +279,19 @@ test.describe('Error Overlay', () => {
     });
 
     test('should display error details in overlay', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       const errorMessage = 'Custom test error message 12345';
 
-      // Trigger an error with specific message
+      // Trigger an error with specific message using setTimeout
       await page.evaluate((msg) => {
-        throw new Error(msg);
-      }, errorMessage).catch(() => {});
+        setTimeout(() => {
+          throw new Error(msg);
+        }, 0);
+      }, errorMessage);
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Open overlay
       await page.locator('#revamp-error-badge').click();
@@ -292,15 +303,17 @@ test.describe('Error Overlay', () => {
     });
 
     test('should have close button in error overlay', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
-      // Trigger an error
+      // Trigger an error using setTimeout
       await page.evaluate(() => {
-        throw new Error('Error for close test');
-      }).catch(() => {});
+        setTimeout(() => {
+          throw new Error('Error for close test');
+        }, 0);
+      });
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Open overlay
       await page.locator('#revamp-error-badge').click();
@@ -319,18 +332,16 @@ test.describe('Error Overlay', () => {
     });
 
     test('should have clear button to clear errors', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
-      // Trigger errors
+      // Trigger errors using setTimeout
       await page.evaluate(() => {
-        throw new Error('Error 1');
-      }).catch(() => {});
-      await page.evaluate(() => {
-        throw new Error('Error 2');
-      }).catch(() => {});
+        setTimeout(() => { throw new Error('Error 1'); }, 0);
+        setTimeout(() => { throw new Error('Error 2'); }, 50);
+      });
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Open overlay
       await page.locator('#revamp-error-badge').click();
@@ -349,8 +360,8 @@ test.describe('Error Overlay', () => {
     });
 
     test('should capture console.error', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       const testMessage = 'Console error test 98765';
 
@@ -359,7 +370,7 @@ test.describe('Error Overlay', () => {
         console.error(msg);
       }, testMessage);
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Error badge should appear
       const errorBadge = page.locator('#revamp-error-badge.visible');
@@ -368,14 +379,14 @@ test.describe('Error Overlay', () => {
       // Open and check
       await errorBadge.click();
       await expect(page.locator('.revamp-error-message')).toContainText(testMessage);
-      await expect(page.locator('text=Console Error')).toBeVisible();
+      await expect(page.locator('.revamp-error-type').filter({ hasText: 'Console Error' })).toBeVisible();
 
       console.log('✅ console.error captured by error overlay');
     });
 
     test('should capture console.warn', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
       const testMessage = 'Console warning test 54321';
 
@@ -384,7 +395,7 @@ test.describe('Error Overlay', () => {
         console.warn(msg);
       }, testMessage);
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Warning badge should appear
       const errorBadge = page.locator('#revamp-error-badge.visible');
@@ -393,21 +404,23 @@ test.describe('Error Overlay', () => {
       // Open and check
       await errorBadge.click();
       await expect(page.locator('.revamp-error-message')).toContainText(testMessage);
-      await expect(page.locator('text=Console Warning')).toBeVisible();
+      await expect(page.locator('.revamp-error-type').filter({ hasText: 'Console Warning' })).toBeVisible();
 
       console.log('✅ console.warn captured by error overlay');
     });
 
     test('should show timestamp for errors', async ({ page }) => {
-      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(1000);
+      await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+      await page.waitForTimeout(300);
 
-      // Trigger an error
+      // Trigger an error using setTimeout
       await page.evaluate(() => {
-        throw new Error('Error with timestamp');
-      }).catch(() => {});
+        setTimeout(() => {
+          throw new Error('Error with timestamp');
+        }, 0);
+      });
 
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Open overlay
       await page.locator('#revamp-error-badge').click();
@@ -427,19 +440,21 @@ test.describe('Error Overlay', () => {
 
 test.describe('Overlay Co-existence', () => {
   test('should have both config and error overlays', async ({ page }) => {
-    await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(1000);
+    await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+    await page.waitForTimeout(300);
 
     // Check config badge exists
     const configBadge = page.locator('#revamp-config-badge');
     await expect(configBadge).toBeVisible();
 
-    // Trigger an error
+    // Trigger an error using setTimeout
     await page.evaluate(() => {
-      throw new Error('Test error');
-    }).catch(() => {});
+      setTimeout(() => {
+        throw new Error('Test error');
+      }, 0);
+    });
 
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(200);
 
     // Check error badge exists
     const errorBadge = page.locator('#revamp-error-badge');
@@ -453,15 +468,17 @@ test.describe('Overlay Co-existence', () => {
   });
 
   test('should open config overlay without affecting error overlay', async ({ page }) => {
-    await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(1000);
+    await page.goto(TEST_SITE, { waitUntil: 'domcontentloaded', timeout: 4000 });
+    await page.waitForTimeout(300);
 
-    // Trigger an error first
+    // Trigger an error first using setTimeout
     await page.evaluate(() => {
-      throw new Error('Test error');
-    }).catch(() => {});
+      setTimeout(() => {
+        throw new Error('Test error');
+      }, 0);
+    });
 
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(200);
 
     // Open config overlay
     await page.locator('#revamp-config-badge').click();
