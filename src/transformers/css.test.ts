@@ -187,6 +187,41 @@ describe('transformCss', () => {
     expect(result).toContain('display');
     expect(result).toContain('flex');
   });
+
+  it('should handle CSS with dark mode queries', async () => {
+    // CSS large enough with dark mode media query
+    const code = `
+/* Comment for size padding */
+/* More padding for threshold */
+@media (prefers-color-scheme: dark) {
+  body { background: #000; color: #fff; }
+}
+@media (prefers-color-scheme: light) {
+  body { background: #fff; color: #000; }
+}
+.container { display: flex; }
+`;
+    const result = await transformCss(code);
+    // Should process and potentially strip dark mode
+    expect(result).toContain('.container');
+  });
+
+  it('should handle CSS with CSS Grid', async () => {
+    // CSS large enough with grid
+    const code = `
+/* Comment for size padding */
+/* More padding for threshold */
+.grid-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-gap: 10px;
+}
+.grid-item { padding: 10px; }
+`;
+    const result = await transformCss(code);
+    // Should process grid
+    expect(result).toContain('.grid-container');
+  });
 });
 
 describe('resetCssProcessor', () => {
