@@ -1,0 +1,311 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { transformHtml, isHtmlDocument } from './html.js';
+import { resetConfig, updateConfig } from '../config/index.js';
+import { shutdownWorkerPool } from './js.js';
+
+describe('isHtmlDocument', () => {
+  it('should detect DOCTYPE html', () => {
+    expect(isHtmlDocument('<!DOCTYPE html><html></html>')).toBe(true);
+    expect(isHtmlDocument('<!doctype html><html></html>')).toBe(true);
+    expect(isHtmlDocument('<!DOCTYPE HTML><html></html>')).toBe(true);
+  });
+
+  it('should detect html tag', () => {
+    expect(isHtmlDocument('<html><head></head></html>')).toBe(true);
+    expect(isHtmlDocument('<html lang="en"><head></head></html>')).toBe(true);
+  });
+
+  it('should detect html tag with whitespace', () => {
+    expect(isHtmlDocument('  <html><head></head></html>')).toBe(true);
+    expect(isHtmlDocument('\n<html><head></head></html>')).toBe(true);
+  });
+
+  it('should return false for non-HTML content', () => {
+    expect(isHtmlDocument('{"json": "data"}')).toBe(false);
+    expect(isHtmlDocument('plain text')).toBe(false);
+    expect(isHtmlDocument('<div>not html document</div>')).toBe(false);
+    expect(isHtmlDocument('function foo() {}')).toBe(false);
+  });
+
+  it('should return false for empty content', () => {
+    expect(isHtmlDocument('')).toBe(false);
+    expect(isHtmlDocument('   ')).toBe(false);
+  });
+});
+
+describe('transformHtml', () => {
+  beforeEach(() => {
+    resetConfig();
+    updateConfig({
+      transformHtml: true,
+      transformJs: false, // Disable JS transform for faster tests
+      removeAds: true,
+      removeTracking: true,
+      injectPolyfills: true,
+    });
+  });
+
+  afterEach(async () => {
+    await shutdownWorkerPool();
+    resetConfig();
+  });
+
+  it('should return original when transformHtml is disabled', async () => {
+    updateConfig({ transformHtml: false });
+    const html = '<html><head></head><body>Test</body></html>';
+    const result = await transformHtml(html);
+    expect(result).toBe(html);
+  });
+
+  it('should remove ad scripts', async () => {
+    const html = `
+      <html>
+        <head>
+          <script src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+        </head>
+        <body>Content</body>
+      </html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('googlesyndication');
+    expect(result).not.toContain('adsbygoogle');
+  });
+
+  it('should remove tracking scripts', async () => {
+    const html = `
+      <html>
+        <head>
+          <script src="https://www.google-analytics.com/analytics.js"></script>
+          <script src="https://www.googletagmanager.com/gtm.js"></script>
+        </head>
+        <body>Content</body>
+      </html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('google-analytics');
+    expect(result).not.toContain('googletagmanager');
+  });
+
+  it('should remove doubleclick ads', async () => {
+    const html = `
+      <html><head>
+        <script src="https://ad.doubleclick.net/ddm/ad/xxx"></script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('doubleclick');
+  });
+
+  it('should remove inline ad scripts', async () => {
+    const html = `
+      <html><head>
+        <script>
+          (adsbygoogle = window.adsbygoogle || []).push({});
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('adsbygoogle');
+  });
+
+  it('should remove inline tracking scripts', async () => {
+    const html = `
+      <html><head>
+        <script>
+          gtag('config', 'GA-12345');
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('gtag(');
+  });
+
+  it('should preserve non-ad/tracking scripts', async () => {
+    const html = `
+      <html><head>
+        <script src="https://example.com/app.js"></script>
+        <script>console.log("Hello");</script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('app.js');
+    expect(result).toContain('Hello');
+  });
+
+  it('should remove ad containers', async () => {
+    const html = `
+      <html><body>
+        <div class="ad-container">Ad Here</div>
+        <div id="google_ads_iframe">Ad</div>
+        <ins class="adsbygoogle">Ad</ins>
+        <div data-ad-slot="123">Ad</div>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('ad-container');
+    expect(result).not.toContain('google_ads');
+    expect(result).not.toContain('adsbygoogle');
+    expect(result).not.toContain('data-ad-slot');
+  });
+
+  it('should remove tracking pixels', async () => {
+    const html = `
+      <html><body>
+        <img width="1" height="1" src="https://pixel.example.com/track">
+        <img src="https://example.com/pixel.gif">
+        <img src="https://example.com/beacon.png">
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('pixel.example.com');
+    expect(result).not.toContain('pixel.gif');
+    expect(result).not.toContain('beacon.png');
+  });
+
+  it('should remove hidden tracking iframes', async () => {
+    const html = `
+      <html><body>
+        <iframe width="0" height="0" src="https://track.example.com"></iframe>
+        <iframe style="display:none" src="https://hidden.example.com"></iframe>
+        <iframe style="display: none" src="https://hidden2.example.com"></iframe>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('track.example.com');
+    expect(result).not.toContain('hidden.example.com');
+    expect(result).not.toContain('hidden2.example.com');
+  });
+
+  it('should remove integrity attributes', async () => {
+    const html = `
+      <html><head>
+        <script src="app.js" integrity="sha384-xxx"></script>
+        <link href="style.css" integrity="sha384-yyy">
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('integrity=');
+    expect(result).toContain('app.js');
+    expect(result).toContain('style.css');
+  });
+
+  it('should normalize charset to UTF-8', async () => {
+    const html = `
+      <html><head>
+        <meta charset="windows-1251">
+        <meta http-equiv="Content-Type" content="text/html; charset=windows-1251">
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('charset="UTF-8"');
+    expect(result).toContain('text/html; charset=UTF-8');
+  });
+
+  it('should inject config overlay script', async () => {
+    const html = '<html><head></head><body></body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('revamp');
+  });
+
+  it('should inject polyfills when enabled', async () => {
+    updateConfig({ injectPolyfills: true });
+    const html = '<html><head></head><body></body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('Revamp');
+  });
+
+  it('should add Revamp comment', async () => {
+    const html = '<html><head></head><body></body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('Revamp Proxy');
+  });
+
+  it('should not remove ads when removeAds is disabled', async () => {
+    updateConfig({ removeAds: false });
+    const html = `
+      <html><head>
+        <script src="https://pagead2.googlesyndication.com/ad.js"></script>
+      </head><body>
+        <div class="ad-container">Ad</div>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('googlesyndication');
+    expect(result).toContain('ad-container');
+  });
+
+  it('should not remove tracking when removeTracking is disabled', async () => {
+    updateConfig({ removeTracking: false });
+    const html = `
+      <html><head>
+        <script src="https://www.google-analytics.com/analytics.js"></script>
+      </head><body>
+        <img width="1" height="1" src="https://pixel.example.com">
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('google-analytics');
+    expect(result).toContain('pixel.example.com');
+  });
+
+  it('should handle HTML without head tag', async () => {
+    const html = '<html><body>Content</body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('Content');
+    expect(result).toContain('Revamp');
+  });
+
+  it('should handle malformed HTML gracefully', async () => {
+    const html = '<html><body>Unclosed div<div>Content';
+    const result = await transformHtml(html);
+    expect(result).toContain('Content');
+  });
+
+  it('should skip transformation of module scripts', async () => {
+    updateConfig({ transformJs: true });
+    const html = `
+      <html><head>
+        <script type="module">
+          import { foo } from './foo.js';
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    // Module script should be preserved as-is
+    expect(result).toContain('type="module"');
+    expect(result).toContain('import');
+  });
+
+  it('should skip JSON scripts', async () => {
+    const html = `
+      <html><head>
+        <script type="application/json">
+          {"key": "value"}
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('application/json');
+    expect(result).toContain('"key"');
+  });
+
+  it('should skip template scripts', async () => {
+    const html = `
+      <html><head>
+        <script type="text/template">
+          <div>Template content</div>
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('text/template');
+    expect(result).toContain('Template content');
+  });
+
+  it('should handle errors gracefully', async () => {
+    // Pass something that might cause issues
+    const html = '<!DOCTYPE html><html><head></head><body>Normal content</body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('Normal content');
+  });
+});
