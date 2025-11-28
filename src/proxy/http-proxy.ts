@@ -4,6 +4,12 @@
  * Intercepts HTTP/HTTPS traffic, transforms content for legacy browsers,
  * and returns modified responses to the client.
  *
+ * Architecture:
+ * - HTTP requests are proxied directly with content transformation
+ * - HTTPS requests use CONNECT tunneling with TLS interception
+ * - Supports per-client configuration via Revamp API
+ * - Integrates with metrics, caching, and JSON logging systems
+ *
  * @module proxy/http-proxy
  */
 
@@ -18,7 +24,6 @@ import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import {
   recordRequest,
   recordBlocked,
-  recordCacheHit,
   recordTransform,
   recordBandwidth,
   recordError,
@@ -39,34 +44,213 @@ import {
   removeCorsHeaders,
   buildCorsHeaders,
 } from './shared.js';
-import {
-  isConfigEndpoint,
-  handleConfigRequest,
-} from './config-endpoint.js';
-import {
-  isRevampEndpoint,
-  handleRevampRequest,
-} from './revamp-api.js';
-import {
-  shouldLogJsonRequest,
-  logJsonRequest,
-  isJsonContentType,
-} from '../logger/json-request-logger.js';
+import { isConfigEndpoint, handleConfigRequest } from './config-endpoint.js';
+import { isRevampEndpoint, handleRevampRequest } from './revamp-api.js';
+import { shouldLogJsonRequest, logJsonRequest, isJsonContentType } from '../logger/json-request-logger.js';
 
 // =============================================================================
-// Revamp API Endpoint Handler
+// Types
+// =============================================================================
+
+/** Options for making a proxy request */
+interface ProxyRequestOptions {
+  hostname: string;
+  port: number | string;
+  path: string;
+  method: string | undefined;
+  headers: Record<string, string | string[] | undefined>;
+  rejectUnauthorized: boolean;
+}
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/** Spoofed User-Agent string for modern browser simulation */
+const SPOOFED_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+/** Minimum body size (bytes) to apply gzip compression */
+const COMPRESSION_THRESHOLD = 1024;
+
+/** Hop-by-hop headers that should not be proxied */
+const HOP_BY_HOP_HEADERS = [
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'transfer-encoding',
+  'upgrade',
+] as const;
+
+// =============================================================================
+// Client IP Utilities
 // =============================================================================
 
 /**
- * Handle Revamp API requests for HTTP proxy
- * Uses the shared Revamp API handler for all /__revamp__/* endpoints
+ * Extract client IP from request, handling X-Forwarded-For headers
+ * and normalizing IPv6 addresses.
+ *
+ * @param req - Incoming HTTP request
+ * @returns Normalized client IP address
+ */
+function getClientIp(req: IncomingMessage): string {
+  // Check X-Forwarded-For header (set by reverse proxies)
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (forwardedFor) {
+    const ips = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+    const clientIp = ips.split(',')[0].trim();
+    if (clientIp) return clientIp;
+  }
+
+  // Fall back to direct socket address
+  return normalizeIpAddress(req.socket?.remoteAddress || '');
+}
+
+/**
+ * Normalize IP address for consistency.
+ * Converts IPv6 localhost to IPv4 and removes IPv6 prefix.
+ *
+ * @param ip - Raw IP address
+ * @returns Normalized IP address
+ */
+function normalizeIpAddress(ip: string): string {
+  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
+    return '127.0.0.1';
+  }
+  return ip.replace(/^::ffff:/, '');
+}
+
+// =============================================================================
+// Request Body Utilities
+// =============================================================================
+
+/**
+ * Read request body as string.
+ *
+ * @param req - Incoming HTTP request
+ * @returns Promise resolving to request body string
+ */
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Buffer request body for JSON logging (if enabled).
+ *
+ * @param req - Incoming HTTP request
+ * @returns Promise resolving to buffered body or null if logging disabled
+ */
+async function bufferRequestBodyIfNeeded(req: IncomingMessage): Promise<Buffer | null> {
+  const globalConfig = getConfig();
+  if (!globalConfig.logJsonRequests) {
+    return null;
+  }
+
+  const chunks: Buffer[] = [];
+  await new Promise<void>((resolve) => {
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve());
+  });
+  return Buffer.concat(chunks);
+}
+
+// =============================================================================
+// Header Utilities
+// =============================================================================
+
+/**
+ * Prepare headers for proxying to upstream server.
+ *
+ * @param req - Incoming request
+ * @param targetUrl - Parsed target URL
+ * @param spoofUserAgent - Whether to spoof User-Agent header
+ * @returns Cleaned headers object
+ */
+function prepareProxyHeaders(
+  req: IncomingMessage,
+  targetUrl: URL,
+  spoofUserAgent: boolean
+): Record<string, string | string[] | undefined> {
+  const headers: Record<string, string | string[] | undefined> = {
+    ...req.headers,
+    host: targetUrl.host,
+    'accept-encoding': 'identity', // Request uncompressed for easier transformation
+  };
+
+  // Spoof User-Agent if enabled
+  if (spoofUserAgent && headers['user-agent']) {
+    headers['user-agent'] = SPOOFED_USER_AGENT;
+  }
+
+  // Remove hop-by-hop headers
+  for (const header of HOP_BY_HOP_HEADERS) {
+    delete headers[header];
+  }
+
+  return headers;
+}
+
+/**
+ * Sanitize response headers for client.
+ * Normalizes keys, removes hop-by-hop headers, and handles encoding.
+ *
+ * @param proxyHeaders - Headers from upstream response
+ * @returns Sanitized headers object
+ */
+function sanitizeResponseHeaders(
+  proxyHeaders: Record<string, string | string[] | undefined>
+): Record<string, string | string[] | undefined> {
+  const headers: Record<string, string | string[] | undefined> = {};
+
+  for (const [key, value] of Object.entries(proxyHeaders)) {
+    headers[key.trim().toLowerCase()] = value;
+  }
+
+  // Remove encoding headers (we decompress before sending)
+  delete headers['content-encoding'];
+  delete headers['transfer-encoding'];
+  delete headers['trailer'];
+  delete headers['te'];
+  delete headers['connection'];
+  delete headers['keep-alive'];
+
+  return headers;
+}
+
+/**
+ * Update Content-Type header to UTF-8 charset after transformation.
+ *
+ * @param headers - Response headers
+ */
+function updateCharsetToUtf8(headers: Record<string, string | string[] | undefined>): void {
+  if (!headers['content-type']) return;
+
+  const ct = Array.isArray(headers['content-type'])
+    ? headers['content-type'][0]
+    : headers['content-type'];
+
+  headers['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+}
+
+// =============================================================================
+// Revamp API Handler
+// =============================================================================
+
+/**
+ * Handle Revamp API requests for HTTP proxy.
  *
  * @param req - Incoming HTTP request
  * @param res - Server response object
  * @param clientIp - Client IP for per-client config
  * @returns true if request was handled, false otherwise
  */
-async function handleRevampApiHttp(
+async function handleRevampApiRequest(
   req: IncomingMessage,
   res: ServerResponse,
   clientIp: string
@@ -79,63 +263,229 @@ async function handleRevampApiHttp(
 
   console.log(`🔧 Revamp API: ${req.method} ${url} (client: ${clientIp})`);
 
-  // Read body for POST requests
   const body = req.method === 'POST' ? await readRequestBody(req) : '';
-
-  // Use shared handler with client IP
   const result = handleRevampRequest(url, req.method || 'GET', body, clientIp);
 
-  // Apply headers
   for (const [key, value] of Object.entries(result.headers)) {
     res.setHeader(key, value);
   }
 
-  // Send response
   res.writeHead(result.statusCode);
   res.end(result.body);
   return true;
 }
 
-/**
- * Read request body as string
- */
-function readRequestBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
-  });
-}
+// =============================================================================
+// Domain/URL Blocking
+// =============================================================================
 
 /**
- * Extract client IP from request, handling X-Forwarded-For headers
- * and falling back to socket address
+ * Check if request should be blocked and send appropriate response.
+ *
+ * @param res - Server response
+ * @param hostname - Target hostname
+ * @param targetUrl - Full target URL
+ * @param config - Effective configuration
+ * @returns true if request was blocked
  */
-function getClientIp(req: IncomingMessage): string {
-  // Check X-Forwarded-For header (set by reverse proxies)
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (forwardedFor) {
-    // X-Forwarded-For can be comma-separated list, take the first (original client)
-    const ips = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
-    const clientIp = ips.split(',')[0].trim();
-    if (clientIp) return clientIp;
+function checkAndBlockRequest(
+  res: ServerResponse,
+  hostname: string,
+  targetUrl: string,
+  config: ReturnType<typeof getEffectiveConfig>
+): boolean {
+  if (shouldBlockDomain(hostname, config)) {
+    console.log(`🚫 Blocked domain: ${hostname}`);
+    recordBlocked();
+    res.writeHead(204);
+    res.end();
+    return true;
   }
 
-  // Fall back to direct socket address
-  const socketAddress = req.socket?.remoteAddress || '';
-  // Normalize IPv6 localhost to IPv4 for consistency
-  if (socketAddress === '::1' || socketAddress === '::ffff:127.0.0.1') {
-    return '127.0.0.1';
+  if (shouldBlockUrl(targetUrl, config)) {
+    console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
+    recordBlocked();
+    res.writeHead(204);
+    res.end();
+    return true;
   }
-  // Remove IPv6 prefix if present (::ffff:192.168.1.1 -> 192.168.1.1)
-  return socketAddress.replace(/^::ffff:/, '');
+
+  return false;
 }
 
 // =============================================================================
-// Proxy Request Handler
+// Content Transformation
 // =============================================================================
 
+/**
+ * Transform response body based on content type.
+ *
+ * @param body - Response body buffer
+ * @param contentType - Content-Type header value
+ * @param targetUrl - Request URL
+ * @param config - Effective configuration
+ * @param clientIp - Client IP for caching
+ * @param proxyHeaders - Response headers (may be modified)
+ * @returns Transformed body buffer
+ */
+async function transformResponseBody(
+  body: Buffer,
+  contentType: string,
+  targetUrl: string,
+  config: ReturnType<typeof getEffectiveConfig>,
+  clientIp: string,
+  proxyHeaders: Record<string, string | string[] | undefined>
+): Promise<Buffer> {
+  // Transform WebP/AVIF images to JPEG for legacy browsers
+  if (needsImageTransform(contentType, targetUrl)) {
+    const imageResult = await transformImage(body, contentType, targetUrl);
+    if (imageResult.transformed) {
+      proxyHeaders['content-type'] = imageResult.contentType;
+      recordTransform('images');
+      return Buffer.from(imageResult.data);
+    }
+    return body;
+  }
+
+  // Transform text content (JS, CSS, HTML)
+  const charset = getCharset(contentType);
+  const detectedType = getContentType(
+    proxyHeaders as Record<string, string | string[] | undefined>,
+    targetUrl
+  );
+
+  if (detectedType !== 'other') {
+    const transformed = await transformContent(body, detectedType, targetUrl, charset, config, clientIp);
+    recordTransform(detectedType);
+    return Buffer.from(transformed);
+  }
+
+  return body;
+}
+
+/**
+ * Apply gzip compression if appropriate.
+ *
+ * @param body - Response body
+ * @param contentType - Content-Type header
+ * @param acceptEncoding - Client's Accept-Encoding header
+ * @param headers - Response headers (will be modified if compressed)
+ * @returns Possibly compressed body
+ */
+async function applyCompressionIfNeeded(
+  body: Buffer,
+  contentType: string,
+  acceptEncoding: string | undefined,
+  headers: Record<string, string | string[] | undefined>
+): Promise<Buffer> {
+  if (
+    acceptsGzip(acceptEncoding) &&
+    shouldCompress(contentType) &&
+    body.length > COMPRESSION_THRESHOLD
+  ) {
+    const compressed = await compressGzip(body);
+    headers['content-encoding'] = 'gzip';
+    headers['vary'] = 'Accept-Encoding';
+    return compressed;
+  }
+  return body;
+}
+
+// =============================================================================
+// JSON Logging
+// =============================================================================
+
+/**
+ * Log JSON request/response if logging is enabled.
+ *
+ * @param enabled - Whether JSON logging is enabled
+ * @param headers - Response headers
+ * @param decompressedBody - Decompressed response body (or null)
+ * @param clientIp - Client IP
+ * @param targetUrl - Request URL
+ * @param requestHeaders - Original request headers
+ * @param requestBody - Request body (or null)
+ */
+function logJsonIfEnabled(
+  enabled: boolean,
+  headers: Record<string, string | string[] | undefined>,
+  decompressedBody: Buffer | null,
+  clientIp: string,
+  targetUrl: string,
+  requestHeaders: IncomingMessage['headers'],
+  requestBody: Buffer | null
+): void {
+  if (!enabled || !decompressedBody) return;
+
+  if (!isJsonContentType(headers['content-type'])) return;
+
+  // Create headers copy without encoding for logging
+  const headersForLogging = { ...headers };
+  delete headersForLogging['content-encoding'];
+
+  logJsonRequest(
+    clientIp,
+    targetUrl,
+    requestHeaders,
+    headersForLogging,
+    decompressedBody,
+    requestBody ?? undefined
+  );
+}
+
+// =============================================================================
+// Error Handling
+// =============================================================================
+
+/**
+ * Send error response to client.
+ *
+ * @param res - Server response
+ * @param statusCode - HTTP status code
+ * @param message - Error message
+ */
+function sendErrorResponse(
+  res: ServerResponse,
+  statusCode: number,
+  message: string
+): void {
+  if (!res.headersSent) {
+    res.writeHead(statusCode);
+    res.end(message);
+  }
+}
+
+/**
+ * Handle proxy request error.
+ *
+ * @param err - Error object
+ * @param res - Server response
+ * @param context - Error context for logging
+ */
+function handleProxyError(
+  err: unknown,
+  res: ServerResponse,
+  context: string
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`❌ ${context}: ${message}`);
+  recordError();
+  sendErrorResponse(res, 502, 'Bad Gateway');
+}
+
+// =============================================================================
+// Main Proxy Request Handler
+// =============================================================================
+
+/**
+ * Proxy an HTTP/HTTPS request with content transformation.
+ *
+ * @param req - Incoming client request
+ * @param res - Server response
+ * @param targetUrl - Full target URL to proxy
+ * @param isHttps - Whether this is an HTTPS request
+ * @param clientIp - Optional client IP override
+ */
 async function proxyRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -143,281 +493,168 @@ async function proxyRequest(
   isHttps: boolean,
   clientIp?: string
 ): Promise<void> {
-  // Extract client IP for per-client cache separation
   const effectiveClientIp = clientIp || getClientIp(req);
-
-  // Check if this is a Revamp API endpoint request first
   const parsedUrl = new URL(targetUrl);
-  const isRevampPath = isRevampEndpoint(parsedUrl.pathname);
 
-  if (isRevampPath) {
-    // Rewrite req.url for the handler
+  // Handle Revamp API endpoints
+  if (isRevampEndpoint(parsedUrl.pathname)) {
     req.url = parsedUrl.pathname + parsedUrl.search;
-    const handled = await handleRevampApiHttp(req, res, effectiveClientIp);
+    const handled = await handleRevampApiRequest(req, res, effectiveClientIp);
     if (handled) return;
   }
 
-  // Get effective config (merges server defaults with client overrides)
   const config = getEffectiveConfig(effectiveClientIp);
-
-  // Record request for metrics
   recordRequest();
 
-  // Block ad/tracking domains
-  if (shouldBlockDomain(parsedUrl.hostname, config)) {
-    console.log(`🚫 Blocked domain: ${parsedUrl.hostname}`);
-    recordBlocked();
-    res.writeHead(204); // No Content
-    res.end();
+  // Check domain/URL blocking
+  if (checkAndBlockRequest(res, parsedUrl.hostname, targetUrl, config)) {
     return;
   }
 
-  // Block tracking URLs by pattern
-  if (shouldBlockUrl(targetUrl, config)) {
-    console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
-    recordBlocked();
-    res.writeHead(204); // No Content
-    res.end();
-    return;
-  }
-
-  // Check if we need to log JSON requests (affects how we handle request body)
+  // Buffer request body if JSON logging is enabled
   const globalConfig = getConfig();
   const jsonLoggingEnabled = globalConfig.logJsonRequests;
+  const requestBody = await bufferRequestBodyIfNeeded(req);
 
-  // Only buffer request body if JSON logging is enabled
-  // Otherwise we'll pipe the request directly for better performance
-  let requestBody: Buffer | null = null;
-  if (jsonLoggingEnabled) {
-    const requestBodyChunks: Buffer[] = [];
-    await new Promise<void>((resolve) => {
-      req.on('data', (chunk: Buffer) => requestBodyChunks.push(chunk));
-      req.on('end', () => resolve());
-    });
-    requestBody = Buffer.concat(requestBodyChunks);
-  }
-
+  // Prepare proxy request
   const requestFn = isHttps ? httpsRequest : httpRequest;
+  const headers = prepareProxyHeaders(req, parsedUrl, config.spoofUserAgent);
 
-  // Copy and clean headers
-  const headers: Record<string, string | string[] | undefined> = {
-    ...req.headers,
-    host: parsedUrl.host,
-    // Tell servers we accept uncompressed content (easier to transform)
-    'accept-encoding': 'identity',
-  };
-
-  // Spoof User-Agent to simulate a modern browser
-  if (config.spoofUserAgent && headers['user-agent']) {
-    headers['user-agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  }
-
-  // Remove hop-by-hop headers
-  delete headers['connection'];
-  delete headers['keep-alive'];
-  delete headers['proxy-connection'];
-  delete headers['proxy-authenticate'];
-  delete headers['proxy-authorization'];
-  delete headers['transfer-encoding'];
-  delete headers['upgrade'];
-
-  const options = {
+  const options: ProxyRequestOptions = {
     hostname: parsedUrl.hostname,
     port: parsedUrl.port || (isHttps ? 443 : 80),
     path: parsedUrl.pathname + parsedUrl.search,
     method: req.method,
     headers,
-    // For HTTPS, we need to handle self-signed certs
     rejectUnauthorized: false,
   };
 
   return new Promise((resolve, reject) => {
     const proxyReq = requestFn(options, async (proxyRes) => {
       try {
+        // Collect response body
         const chunks: Buffer[] = [];
-
-        proxyRes.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
+        proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
 
         proxyRes.on('end', async () => {
-          let body: Buffer = Buffer.concat(chunks);
+          try {
+            let body = Buffer.concat(chunks);
 
-          // Decompress if needed
-          const encoding = proxyRes.headers['content-encoding'];
-          body = Buffer.from(await decompressBody(body, encoding as string));
+            // Decompress response
+            const encoding = proxyRes.headers['content-encoding'] as string | undefined;
+            body = Buffer.from(await decompressBody(body, encoding));
 
-          // Check if this is a redirect response
-          const statusCode = proxyRes.statusCode || 200;
-          const isRedirect = isRedirectStatus(statusCode);
-
-          // Mark redirecting URLs so we don't cache them in the future
-          if (isRedirect) {
-            markAsRedirect(targetUrl);
-          }
-
-          // Determine content type and transform
-          const rawContentType = proxyRes.headers['content-type'] || '';
-          const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-
-          // Skip transformation for redirect responses
-          if (!isRedirect && body.length > 0) {
-            // Transform WebP/AVIF images to JPEG for legacy browser compatibility
-            // Do this BEFORE text transformation, since images shouldn't be transformed as text
-            if (needsImageTransform(contentTypeValue, targetUrl)) {
-              const imageResult = await transformImage(body, contentTypeValue, targetUrl);
-              if (imageResult.transformed) {
-                body = Buffer.from(imageResult.data);
-                proxyRes.headers['content-type'] = imageResult.contentType;
-                recordTransform('images');
-              }
-            } else {
-              // Only transform text content (not images)
-              const charset = getCharset(contentTypeValue);
-              const contentType = getContentType(
-                proxyRes.headers as Record<string, string | string[] | undefined>,
-                targetUrl
-              );
-
-              if (contentType !== 'other') {
-                const originalSize = body.length;
-                body = Buffer.from(await transformContent(body, contentType, targetUrl, charset, config, effectiveClientIp));
-                recordTransform(contentType);
-              }
+            // Handle redirects
+            const statusCode = proxyRes.statusCode || 200;
+            if (isRedirectStatus(statusCode)) {
+              markAsRedirect(targetUrl);
             }
-          }
 
-          // Copy response headers (sanitize header names to remove trailing spaces)
-          const headers: Record<string, string | string[] | undefined> = {};
-          for (const [key, value] of Object.entries(proxyRes.headers)) {
-            headers[key.trim().toLowerCase()] = value;
-          }
+            // Transform content (skip for redirects)
+            const rawContentType = proxyRes.headers['content-type'] || '';
+            const contentType = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
 
-          // Get the final content type for charset update check
-          const finalContentType = getContentType(
-            proxyRes.headers as Record<string, string | string[] | undefined>,
-            targetUrl
-          );
+            if (!isRedirectStatus(statusCode) && body.length > 0) {
+              body = await transformResponseBody(
+                body,
+                contentType,
+                targetUrl,
+                config,
+                effectiveClientIp,
+                proxyRes.headers
+              );
+            }
 
-          // Update Content-Type header to UTF-8 if we transformed the content (not images)
-          if (!isRedirect && finalContentType !== 'other' && !needsImageTransform(contentTypeValue, targetUrl) && headers['content-type']) {
-            const ct = Array.isArray(headers['content-type'])
-              ? headers['content-type'][0]
-              : headers['content-type'];
-            // Replace charset with UTF-8 since we converted the content
-            headers['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-          }
+            // Prepare response headers
+            const responseHeaders = sanitizeResponseHeaders(proxyRes.headers);
 
-          // Remove encoding header since we decompressed
-          delete headers['content-encoding'];
-          delete headers['transfer-encoding'];
+            // Update charset for transformed text content
+            const finalContentType = getContentType(proxyRes.headers as Record<string, string | string[] | undefined>, targetUrl);
+            if (!isRedirectStatus(statusCode) && finalContentType !== 'other' && !needsImageTransform(contentType, targetUrl)) {
+              updateCharsetToUtf8(responseHeaders);
+            }
 
-          // Remove trailer-related headers (invalid without chunked encoding)
-          delete headers['trailer'];
-          delete headers['te'];
+            // Save decompressed body before compression (for JSON logging)
+            const shouldLog = jsonLoggingEnabled && isJsonContentType(responseHeaders['content-type']);
+            const decompressedBody = shouldLog ? body : null;
 
-          // Check if JSON logging is needed BEFORE compression (to avoid unnecessary work)
-          // Use jsonLoggingEnabled from outer scope (already checked at request start)
-          const shouldLog = jsonLoggingEnabled && isJsonContentType(headers['content-type']);
-          // Only save reference if we need to log (no memory overhead when disabled)
-          const decompressedBody = shouldLog ? body : null;
+            // Apply gzip compression
+            const acceptEncoding = req.headers['accept-encoding'] as string | undefined;
+            const currentContentType = Array.isArray(responseHeaders['content-type'])
+              ? responseHeaders['content-type'][0]
+              : (responseHeaders['content-type'] || '');
+            body = await applyCompressionIfNeeded(body, currentContentType, acceptEncoding, responseHeaders);
 
-          // Apply gzip compression for text-based content if client supports it
-          const currentContentType = headers['content-type'];
-          const contentTypeStr = Array.isArray(currentContentType) ? currentContentType[0] : (currentContentType || '');
-          const acceptEncoding = req.headers['accept-encoding'] as string | undefined;
-          if (acceptsGzip(acceptEncoding) && shouldCompress(contentTypeStr) && body.length > 1024) {
-            body = await compressGzip(body);
-            headers['content-encoding'] = 'gzip';
-            headers['vary'] = 'Accept-Encoding';
-          }
+            // Update content length
+            responseHeaders['content-length'] = String(body.length);
 
-          // Update content length
-          headers['content-length'] = String(body.length);
+            // Handle CORS
+            removeCorsHeaders(responseHeaders);
+            const requestOrigin = req.headers['origin'] as string || '*';
+            Object.assign(responseHeaders, buildCorsHeaders(requestOrigin));
 
-          // Remove hop-by-hop headers from response
-          delete headers['connection'];
-          delete headers['keep-alive'];
+            // Send response
+            res.writeHead(statusCode, responseHeaders);
+            res.end(body);
 
-          // Remove original CORS headers so we can replace with permissive ones
-          removeCorsHeaders(headers);
-
-          // Add CORS headers (use Origin for credentials support)
-          const requestOrigin = req.headers['origin'] as string || '*';
-          const corsHeaders = buildCorsHeaders(requestOrigin);
-          Object.assign(headers, corsHeaders);
-
-          res.writeHead(proxyRes.statusCode || 200, headers);
-          res.end(body);
-
-          // Log JSON requests if enabled (use decompressed body, not re-compressed)
-          if (shouldLog && decompressedBody) {
-            // Create headers copy without content-encoding for logging since we log decompressed data
-            const headersForLogging = { ...headers };
-            delete headersForLogging['content-encoding'];
-            logJsonRequest(
+            // Log JSON requests
+            logJsonIfEnabled(
+              jsonLoggingEnabled,
+              responseHeaders,
+              decompressedBody,
               effectiveClientIp,
               targetUrl,
               req.headers,
-              headersForLogging,
-              decompressedBody,
-              requestBody ?? undefined
+              requestBody
             );
+
+            // Record bandwidth
+            recordBandwidth(Buffer.concat(chunks).length, body.length);
+            resolve();
+          } catch (err) {
+            handleProxyError(err, res, 'Proxy response processing error');
+            reject(err);
           }
-
-          // Record bandwidth metrics
-          const bytesIn = Buffer.concat(chunks).length;
-          recordBandwidth(bytesIn, body.length);
-
-          resolve();
         });
 
         proxyRes.on('error', (err) => {
-          console.error(`❌ Proxy response error: ${err.message}`);
-          recordError();
-          if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          }
+          handleProxyError(err, res, 'Proxy response error');
           reject(err);
         });
       } catch (err) {
-        console.error(`❌ Proxy error: ${err}`);
-        recordError();
-        if (!res.headersSent) {
-          res.writeHead(500);
-          res.end('Internal Server Error');
-        }
+        handleProxyError(err, res, 'Proxy error');
         reject(err);
       }
     });
 
     proxyReq.on('error', (err) => {
-      console.error(`❌ Proxy request error: ${err.message}`);
-      recordError();
-      if (!res.headersSent) {
-        res.writeHead(502);
-        res.end('Bad Gateway');
-      }
+      handleProxyError(err, res, 'Proxy request error');
       reject(err);
     });
 
-    // Send request body to upstream
+    // Send request body
     if (requestBody) {
-      // Buffered mode (JSON logging enabled) - write buffered body
       if (requestBody.length > 0) {
         proxyReq.write(requestBody);
       }
       proxyReq.end();
     } else {
-      // Streaming mode (JSON logging disabled) - pipe directly for better performance
       req.pipe(proxyReq);
     }
   });
 }
 
+// =============================================================================
+// HTTPS CONNECT Handler
+// =============================================================================
+
 /**
- * Handle CONNECT requests for HTTPS proxying
+ * Handle CONNECT requests for HTTPS proxying.
+ * Creates a fake HTTPS server with domain-specific certificate for TLS interception.
+ *
+ * @param req - CONNECT request
+ * @param clientSocket - Client socket
+ * @param head - Initial data after CONNECT
  */
 function handleConnect(
   req: IncomingMessage,
@@ -427,6 +664,7 @@ function handleConnect(
   const [hostname, portStr] = (req.url || '').split(':');
   const port = parseInt(portStr, 10) || 443;
 
+  // Check domain blocking
   if (shouldBlockDomain(hostname)) {
     console.log(`🚫 Blocked HTTPS: ${hostname}`);
     recordBlocked();
@@ -434,30 +672,28 @@ function handleConnect(
     return;
   }
 
-  // Record connection for metrics
   updateConnections(1);
-
   console.log(`🔒 HTTPS CONNECT: ${hostname}:${port}`);
 
-  // For HTTPS interception, we create a local server with our certificate
+  // Generate certificate for TLS interception
   const certPair = generateDomainCert(hostname);
 
-  // Create a temporary HTTPS server for this connection
-  const fakeServer = createHttpsServer({
-    key: certPair.key,
-    cert: certPair.cert,
-  }, async (httpsReq, httpsRes) => {
-    const targetUrl = `https://${hostname}${httpsReq.url}`;
-    console.log(`🔐 HTTPS: ${httpsReq.method} ${targetUrl}`);
+  // Create temporary HTTPS server for this connection
+  const fakeServer = createHttpsServer(
+    { key: certPair.key, cert: certPair.cert },
+    async (httpsReq, httpsRes) => {
+      const targetUrl = `https://${hostname}${httpsReq.url}`;
+      console.log(`🔐 HTTPS: ${httpsReq.method} ${targetUrl}`);
 
-    try {
-      await proxyRequest(httpsReq, httpsRes, targetUrl, true);
-    } catch (err) {
-      console.error(`❌ HTTPS proxy error: ${err}`);
+      try {
+        await proxyRequest(httpsReq, httpsRes, targetUrl, true);
+      } catch (err) {
+        console.error(`❌ HTTPS proxy error: ${err}`);
+      }
     }
-  });
+  );
 
-  // Listen on a random port
+  // Listen on random port and connect client
   fakeServer.listen(0, '127.0.0.1', () => {
     const addr = fakeServer.address();
     if (!addr || typeof addr === 'string') {
@@ -465,16 +701,14 @@ function handleConnect(
       return;
     }
 
-    // Connect client to our fake server
     const serverSocket = connect(addr.port, '127.0.0.1', () => {
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-
-      // Pipe traffic between client and fake server
       serverSocket.write(head);
       clientSocket.pipe(serverSocket);
       serverSocket.pipe(clientSocket);
     });
 
+    // Error handling
     serverSocket.on('error', (err) => {
       console.error(`❌ Server socket error: ${err.message}`);
       clientSocket.end();
@@ -488,16 +722,21 @@ function handleConnect(
     clientSocket.on('close', () => {
       serverSocket.end();
       updateConnections(-1);
-      // Close the fake server after some delay
-      setTimeout(() => {
-        fakeServer.close();
-      }, 1000);
+      setTimeout(() => fakeServer.close(), 1000);
     });
   });
 }
 
+// =============================================================================
+// Server Factory
+// =============================================================================
+
 /**
- * Create and start the HTTP proxy server
+ * Create and start the HTTP proxy server.
+ *
+ * @param port - Port to listen on
+ * @param bindAddress - Address to bind to (default: all interfaces)
+ * @returns Node.js HTTP server instance
  */
 export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): Server {
   const server = createServer(async (req, res) => {
@@ -505,27 +744,18 @@ export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): 
     console.log(`📡 HTTP: ${req.method} ${targetUrl}`);
 
     try {
-      // Determine if this is a proxy request or a direct request
-      let fullUrl: string;
-      if (targetUrl.startsWith('http://')) {
-        fullUrl = targetUrl;
-      } else {
-        // Direct request to proxy server
-        const host = req.headers.host || 'localhost';
-        fullUrl = `http://${host}${targetUrl}`;
-      }
+      // Determine full URL for proxy request
+      const fullUrl = targetUrl.startsWith('http://')
+        ? targetUrl
+        : `http://${req.headers.host || 'localhost'}${targetUrl}`;
 
       await proxyRequest(req, res, fullUrl, false);
     } catch (err) {
       console.error(`❌ HTTP proxy error: ${err}`);
-      if (!res.headersSent) {
-        res.writeHead(500);
-        res.end('Internal Server Error');
-      }
+      sendErrorResponse(res, 500, 'Internal Server Error');
     }
   });
 
-  // Handle CONNECT method for HTTPS
   server.on('connect', handleConnect);
 
   server.listen(port, bindAddress, () => {

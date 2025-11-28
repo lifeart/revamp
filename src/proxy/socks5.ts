@@ -1,8 +1,14 @@
 /**
  * SOCKS5 Proxy Server
  *
- * Implements SOCKS5 protocol for legacy device connections.
+ * Implements SOCKS5 protocol (RFC 1928) for legacy device connections.
  * Provides TLS interception for HTTPS traffic with content transformation.
+ *
+ * Architecture:
+ * - SOCKS5 handshake and connection establishment
+ * - HTTP/HTTPS traffic interception and transformation
+ * - WebSocket passthrough (no transformation)
+ * - Direct passthrough for non-HTTP traffic
  *
  * @module proxy/socks5
  */
@@ -12,7 +18,6 @@ import { connect } from 'node:net';
 import { TLSSocket, connect as tlsConnect } from 'node:tls';
 import { generateDomainCert } from '../certs/index.js';
 import {
-  // SOCKS5 Protocol
   SOCKS_VERSION,
   AUTH_NO_AUTH,
   AUTH_NO_ACCEPTABLE,
@@ -26,19 +31,9 @@ import {
   parseAddress,
   createReply,
 } from './socks5-protocol.js';
+import { makeHttpRequest, makeHttpsRequest } from './http-client.js';
+import { isRevampEndpoint, handleRevampRequest, buildRawApiResponse } from './revamp-api.js';
 import {
-  // HTTP Client
-  makeHttpRequest,
-  makeHttpsRequest,
-} from './http-client.js';
-import {
-  // Revamp API
-  isRevampEndpoint,
-  handleRevampRequest,
-  buildRawApiResponse,
-} from './revamp-api.js';
-import {
-  // Shared Utilities
   shouldCompress,
   acceptsGzip,
   compressGzip,
@@ -49,23 +44,75 @@ import {
   buildCorsHeadersString,
 } from './shared.js';
 import {
-  // Metrics
   recordRequest,
   recordBlocked,
-  recordCacheHit,
-  recordTransform,
-  recordBandwidth,
   recordError,
   updateConnections,
 } from '../metrics/index.js';
 
 // =============================================================================
-// Local Helper for Revamp API in SOCKS5 Context
+// Types
+// =============================================================================
+
+/** Parsed HTTP request from buffer */
+interface ParsedHttpRequest {
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+/** HTTP response from upstream */
+interface HttpResponse {
+  statusCode: number;
+  statusMessage?: string;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+}
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/** HTTP method first bytes (for detecting HTTP requests on SOCKS port) */
+const HTTP_METHOD_FIRST_BYTES = [67, 68, 71, 72, 79, 80] as const; // C, D, G, H, O, P
+
+/** Minimum compression threshold (bytes) */
+const COMPRESSION_THRESHOLD = 1024;
+
+/** Suppressed TLS error patterns (expected errors) */
+const SUPPRESSED_TLS_ERRORS = [
+  'ECONNRESET',
+  'unknown ca',
+  'certificate',
+  'handshake',
+  'write after end',
+] as const;
+
+// =============================================================================
+// IP Address Utilities
 // =============================================================================
 
 /**
- * Handle Revamp API endpoint request in SOCKS5 context
- * Wraps the shared handleRevampRequest to return raw HTTP response string
+ * Normalize IP address for consistency.
+ * Converts IPv6 localhost to IPv4 and removes IPv6 prefix.
+ *
+ * @param ip - Raw IP address
+ * @returns Normalized IP address
+ */
+function normalizeIpAddress(ip: string): string {
+  if (ip === '::1' || ip === '::ffff:127.0.0.1') {
+    return '127.0.0.1';
+  }
+  return ip.replace(/^::ffff:/, '');
+}
+
+// =============================================================================
+// Revamp API Handler
+// =============================================================================
+
+/**
+ * Handle Revamp API endpoint request in SOCKS5 context.
  *
  * @param method - HTTP method
  * @param path - URL path
@@ -73,7 +120,12 @@ import {
  * @param clientIp - Client IP for per-client config
  * @returns Raw HTTP response string or null if not a Revamp endpoint
  */
-function handleRevampApiSocks5(method: string, path: string, body: string, clientIp: string): string | null {
+function handleRevampApiSocks5(
+  method: string,
+  path: string,
+  body: string,
+  clientIp: string
+): string | null {
   if (!isRevampEndpoint(path)) {
     return null;
   }
@@ -84,554 +136,697 @@ function handleRevampApiSocks5(method: string, path: string, body: string, clien
 }
 
 // =============================================================================
-// Connection Handler
+// HTTP Parsing Utilities
 // =============================================================================
 
+/**
+ * Parse HTTP headers from header string.
+ *
+ * @param headerLines - Array of header lines (excluding request line)
+ * @returns Parsed headers object
+ */
+function parseHeaders(headerLines: string[]): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  for (const line of headerLines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0) {
+      const key = line.substring(0, colonIdx).toLowerCase();
+      const value = line.substring(colonIdx + 1).trim();
+      headers[key] = value;
+    }
+  }
+
+  return headers;
+}
+
+/**
+ * Parse HTTP request from buffer.
+ *
+ * @param buffer - Request buffer
+ * @param socket - Socket to read additional body data from
+ * @returns Parsed request or null if incomplete
+ */
+async function parseHttpRequest(
+  buffer: Buffer,
+  socket: Socket | TLSSocket
+): Promise<ParsedHttpRequest | null> {
+  const headerEnd = buffer.indexOf('\r\n\r\n');
+  if (headerEnd === -1) {
+    return null;
+  }
+
+  const headerStr = buffer.subarray(0, headerEnd).toString('utf-8');
+  const bodyStart = headerEnd + 4;
+  const lines = headerStr.split('\r\n');
+  const requestLine = lines[0];
+  const [method, path] = requestLine.split(' ');
+
+  const headers = parseHeaders(lines.slice(1));
+  const contentLength = parseInt(headers['content-length'] || '0', 10);
+
+  let body = buffer.subarray(bodyStart);
+
+  // Wait for full body if needed
+  while (body.length < contentLength) {
+    const moreData = await new Promise<Buffer>((resolve) => {
+      socket.once('data', resolve);
+    });
+    body = Buffer.concat([body, moreData]);
+  }
+
+  return { method, path, headers, body };
+}
+
+// =============================================================================
+// Response Building Utilities
+// =============================================================================
+
+/**
+ * Build HTTP response headers string.
+ *
+ * @param statusCode - HTTP status code
+ * @param statusMessage - Status message
+ * @param headers - Response headers
+ * @param bodyLength - Body length for Content-Length header
+ * @param isGzipped - Whether body is gzip compressed
+ * @param corsOrigin - Origin for CORS headers
+ * @returns Headers string
+ */
+function buildResponseHeaders(
+  statusCode: number,
+  statusMessage: string,
+  headers: Record<string, string | string[] | undefined>,
+  bodyLength: number,
+  isGzipped: boolean,
+  corsOrigin: string
+): string {
+  let responseHeaders = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
+
+  for (const [key, value] of Object.entries(headers)) {
+    const lowerKey = key.toLowerCase();
+    if (!SKIP_RESPONSE_HEADERS.has(lowerKey)) {
+      if (Array.isArray(value)) {
+        responseHeaders += `${key}: ${value.join(', ')}\r\n`;
+      } else if (value !== undefined && value !== null) {
+        responseHeaders += `${key}: ${value}\r\n`;
+      }
+    }
+  }
+
+  responseHeaders += `Content-Length: ${bodyLength}\r\n`;
+
+  if (isGzipped) {
+    responseHeaders += `Content-Encoding: gzip\r\n`;
+    responseHeaders += `Vary: Accept-Encoding\r\n`;
+  }
+
+  responseHeaders += `Connection: close\r\n`;
+  responseHeaders += buildCorsHeadersString(corsOrigin);
+  responseHeaders += '\r\n';
+
+  return responseHeaders;
+}
+
+/**
+ * Build blocked response.
+ *
+ * @returns HTTP 204 response string
+ */
+function buildBlockedResponse(): string {
+  return (
+    'HTTP/1.1 204 No Content\r\n' +
+    'Connection: close\r\n' +
+    '\r\n'
+  );
+}
+
+/**
+ * Build error response.
+ *
+ * @param statusCode - HTTP status code
+ * @param message - Error message
+ * @param corsOrigin - Origin for CORS headers
+ * @returns HTTP error response string
+ */
+function buildErrorResponse(
+  statusCode: number,
+  message: string,
+  corsOrigin: string
+): string {
+  return (
+    `HTTP/1.1 ${statusCode} ${message}\r\n` +
+    `Access-Control-Allow-Origin: ${corsOrigin}\r\n` +
+    'Access-Control-Allow-Credentials: true\r\n' +
+    'Content-Type: text/plain\r\n' +
+    `Content-Length: ${message.length}\r\n` +
+    'Connection: close\r\n' +
+    '\r\n' +
+    message
+  );
+}
+
+// =============================================================================
+// Compression Utilities
+// =============================================================================
+
+/**
+ * Apply gzip compression if appropriate.
+ *
+ * @param body - Response body
+ * @param contentType - Content-Type header value
+ * @param acceptEncoding - Client's Accept-Encoding header
+ * @returns Object with body and whether it was compressed
+ */
+async function maybeCompress(
+  body: Buffer,
+  contentType: string,
+  acceptEncoding: string | undefined
+): Promise<{ body: Buffer; isGzipped: boolean }> {
+  const contentTypeStr = Array.isArray(contentType) ? contentType : (contentType || '');
+  const clientAcceptsGzip = acceptsGzip(acceptEncoding);
+
+  if (clientAcceptsGzip && shouldCompress(contentTypeStr) && body.length > COMPRESSION_THRESHOLD) {
+    return { body: await compressGzip(body), isGzipped: true };
+  }
+
+  return { body, isGzipped: false };
+}
+
+// =============================================================================
+// Request Handlers
+// =============================================================================
+
+/**
+ * Check and handle blocked URLs.
+ *
+ * @param targetUrl - Target URL to check
+ * @param socket - Socket to write response to
+ * @returns true if URL was blocked
+ */
+function checkAndBlockUrl(targetUrl: string, socket: Socket | TLSSocket): boolean {
+  if (shouldBlockUrl(targetUrl)) {
+    console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
+    recordBlocked();
+    socket.write(buildBlockedResponse());
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Handle HTTP request through SOCKS5.
+ *
+ * @param request - Parsed HTTP request
+ * @param socket - Client socket
+ * @param hostname - Target hostname
+ * @param port - Target port
+ * @param clientIp - Client IP address
+ * @param makeRequest - Function to make the HTTP request
+ */
+async function handleHttpRequestSocks5(
+  request: ParsedHttpRequest,
+  socket: Socket | TLSSocket,
+  hostname: string,
+  port: number | undefined,
+  clientIp: string,
+  makeRequest: (
+    method: string,
+    hostname: string,
+    port: number | undefined,
+    path: string,
+    headers: Record<string, string>,
+    body: Buffer,
+    clientIp: string
+  ) => Promise<HttpResponse>
+): Promise<void> {
+  const { method, path, headers, body: requestBody } = request;
+  const isHttps = port === 443 || port === undefined;
+  const targetUrl = `${isHttps ? 'https' : 'http'}://${hostname}${path}`;
+
+  console.log(`${isHttps ? '🔐 HTTPS' : '📡 HTTP'}: ${method} ${targetUrl}`);
+  recordRequest();
+
+  // Check for Revamp API endpoints
+  const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
+  if (apiResponse) {
+    socket.write(apiResponse);
+    if (socket instanceof TLSSocket) {
+      socket.end();
+    }
+    return;
+  }
+
+  // Check URL blocking
+  if (checkAndBlockUrl(targetUrl, socket)) {
+    if (socket instanceof TLSSocket) {
+      socket.end();
+    }
+    return;
+  }
+
+  const requestOrigin = headers['origin'] || '*';
+
+  // Handle CORS preflight
+  if (method === 'OPTIONS') {
+    socket.write(buildCorsPreflightResponse(requestOrigin));
+    if (socket instanceof TLSSocket) {
+      socket.end();
+    }
+    return;
+  }
+
+  try {
+    console.log(`📤 Fetching: ${method} ${targetUrl}`);
+    const response = await makeRequest(method, hostname, port as number, path, headers, requestBody, clientIp);
+    console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
+
+    // Apply compression
+    const responseContentType = response.headers['content-type'];
+    const contentTypeStr = Array.isArray(responseContentType) ? responseContentType[0] : (responseContentType || '');
+    const { body: responseBody, isGzipped } = await maybeCompress(
+      response.body,
+      contentTypeStr,
+      headers['accept-encoding']
+    );
+
+    // Build and send response
+    const responseHeaders = buildResponseHeaders(
+      response.statusCode,
+      response.statusMessage || 'OK',
+      response.headers,
+      responseBody.length,
+      isGzipped,
+      requestOrigin
+    );
+
+    socket.write(responseHeaders);
+    socket.write(responseBody);
+
+    if (socket instanceof TLSSocket) {
+      socket.end();
+    }
+  } catch (err) {
+    const error = err as Error;
+    console.error(`❌ Request error for ${targetUrl}:`, error.message);
+    recordError();
+    socket.write(buildErrorResponse(502, 'Bad Gateway', requestOrigin));
+    if (socket instanceof TLSSocket) {
+      socket.end();
+    }
+  }
+}
+
+// =============================================================================
+// WebSocket Handler
+// =============================================================================
+
+/**
+ * Handle WebSocket upgrade requests - proxy directly without transformation.
+ *
+ * @param tlsClient - TLS socket to client
+ * @param hostname - Target hostname
+ * @param initialRequest - Initial upgrade request buffer
+ */
+function handleWebSocketUpgrade(
+  tlsClient: TLSSocket,
+  hostname: string,
+  initialRequest: Buffer
+): void {
+  console.log(`🌐 Establishing WebSocket connection to ${hostname}`);
+
+  const tlsServer = tlsConnect({
+    host: hostname,
+    port: 443,
+    rejectUnauthorized: false,
+  });
+
+  tlsServer.on('secureConnect', () => {
+    console.log(`🔗 WebSocket TLS connection established to ${hostname}`);
+    tlsServer.write(initialRequest);
+    tlsClient.pipe(tlsServer);
+    tlsServer.pipe(tlsClient);
+  });
+
+  tlsServer.on('error', (err: Error) => {
+    console.error(`❌ WebSocket server connection error for ${hostname}: ${err.message}`);
+    tlsClient.end();
+  });
+
+  tlsServer.on('close', () => {
+    console.log(`🔌 WebSocket connection closed for ${hostname}`);
+    tlsClient.end();
+  });
+
+  tlsClient.on('error', (err: Error) => {
+    if (!err.message.includes('ECONNRESET')) {
+      console.error(`❌ WebSocket client error for ${hostname}: ${err.message}`);
+    }
+    tlsServer.end();
+  });
+
+  tlsClient.on('close', () => {
+    tlsServer.end();
+  });
+}
+
+// =============================================================================
+// HTTPS Connection Handler
+// =============================================================================
+
+/**
+ * Handle HTTPS connections with TLS interception.
+ *
+ * @param clientSocket - Client socket
+ * @param hostname - Target hostname
+ * @param addressType - SOCKS address type
+ * @param clientIp - Client IP address
+ */
+function handleHttpsConnection(
+  clientSocket: Socket,
+  hostname: string,
+  addressType: number,
+  clientIp: string
+): void {
+  console.log(`🔒 Starting TLS interception for ${hostname}`);
+
+  // Tell client connection is established
+  clientSocket.write(createReply(REPLY_SUCCESS, addressType));
+
+  // Generate certificate for this domain
+  const certPair = generateDomainCert(hostname);
+
+  // Upgrade to TLS
+  const tlsServer = new TLSSocket(clientSocket, {
+    key: certPair.key,
+    cert: certPair.cert,
+    isServer: true,
+  });
+
+  tlsServer.on('secure', () => {
+    console.log(`🔐 TLS handshake complete with client for ${hostname}`);
+  });
+
+  let requestBuffer = Buffer.alloc(0);
+  let requestComplete = false;
+
+  tlsServer.on('data', async (data: Buffer) => {
+    if (requestComplete) return;
+
+    requestBuffer = Buffer.concat([requestBuffer, data]);
+
+    const request = await parseHttpRequest(requestBuffer, tlsServer);
+    if (!request) return;
+
+    requestComplete = true;
+
+    // Check for WebSocket upgrade
+    if (request.headers['upgrade']?.toLowerCase() === 'websocket') {
+      console.log(`🔌 WebSocket upgrade request: https://${hostname}${request.path}`);
+      handleWebSocketUpgrade(tlsServer, hostname, requestBuffer);
+      return;
+    }
+
+    // Handle regular HTTPS request
+    await handleHttpRequestSocks5(
+      request,
+      tlsServer,
+      hostname,
+      443,
+      clientIp,
+      async (method, host, _port, path, headers, body, ip) =>
+        makeHttpsRequest(method, host, path, headers, body, ip)
+    );
+  });
+
+  tlsServer.on('error', (err: Error) => {
+    // Suppress expected errors
+    const isExpectedError = SUPPRESSED_TLS_ERRORS.some(pattern =>
+      err.message.includes(pattern)
+    );
+    if (!isExpectedError) {
+      console.error(`❌ TLS server error for ${hostname}: ${err.message}`);
+    }
+  });
+
+  tlsServer.on('close', () => {
+    clientSocket.destroy();
+  });
+}
+
+// =============================================================================
+// HTTP Connection Handler
+// =============================================================================
+
+/**
+ * Handle HTTP connections with interception.
+ *
+ * @param clientSocket - Client socket
+ * @param hostname - Target hostname
+ * @param port - Target port
+ * @param addressType - SOCKS address type
+ * @param clientIp - Client IP address
+ */
+function handleHttpConnection(
+  clientSocket: Socket,
+  hostname: string,
+  port: number,
+  addressType: number,
+  clientIp: string
+): void {
+  // Tell client connection is established
+  clientSocket.write(createReply(REPLY_SUCCESS, addressType));
+
+  let requestBuffer = Buffer.alloc(0);
+
+  clientSocket.on('data', async (data: Buffer) => {
+    requestBuffer = Buffer.concat([requestBuffer, data]);
+
+    const request = await parseHttpRequest(requestBuffer, clientSocket);
+    if (!request) return;
+
+    await handleHttpRequestSocks5(
+      request,
+      clientSocket,
+      hostname,
+      port,
+      clientIp,
+      makeHttpRequest
+    );
+
+    // Reset for next request
+    requestBuffer = Buffer.alloc(0);
+  });
+}
+
+// =============================================================================
+// Direct Connection Handler
+// =============================================================================
+
+/**
+ * Handle direct (non-HTTP) connections - passthrough without transformation.
+ *
+ * @param clientSocket - Client socket
+ * @param hostname - Target hostname
+ * @param port - Target port
+ * @param addressType - SOCKS address type
+ * @returns Target socket
+ */
+function handleDirectConnection(
+  clientSocket: Socket,
+  hostname: string,
+  port: number,
+  addressType: number
+): Socket {
+  const targetSocket = connect(port, hostname, () => {
+    console.log(`✅ Direct connection to ${hostname}:${port}`);
+    clientSocket.write(createReply(REPLY_SUCCESS, addressType));
+    clientSocket.pipe(targetSocket);
+    targetSocket.pipe(clientSocket);
+  });
+
+  targetSocket.on('error', (err) => {
+    console.error(`❌ Target socket error: ${err.message}`);
+    clientSocket.write(createReply(REPLY_NETWORK_UNREACHABLE));
+    clientSocket.end();
+  });
+
+  targetSocket.on('close', () => {
+    clientSocket.end();
+  });
+
+  return targetSocket;
+}
+
+// =============================================================================
+// SOCKS5 Protocol Handlers
+// =============================================================================
+
+/**
+ * Check if data looks like an HTTP request (sent to SOCKS port by mistake).
+ *
+ * @param firstByte - First byte of data
+ * @returns true if this looks like HTTP
+ */
+function looksLikeHttpRequest(firstByte: number): boolean {
+  return HTTP_METHOD_FIRST_BYTES.includes(firstByte as typeof HTTP_METHOD_FIRST_BYTES[number]);
+}
+
+/**
+ * Handle SOCKS5 greeting phase.
+ *
+ * @param buffer - Data buffer
+ * @param clientSocket - Client socket
+ * @returns Object with new state and remaining buffer, or null if incomplete
+ */
+function handleGreeting(
+  buffer: Buffer,
+  clientSocket: Socket
+): { state: ConnectionState; buffer: Buffer } | null {
+  if (buffer.length < 3) return null;
+
+  const version = buffer[0];
+  const nmethods = buffer[1];
+
+  // Detect HTTP requests sent to SOCKS port
+  if (looksLikeHttpRequest(version)) {
+    clientSocket.end();
+    return { state: ConnectionState.CONNECTED, buffer: Buffer.alloc(0) };
+  }
+
+  if (version !== SOCKS_VERSION) {
+    console.error(`❌ Invalid SOCKS version: ${version}`);
+    clientSocket.end();
+    return { state: ConnectionState.CONNECTED, buffer: Buffer.alloc(0) };
+  }
+
+  if (buffer.length < 2 + nmethods) return null;
+
+  const methods = buffer.subarray(2, 2 + nmethods);
+
+  if (methods.includes(AUTH_NO_AUTH)) {
+    clientSocket.write(Buffer.from([SOCKS_VERSION, AUTH_NO_AUTH]));
+    return {
+      state: ConnectionState.AWAITING_REQUEST,
+      buffer: buffer.subarray(2 + nmethods),
+    };
+  }
+
+  clientSocket.write(Buffer.from([SOCKS_VERSION, AUTH_NO_ACCEPTABLE]));
+  clientSocket.end();
+  return { state: ConnectionState.CONNECTED, buffer: Buffer.alloc(0) };
+}
+
+/**
+ * Handle SOCKS5 request phase.
+ *
+ * @param buffer - Data buffer
+ * @param clientSocket - Client socket
+ * @param clientIp - Client IP address
+ * @returns Target socket if direct connection, or null
+ */
+function handleRequest(
+  buffer: Buffer,
+  clientSocket: Socket,
+  clientIp: string
+): Socket | null {
+  if (buffer.length < 7) return null;
+
+  const version = buffer[0];
+  const command = buffer[1];
+
+  if (version !== SOCKS_VERSION) {
+    clientSocket.write(createReply(REPLY_GENERAL_FAILURE));
+    clientSocket.end();
+    return null;
+  }
+
+  if (command !== CMD_CONNECT) {
+    clientSocket.write(createReply(REPLY_COMMAND_NOT_SUPPORTED));
+    clientSocket.end();
+    return null;
+  }
+
+  const address = parseAddress(buffer, 3);
+  if (!address) {
+    if (buffer.length > 300) {
+      clientSocket.write(createReply(REPLY_ADDRESS_TYPE_NOT_SUPPORTED));
+      clientSocket.end();
+    }
+    return null;
+  }
+
+  console.log(`🔌 SOCKS5 CONNECT: ${address.host}:${address.port}`);
+
+  // Check domain blocking
+  if (shouldBlockDomain(address.host)) {
+    console.log(`🚫 Blocked: ${address.host}`);
+    clientSocket.write(createReply(REPLY_SUCCESS, address.addressType));
+    clientSocket.end();
+    return null;
+  }
+
+  // Route based on port
+  if (address.port === 443) {
+    handleHttpsConnection(clientSocket, address.host, address.addressType, clientIp);
+    return null;
+  } else if (address.port === 80) {
+    handleHttpConnection(clientSocket, address.host, address.port, address.addressType, clientIp);
+    return null;
+  } else {
+    return handleDirectConnection(clientSocket, address.host, address.port, address.addressType);
+  }
+}
+
+// =============================================================================
+// Main Connection Handler
+// =============================================================================
+
+/**
+ * Handle incoming SOCKS5 connection.
+ *
+ * @param clientSocket - Client socket
+ * @param httpProxyPort - HTTP proxy port (unused, for compatibility)
+ */
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
   let targetSocket: Socket | TLSSocket | null = null;
+  let buffer = Buffer.alloc(0);
 
-  // Track connection for metrics
   updateConnections(1);
 
-  // Extract client IP for per-client cache separation
-  const rawClientIp = clientSocket.remoteAddress || '';
-  // Normalize IPv6 localhost to IPv4 for consistency
-  const clientIp = rawClientIp === '::1' || rawClientIp === '::ffff:127.0.0.1'
-    ? '127.0.0.1'
-    : rawClientIp.replace(/^::ffff:/, '');
-
-  // Data buffer for partial reads
-  let buffer = Buffer.alloc(0);
+  const clientIp = normalizeIpAddress(clientSocket.remoteAddress || '');
 
   clientSocket.on('data', (data: Buffer) => {
     buffer = Buffer.concat([buffer, data]);
 
     switch (state) {
-      case ConnectionState.AWAITING_GREETING:
-        handleGreeting();
+      case ConnectionState.AWAITING_GREETING: {
+        const result = handleGreeting(buffer, clientSocket);
+        if (result) {
+          state = result.state;
+          buffer = result.buffer;
+        }
         break;
-      case ConnectionState.AWAITING_REQUEST:
-        handleRequest();
+      }
+
+      case ConnectionState.AWAITING_REQUEST: {
+        const socket = handleRequest(buffer, clientSocket, clientIp);
+        if (socket) {
+          targetSocket = socket;
+          state = ConnectionState.CONNECTED;
+          buffer = Buffer.alloc(0);
+        }
         break;
+      }
+
       case ConnectionState.CONNECTED:
-        // Should not happen - data should go directly to target
         if (targetSocket && !targetSocket.destroyed) {
           targetSocket.write(data);
         }
         break;
     }
   });
-
-  function handleGreeting() {
-    // Minimum greeting: version(1) + nmethods(1) + methods(1+)
-    if (buffer.length < 3) return;
-
-    const version = buffer[0];
-    const nmethods = buffer[1];
-
-    // Detect HTTP requests sent to SOCKS port by mistake
-    // HTTP methods start with: GET (71), POST (80), PUT (80), HEAD (72),
-    // DELETE (68), CONNECT (67), OPTIONS (79), PATCH (80)
-    // ASCII: C=67, G=71, P=80, H=72, D=68, O=79
-    const httpMethodChars = [67, 68, 71, 72, 79, 80]; // C, D, G, H, O, P
-    if (httpMethodChars.includes(version)) {
-      // This is likely an HTTP request, not SOCKS5
-      // Silently close - don't spam logs
-      clientSocket.end();
-      return;
-    }
-
-    if (version !== SOCKS_VERSION) {
-      console.error(`❌ Invalid SOCKS version: ${version}`);
-      clientSocket.end();
-      return;
-    }
-
-    if (buffer.length < 2 + nmethods) return;
-
-    const methods = buffer.subarray(2, 2 + nmethods);
-
-    // Check if NO_AUTH is supported
-    if (methods.includes(AUTH_NO_AUTH)) {
-      // Accept no authentication
-      clientSocket.write(Buffer.from([SOCKS_VERSION, AUTH_NO_AUTH]));
-      state = ConnectionState.AWAITING_REQUEST;
-    } else {
-      // No acceptable methods
-      clientSocket.write(Buffer.from([SOCKS_VERSION, AUTH_NO_ACCEPTABLE]));
-      clientSocket.end();
-      return;
-    }
-
-    // Clear buffer
-    buffer = buffer.subarray(2 + nmethods);
-  }
-
-  function handleRequest() {
-    // Minimum request: version(1) + cmd(1) + rsv(1) + atyp(1) + addr(min 1) + port(2)
-    if (buffer.length < 7) return;
-
-    const version = buffer[0];
-    const command = buffer[1];
-    // const reserved = buffer[2];
-
-    if (version !== SOCKS_VERSION) {
-      clientSocket.write(createReply(REPLY_GENERAL_FAILURE));
-      clientSocket.end();
-      return;
-    }
-
-    // Only support CONNECT command
-    if (command !== CMD_CONNECT) {
-      clientSocket.write(createReply(REPLY_COMMAND_NOT_SUPPORTED));
-      clientSocket.end();
-      return;
-    }
-
-    const address = parseAddress(buffer, 3);
-    if (!address) {
-      // Need more data or invalid address
-      if (buffer.length > 300) {
-        // Too much data, probably garbage
-        clientSocket.write(createReply(REPLY_ADDRESS_TYPE_NOT_SUPPORTED));
-        clientSocket.end();
-      }
-      return;
-    }
-
-    console.log(`🔌 SOCKS5 CONNECT: ${address.host}:${address.port}`);
-
-    // Check if domain should be blocked
-    if (shouldBlockDomain(address.host)) {
-      console.log(`🚫 Blocked: ${address.host}`);
-      clientSocket.write(createReply(REPLY_SUCCESS, address.addressType));
-      clientSocket.end();
-      return;
-    }
-
-    const isHttp = address.port === 80;
-    const isHttps = address.port === 443;
-
-    if (isHttps) {
-      // For HTTPS: We need to do TLS interception
-      // 1. Tell client connection is established
-      // 2. Perform TLS handshake with client using our cert
-      // 3. Connect to real server with TLS
-      // 4. Intercept and transform data
-      handleHttpsConnection(clientSocket, address.host, address.addressType);
-    } else if (isHttp) {
-      // For HTTP: Connect to target and intercept
-      handleHttpConnection(clientSocket, address.host, address.port, address.addressType);
-    } else {
-      // For non-HTTP traffic, connect directly (no interception)
-      targetSocket = connect(address.port, address.host, () => {
-        console.log(`✅ Direct connection to ${address.host}:${address.port}`);
-
-        // Send success reply
-        clientSocket.write(createReply(REPLY_SUCCESS, address.addressType));
-        state = ConnectionState.CONNECTED;
-
-        // Clear buffer
-        buffer = Buffer.alloc(0);
-
-        // Pipe data between client and target
-        clientSocket.pipe(targetSocket!);
-        targetSocket!.pipe(clientSocket);
-      });
-
-      targetSocket.on('error', (err) => {
-        console.error(`❌ Target socket error: ${err.message}`);
-        if (state === ConnectionState.AWAITING_REQUEST) {
-          clientSocket.write(createReply(REPLY_NETWORK_UNREACHABLE));
-        }
-        clientSocket.end();
-      });
-
-      targetSocket.on('close', () => {
-        clientSocket.end();
-      });
-    }
-  }
-
-  // Handle HTTPS with TLS interception
-  function handleHttpsConnection(clientSocket: Socket, hostname: string, addressType: number): void {
-    console.log(`🔒 Starting TLS interception for ${hostname}`);
-    // First, tell the client the connection is established
-    clientSocket.write(createReply(REPLY_SUCCESS, addressType));
-
-    // Generate certificate for this domain
-    const certPair = generateDomainCert(hostname);
-
-    // Create a TLS server to handle the client connection
-    const tlsOptions = {
-      key: certPair.key,
-      cert: certPair.cert,
-      isServer: true,
-    };
-
-    // Upgrade client socket to TLS using TLSSocket
-    const tlsServer = new TLSSocket(clientSocket, tlsOptions);
-
-    tlsServer.on('secure', () => {
-      console.log(`🔐 TLS handshake complete with client for ${hostname}`);
-    });
-
-    // Buffer for incoming HTTP request
-    let requestBuffer = Buffer.alloc(0);
-    let requestComplete = false;
-
-    tlsServer.on('data', async (data: Buffer) => {
-      if (requestComplete) return;
-
-      requestBuffer = Buffer.concat([requestBuffer, data]);
-
-      // Check if we have complete HTTP headers
-      const headerEnd = requestBuffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return;
-
-      requestComplete = true;
-
-      // Parse the HTTP request
-      const headerStr = requestBuffer.subarray(0, headerEnd).toString('utf-8');
-      const bodyStart = headerEnd + 4;
-      const lines = headerStr.split('\r\n');
-      const requestLine = lines[0];
-      const [method, path] = requestLine.split(' ');
-
-      // Parse headers
-      const headers: Record<string, string> = {};
-      for (let i = 1; i < lines.length; i++) {
-        const colonIdx = lines[i].indexOf(':');
-        if (colonIdx > 0) {
-          const key = lines[i].substring(0, colonIdx).toLowerCase();
-          const value = lines[i].substring(colonIdx + 1).trim();
-          headers[key] = value;
-        }
-      }
-
-      // Get content length for body
-      const contentLength = parseInt(headers['content-length'] || '0', 10);
-      let requestBody = requestBuffer.subarray(bodyStart);
-
-      // Wait for full body if needed
-      while (requestBody.length < contentLength) {
-        const moreData = await new Promise<Buffer>((resolve) => {
-          tlsServer.once('data', resolve);
-        });
-        requestBody = Buffer.concat([requestBody, moreData]);
-      }
-
-      const targetUrl = `https://${hostname}${path}`;
-      console.log(`🔐 HTTPS: ${method} ${targetUrl}`);
-
-      // Record request for metrics
-      recordRequest();
-
-      // Check for Revamp API endpoints FIRST (before any blocking or external requests)
-      const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
-      if (apiResponse) {
-        tlsServer.write(apiResponse);
-        tlsServer.end();
-        return;
-      }
-
-      // Block tracking URLs by pattern
-      if (shouldBlockUrl(targetUrl)) {
-        console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
-        recordBlocked();
-        const blockedResponse =
-          'HTTP/1.1 204 No Content\r\n' +
-          'Connection: close\r\n' +
-          '\r\n';
-        tlsServer.write(blockedResponse);
-        tlsServer.end();
-        return;
-      }
-
-      // Check for WebSocket upgrade request
-      const upgradeHeader = headers['upgrade']?.toLowerCase();
-      if (upgradeHeader === 'websocket') {
-        console.log(`🔌 WebSocket upgrade request: ${targetUrl}`);
-        handleWebSocketUpgrade(tlsServer, hostname, path, headers, requestBuffer);
-        return;
-      }
-
-      // Handle CORS preflight requests
-      // Use the Origin header for CORS to support credentials
-      const requestOrigin = headers['origin'] || '*';
-
-      if (method === 'OPTIONS') {
-        const corsResponse = buildCorsPreflightResponse(requestOrigin);
-        tlsServer.write(corsResponse);
-        tlsServer.end();
-        return;
-      }
-
-      // Make request to real server
-      try {
-        console.log(`📤 Fetching: ${method} ${targetUrl}`);
-        const response = await makeHttpsRequest(method, hostname, path, headers, requestBody, clientIp);
-        console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
-
-        // Apply gzip compression for text-based content if client supports it
-        let responseBody = response.body;
-        const responseContentType = response.headers['content-type'];
-        const contentTypeStr = Array.isArray(responseContentType) ? responseContentType[0] : (responseContentType || '');
-        const clientAcceptsGzip = acceptsGzip(headers['accept-encoding']);
-        let isGzipped = false;
-
-        if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
-          responseBody = await compressGzip(responseBody);
-          isGzipped = true;
-        }
-
-        // Send response back to client
-        let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
-        for (const [key, value] of Object.entries(response.headers)) {
-          const lowerKey = key.toLowerCase();
-          if (!SKIP_RESPONSE_HEADERS.has(lowerKey)) {
-            if (Array.isArray(value)) {
-              responseHeaders += `${key}: ${value.join(', ')}\r\n`;
-            } else if (value !== undefined && value !== null) {
-              responseHeaders += `${key}: ${value}\r\n`;
-            }
-          }
-        }
-        responseHeaders += `Content-Length: ${responseBody.length}\r\n`;
-        if (isGzipped) {
-          responseHeaders += `Content-Encoding: gzip\r\n`;
-          responseHeaders += `Vary: Accept-Encoding\r\n`;
-        }
-        responseHeaders += `Connection: close\r\n`;
-        // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
-        responseHeaders += buildCorsHeadersString(requestOrigin);
-        responseHeaders += '\r\n';
-
-        tlsServer.write(responseHeaders);
-        tlsServer.write(responseBody);
-        tlsServer.end();
-      } catch (err) {
-        const error = err as Error;
-        console.error(`❌ HTTPS request error for ${targetUrl}:`, error.message);
-        recordError();
-        const errorResponse =
-          'HTTP/1.1 502 Bad Gateway\r\n' +
-          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
-          'Access-Control-Allow-Credentials: true\r\n' +
-          'Content-Type: text/plain\r\n' +
-          'Content-Length: 11\r\n' +
-          'Connection: close\r\n' +
-          '\r\n' +
-          'Bad Gateway';
-        tlsServer.write(errorResponse);
-        tlsServer.end();
-      }
-    });
-
-    tlsServer.on('error', (err: Error) => {
-      // Suppress common expected errors
-      if (err.message.includes('ECONNRESET') ||
-          err.message.includes('unknown ca') ||
-          err.message.includes('certificate') ||
-          err.message.includes('handshake') ||
-          err.message.includes('write after end')) {
-        // These are expected when client hasn't installed CA cert or connection was closed
-        return;
-      }
-      console.error(`❌ TLS server error for ${hostname}: ${err.message}`);
-    });
-
-    tlsServer.on('close', () => {
-      clientSocket.destroy();
-    });
-  }
-
-  // Handle WebSocket upgrade requests - proxy directly without transformation
-  function handleWebSocketUpgrade(
-    tlsClient: TLSSocket,
-    hostname: string,
-    path: string,
-    headers: Record<string, string>,
-    initialRequest: Buffer
-  ): void {
-    console.log(`🌐 Establishing WebSocket connection to ${hostname}`);
-
-    // Connect to the real server via TLS
-    const tlsServer = tlsConnect({
-      host: hostname,
-      port: 443,
-      rejectUnauthorized: false,
-    });
-
-    tlsServer.on('secureConnect', () => {
-      console.log(`🔗 WebSocket TLS connection established to ${hostname}`);
-
-      // Forward the original upgrade request to the server
-      tlsServer.write(initialRequest);
-
-      // Set up bidirectional piping
-      tlsClient.pipe(tlsServer);
-      tlsServer.pipe(tlsClient);
-    });
-
-    tlsServer.on('error', (err: Error) => {
-      console.error(`❌ WebSocket server connection error for ${hostname}: ${err.message}`);
-      tlsClient.end();
-    });
-
-    tlsServer.on('close', () => {
-      console.log(`🔌 WebSocket connection closed for ${hostname}`);
-      tlsClient.end();
-    });
-
-    tlsClient.on('error', (err: Error) => {
-      if (!err.message.includes('ECONNRESET')) {
-        console.error(`❌ WebSocket client error for ${hostname}: ${err.message}`);
-      }
-      tlsServer.end();
-    });
-
-    tlsClient.on('close', () => {
-      tlsServer.end();
-    });
-  }
-
-  // Handle HTTP connections with interception
-  function handleHttpConnection(clientSocket: Socket, hostname: string, port: number, addressType: number): void {
-    // Tell client connection is established
-    clientSocket.write(createReply(REPLY_SUCCESS, addressType));
-    state = ConnectionState.CONNECTED;
-
-    let requestBuffer = Buffer.alloc(0);
-
-    clientSocket.on('data', async (data: Buffer) => {
-      requestBuffer = Buffer.concat([requestBuffer, data]);
-
-      // Check for complete headers
-      const headerEnd = requestBuffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return;
-
-      // Parse request
-      const headerStr = requestBuffer.subarray(0, headerEnd).toString('utf-8');
-      const bodyStart = headerEnd + 4;
-      const lines = headerStr.split('\r\n');
-      const requestLine = lines[0];
-      const [method, path] = requestLine.split(' ');
-
-      const headers: Record<string, string> = {};
-      for (let i = 1; i < lines.length; i++) {
-        const colonIdx = lines[i].indexOf(':');
-        if (colonIdx > 0) {
-          const key = lines[i].substring(0, colonIdx).toLowerCase();
-          const value = lines[i].substring(colonIdx + 1).trim();
-          headers[key] = value;
-        }
-      }
-
-      const contentLength = parseInt(headers['content-length'] || '0', 10);
-      let requestBody = requestBuffer.subarray(bodyStart);
-
-      while (requestBody.length < contentLength) {
-        const moreData = await new Promise<Buffer>((resolve) => {
-          clientSocket.once('data', resolve);
-        });
-        requestBody = Buffer.concat([requestBody, moreData]);
-      }
-
-      const targetUrl = `http://${hostname}${path}`;
-      console.log(`📡 HTTP: ${method} ${targetUrl}`);
-
-      // Record request for metrics
-      recordRequest();
-
-      // Check for Revamp API endpoints FIRST (before any blocking or external requests)
-      const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
-      if (apiResponse) {
-        clientSocket.write(apiResponse);
-        requestBuffer = Buffer.alloc(0);
-        return;
-      }
-
-      // Block tracking URLs by pattern
-      if (shouldBlockUrl(targetUrl)) {
-        console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
-        recordBlocked();
-        const blockedResponse =
-          'HTTP/1.1 204 No Content\r\n' +
-          'Connection: close\r\n' +
-          '\r\n';
-        clientSocket.write(blockedResponse);
-        requestBuffer = Buffer.alloc(0);
-        return;
-      }
-
-      // Use the Origin header for CORS to support credentials
-      const requestOrigin = headers['origin'] || '*';
-
-      // Handle CORS preflight requests
-      if (method === 'OPTIONS') {
-        const corsResponse = buildCorsPreflightResponse(requestOrigin);
-        clientSocket.write(corsResponse);
-        requestBuffer = Buffer.alloc(0);
-        return;
-      }
-
-      try {
-        const response = await makeHttpRequest(method, hostname, port, path, headers, requestBody, clientIp);
-
-        let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
-
-        // Apply gzip compression for text-based content if client supports it
-        let responseBody = response.body;
-        const responseContentType = response.headers['content-type'];
-        const contentTypeStr = Array.isArray(responseContentType) ? responseContentType[0] : (responseContentType || '');
-        const clientAcceptsGzip = acceptsGzip(headers['accept-encoding']);
-        let isGzipped = false;
-
-        if (clientAcceptsGzip && shouldCompress(contentTypeStr) && responseBody.length > 1024) {
-          responseBody = await compressGzip(responseBody);
-          isGzipped = true;
-        }
-
-        for (const [key, value] of Object.entries(response.headers)) {
-          const lowerKey = key.toLowerCase();
-          if (!SKIP_RESPONSE_HEADERS.has(lowerKey)) {
-            if (Array.isArray(value)) {
-              responseHeaders += `${key}: ${value.join(', ')}\r\n`;
-            } else if (value !== undefined && value !== null) {
-              responseHeaders += `${key}: ${value}\r\n`;
-            }
-          }
-        }
-        responseHeaders += `Content-Length: ${responseBody.length}\r\n`;
-        if (isGzipped) {
-          responseHeaders += `Content-Encoding: gzip\r\n`;
-          responseHeaders += `Vary: Accept-Encoding\r\n`;
-        }
-        responseHeaders += `Connection: close\r\n`;
-        // Add CORS headers to allow cross-origin requests (use Origin for credentials support)
-        responseHeaders += buildCorsHeadersString(requestOrigin);
-        responseHeaders += '\r\n';
-
-        clientSocket.write(responseHeaders);
-        clientSocket.write(responseBody);
-
-        // Reset for next request
-        requestBuffer = Buffer.alloc(0);
-      } catch (err) {
-        console.error(`❌ HTTP request error:`, err);
-        const errorResponse =
-          'HTTP/1.1 502 Bad Gateway\r\n' +
-          `Access-Control-Allow-Origin: ${requestOrigin}\r\n` +
-          'Access-Control-Allow-Credentials: true\r\n' +
-          'Content-Length: 11\r\n' +
-          '\r\n' +
-          'Bad Gateway';
-        clientSocket.write(errorResponse);
-      }
-    });
-  }
 
   clientSocket.on('error', (err) => {
     if (!err.message.includes('ECONNRESET') && !err.message.includes('write after end')) {
@@ -651,18 +846,22 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
 }
 
 // =============================================================================
-// SOCKS5 Proxy Server Factory
+// Server Factory
 // =============================================================================
 
 /**
- * Create and start the SOCKS5 proxy server
+ * Create and start the SOCKS5 proxy server.
  *
  * @param port - Port to listen on (default: 1080)
  * @param httpProxyPort - HTTP proxy port for fallback routing
- * @param bindAddress - Address to bind to (default: 0.0.0.0 for all interfaces)
+ * @param bindAddress - Address to bind to (default: all interfaces)
  * @returns Node.js Server instance
  */
-export function createSocks5Proxy(port: number, httpProxyPort: number, bindAddress: string = '0.0.0.0'): Server {
+export function createSocks5Proxy(
+  port: number,
+  httpProxyPort: number,
+  bindAddress: string = '0.0.0.0'
+): Server {
   const server = createServer((socket) => {
     handleConnection(socket, httpProxyPort);
   });
