@@ -58,11 +58,13 @@ import {
  *
  * @param req - Incoming HTTP request
  * @param res - Server response object
+ * @param clientIp - Client IP for per-client config
  * @returns true if request was handled, false otherwise
  */
 async function handleRevampApiHttp(
   req: IncomingMessage,
-  res: ServerResponse
+  res: ServerResponse,
+  clientIp: string
 ): Promise<boolean> {
   const url = req.url || '';
 
@@ -70,13 +72,13 @@ async function handleRevampApiHttp(
     return false;
   }
 
-  console.log(`🔧 Revamp API: ${req.method} ${url}`);
+  console.log(`🔧 Revamp API: ${req.method} ${url} (client: ${clientIp})`);
 
   // Read body for POST requests
   const body = req.method === 'POST' ? await readRequestBody(req) : '';
 
-  // Use shared handler
-  const result = handleRevampRequest(url, req.method || 'GET', body);
+  // Use shared handler with client IP
+  const result = handleRevampRequest(url, req.method || 'GET', body, clientIp);
 
   // Apply headers
   for (const [key, value] of Object.entries(result.headers)) {
@@ -146,12 +148,12 @@ async function proxyRequest(
   if (isRevampPath) {
     // Rewrite req.url for the handler
     req.url = parsedUrl.pathname + parsedUrl.search;
-    const handled = await handleRevampApiHttp(req, res);
+    const handled = await handleRevampApiHttp(req, res, effectiveClientIp);
     if (handled) return;
   }
 
   // Get effective config (merges server defaults with client overrides)
-  const config = getEffectiveConfig();
+  const config = getEffectiveConfig(effectiveClientIp);
 
   // Record request for metrics
   recordRequest();

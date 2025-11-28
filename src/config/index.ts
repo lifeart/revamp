@@ -132,8 +132,11 @@ export const defaultConfig: RevampConfig = {
 // Current active configuration (mutable for runtime changes)
 let currentConfig: RevampConfig = { ...defaultConfig };
 
-// Client config stored on the proxy (shared across all requests)
-let clientConfig: ClientConfig | null = null;
+// Per-client config storage - Map of clientIp -> ClientConfig
+const clientConfigs = new Map<string, ClientConfig>();
+
+// Default key for non-IP-specific config (backward compatibility)
+const DEFAULT_CLIENT_KEY = '__default__';
 
 export function getConfig(): RevampConfig {
   return currentConfig;
@@ -163,49 +166,77 @@ export interface ClientConfig {
 }
 
 /**
- * Get the current client config
+ * Get the current client config for a specific client IP
+ * Returns only the explicitly set client overrides, or defaults from server config if none set
+ * @param clientIp - Optional client IP for per-client config lookup
  */
-export function getClientConfig(): ClientConfig {
-  return clientConfig || {
-    transformJs: currentConfig.transformJs,
-    transformCss: currentConfig.transformCss,
-    transformHtml: currentConfig.transformHtml,
-    removeAds: currentConfig.removeAds,
-    removeTracking: currentConfig.removeTracking,
-    injectPolyfills: currentConfig.injectPolyfills,
-    spoofUserAgent: currentConfig.spoofUserAgent,
-    spoofUserAgentInJs: currentConfig.spoofUserAgentInJs,
-    cacheEnabled: currentConfig.cacheEnabled,
-  };
+export function getClientConfig(clientIp?: string): ClientConfig {
+  const key = clientIp || DEFAULT_CLIENT_KEY;
+  const clientConfig = clientConfigs.get(key);
+
+  if (!clientConfig) {
+    // Return defaults from server config when no client-specific config is set
+    const serverConfig = getConfig();
+    return {
+      transformJs: serverConfig.transformJs,
+      transformCss: serverConfig.transformCss,
+      transformHtml: serverConfig.transformHtml,
+      removeAds: serverConfig.removeAds,
+      removeTracking: serverConfig.removeTracking,
+      injectPolyfills: serverConfig.injectPolyfills,
+      spoofUserAgent: serverConfig.spoofUserAgent,
+      spoofUserAgentInJs: serverConfig.spoofUserAgentInJs,
+      cacheEnabled: serverConfig.cacheEnabled,
+    };
+  }
+  return clientConfig;
 }
 
 /**
  * Update client config from API request
+ * @param config - New client configuration
+ * @param clientIp - Optional client IP for per-client config storage
  */
-export function setClientConfig(config: ClientConfig): void {
-  clientConfig = config;
-  console.log('[Revamp] Client config updated:', config);
+export function setClientConfig(config: ClientConfig, clientIp?: string): void {
+  const key = clientIp || DEFAULT_CLIENT_KEY;
+  clientConfigs.set(key, config);
+  console.log(`[Revamp] Client config updated for ${clientIp || 'default'}:`, config);
 }
 
 /**
  * Reset client config to defaults
+ * @param clientIp - Optional client IP to reset specific client's config. If not provided, resets all clients.
  */
-export function resetClientConfig(): void {
-  clientConfig = null;
-  console.log('[Revamp] Client config reset to defaults');
+export function resetClientConfig(clientIp?: string): void {
+  if (clientIp) {
+    clientConfigs.delete(clientIp);
+    console.log(`[Revamp] Client config reset for ${clientIp}`);
+  } else {
+    clientConfigs.clear();
+    console.log('[Revamp] All client configs reset to defaults');
+  }
 }
 
 /**
- * Get effective config for a request, merging server defaults with client overrides
+ * Get effective config for a request, merging server config with client overrides
+ * Server config provides global settings (targets, ports, cert paths, domain lists)
+ * Client config provides per-client feature flag overrides
+ * @param clientIp - Optional client IP for per-client config lookup
  */
-export function getEffectiveConfig(): RevampConfig {
+export function getEffectiveConfig(clientIp?: string): RevampConfig {
+  const key = clientIp || DEFAULT_CLIENT_KEY;
+  const clientConfig = clientConfigs.get(key);
+
+  // Start with server config (includes targets, ports, cert paths, domain lists)
+  const serverConfig = getConfig();
+
   if (!clientConfig) {
-    return currentConfig;
+    return serverConfig;
   }
 
-  // Merge client config with current config (client overrides server)
+  // Merge client config overrides with server config
   return {
-    ...currentConfig,
+    ...serverConfig,
     ...(clientConfig.transformJs !== undefined && { transformJs: clientConfig.transformJs }),
     ...(clientConfig.transformCss !== undefined && { transformCss: clientConfig.transformCss }),
     ...(clientConfig.transformHtml !== undefined && { transformHtml: clientConfig.transformHtml }),

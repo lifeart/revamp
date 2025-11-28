@@ -53,8 +53,12 @@ export function isRevampEndpoint(path: string): boolean {
 
 /**
  * Handle a Revamp API request
+ * @param path - API path
+ * @param method - HTTP method
+ * @param body - Request body
+ * @param clientIp - Optional client IP for per-client config
  */
-export function handleRevampRequest(path: string, method: string, body: string = ''): ApiResult {
+export function handleRevampRequest(path: string, method: string, body: string = '', clientIp?: string): ApiResult {
   // Handle CORS preflight for all endpoints
   if (method === 'OPTIONS') {
     return {
@@ -69,7 +73,7 @@ export function handleRevampRequest(path: string, method: string, body: string =
 
   // Config endpoint
   if (path.startsWith(ENDPOINTS.config)) {
-    return handleConfigRequest(method, body);
+    return handleConfigRequest(method, body, clientIp);
   }
 
   // Metrics JSON endpoint

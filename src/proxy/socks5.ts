@@ -76,15 +76,16 @@ import {
  * @param method - HTTP method
  * @param path - URL path
  * @param body - Request body
+ * @param clientIp - Client IP for per-client config
  * @returns Raw HTTP response string or null if not a Revamp endpoint
  */
-function handleRevampApiSocks5(method: string, path: string, body: string): string | null {
+function handleRevampApiSocks5(method: string, path: string, body: string, clientIp: string): string | null {
   if (!isRevampEndpoint(path)) {
     return null;
   }
 
-  console.log(`🔧 Revamp API: ${method} ${path}`);
-  const result = handleRevampRequest(path, method, body);
+  console.log(`🔧 Revamp API: ${method} ${path} (client: ${clientIp})`);
+  const result = handleRevampRequest(path, method, body, clientIp);
   return buildRawApiResponse(result);
 }
 
@@ -334,7 +335,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       recordRequest();
 
       // Check for Revamp API endpoints FIRST (before any blocking or external requests)
-      const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'));
+      const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
       if (apiResponse) {
         tlsServer.write(apiResponse);
         tlsServer.end();
@@ -551,7 +552,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       recordRequest();
 
       // Check for Revamp API endpoints FIRST (before any blocking or external requests)
-      const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'));
+      const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
       if (apiResponse) {
         clientSocket.write(apiResponse);
         requestBuffer = Buffer.alloc(0);

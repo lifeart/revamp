@@ -1,6 +1,6 @@
 /**
  * Config Endpoint Handler
- * 
+ *
  * Handles the /__revamp__/config API endpoint for both HTTP and SOCKS5 proxies.
  * Allows clients to read and update proxy configuration at runtime.
  */
@@ -34,18 +34,19 @@ export interface ConfigEndpointResult {
 
 /**
  * Handle a config API request
- * 
+ *
  * Supports:
  * - GET: Returns current config
  * - POST: Updates config with provided values
  * - DELETE: Resets config to defaults
  * - OPTIONS: CORS preflight
- * 
+ *
  * @param method - HTTP method
  * @param body - Request body (for POST requests)
+ * @param clientIp - Optional client IP for per-client config
  * @returns ConfigEndpointResult with status, headers, and body
  */
-export function handleConfigRequest(method: string, body: string = ''): ConfigEndpointResult {
+export function handleConfigRequest(method: string, body: string = '', clientIp?: string): ConfigEndpointResult {
   // Handle CORS preflight
   if (method === 'OPTIONS') {
     return {
@@ -57,11 +58,11 @@ export function handleConfigRequest(method: string, body: string = ''): ConfigEn
       body: '',
     };
   }
-  
+
   // GET - return current config
   if (method === 'GET') {
-    const config = getClientConfig();
-    console.log(`⚙️ Config GET - returning:`, JSON.stringify(config));
+    const config = getClientConfig(clientIp);
+    console.log(`⚙️ Config GET${clientIp ? ` (client: ${clientIp})` : ''} - returning:`, JSON.stringify(config));
     const responseBody = JSON.stringify({ success: true, config });
     return {
       statusCode: 200,
@@ -69,14 +70,14 @@ export function handleConfigRequest(method: string, body: string = ''): ConfigEn
       body: responseBody,
     };
   }
-  
+
   // POST - update config
   if (method === 'POST') {
     try {
       const newConfig = JSON.parse(body) as ClientConfig;
-      console.log(`⚙️ Config POST - saving:`, JSON.stringify(newConfig));
-      setClientConfig(newConfig);
-      const responseBody = JSON.stringify({ success: true, config: getClientConfig() });
+      console.log(`⚙️ Config POST${clientIp ? ` (client: ${clientIp})` : ''} - saving:`, JSON.stringify(newConfig));
+      setClientConfig(newConfig, clientIp);
+      const responseBody = JSON.stringify({ success: true, config: getClientConfig(clientIp) });
       return {
         statusCode: 200,
         headers: CONFIG_HEADERS,
@@ -91,19 +92,19 @@ export function handleConfigRequest(method: string, body: string = ''): ConfigEn
       };
     }
   }
-  
+
   // DELETE - reset config
   if (method === 'DELETE') {
-    console.log(`⚙️ Config DELETE - resetting`);
-    resetClientConfig();
-    const responseBody = JSON.stringify({ success: true, config: getClientConfig() });
+    console.log(`⚙️ Config DELETE${clientIp ? ` (client: ${clientIp})` : ''} - resetting`);
+    resetClientConfig(clientIp);
+    const responseBody = JSON.stringify({ success: true, config: getClientConfig(clientIp) });
     return {
       statusCode: 200,
       headers: CONFIG_HEADERS,
       body: responseBody,
     };
   }
-  
+
   // Method not allowed
   const responseBody = JSON.stringify({ success: false, error: 'Method not allowed' });
   return {
@@ -116,7 +117,7 @@ export function handleConfigRequest(method: string, body: string = ''): ConfigEn
 /**
  * Build a raw HTTP response string from ConfigEndpointResult
  * Used by SOCKS5 proxy which sends raw HTTP responses
- * 
+ *
  * @param result - Config endpoint result
  * @returns Raw HTTP response string
  */
@@ -127,27 +128,27 @@ export function buildRawHttpResponse(result: ConfigEndpointResult): string {
     400: 'Bad Request',
     405: 'Method Not Allowed',
   };
-  
+
   const statusMessage = statusMessages[result.statusCode] || 'OK';
   let response = `HTTP/1.1 ${result.statusCode} ${statusMessage}\r\n`;
-  
+
   for (const [key, value] of Object.entries(result.headers)) {
     response += `${key}: ${value}\r\n`;
   }
-  
+
   if (result.body) {
     response += `Content-Length: ${Buffer.byteLength(result.body)}\r\n`;
   }
   response += 'Connection: close\r\n';
   response += '\r\n';
   response += result.body;
-  
+
   return response;
 }
 
 /**
  * Check if a URL path matches the config endpoint
- * 
+ *
  * @param path - URL path to check
  * @returns true if path starts with CONFIG_ENDPOINT
  */

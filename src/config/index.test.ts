@@ -341,3 +341,135 @@ describe('getEffectiveConfig', () => {
     expect(effective.trackingUrls).toBeDefined();
   });
 });
+
+describe('per-client config isolation', () => {
+  beforeEach(() => {
+    resetConfig();
+    resetClientConfig();
+  });
+
+  afterEach(() => {
+    resetConfig();
+    resetClientConfig();
+  });
+
+  it('should isolate config by client IP', () => {
+    // Client 1 sets config
+    setClientConfig({ transformJs: false }, '192.168.1.100');
+
+    // Client 2 sets different config
+    setClientConfig({ transformJs: true, removeAds: false }, '192.168.1.200');
+
+    // Each client should get their own config
+    const config1 = getClientConfig('192.168.1.100');
+    const config2 = getClientConfig('192.168.1.200');
+
+    expect(config1.transformJs).toBe(false);
+    expect(config1.removeAds).toBeUndefined(); // Not set by client 1
+
+    expect(config2.transformJs).toBe(true);
+    expect(config2.removeAds).toBe(false);
+  });
+
+  it('should return defaults for unknown client IP', () => {
+    setClientConfig({ transformJs: false }, '192.168.1.100');
+
+    // Different client should get defaults
+    const config = getClientConfig('10.0.0.1');
+    expect(config.transformJs).toBe(true);
+  });
+
+  it('should keep global config separate from per-client config', () => {
+    // Set global config (no IP)
+    setClientConfig({ transformJs: false });
+
+    // Set per-client config
+    setClientConfig({ transformJs: true }, '192.168.1.100');
+
+    // Global and per-client should be separate
+    const globalConfig = getClientConfig();
+    const clientConfig = getClientConfig('192.168.1.100');
+
+    expect(globalConfig.transformJs).toBe(false);
+    expect(clientConfig.transformJs).toBe(true);
+  });
+
+  it('should reset only specific client config when IP provided', () => {
+    setClientConfig({ transformJs: false }, '192.168.1.100');
+    setClientConfig({ transformJs: false }, '192.168.1.200');
+
+    // Reset only client 100
+    resetClientConfig('192.168.1.100');
+
+    // Client 100 should get defaults
+    const config100 = getClientConfig('192.168.1.100');
+    expect(config100.transformJs).toBe(true);
+
+    // Client 200 should keep its config
+    const config200 = getClientConfig('192.168.1.200');
+    expect(config200.transformJs).toBe(false);
+  });
+
+  it('should reset all client configs when no IP provided', () => {
+    setClientConfig({ transformJs: false }, '192.168.1.100');
+    setClientConfig({ transformJs: false }, '192.168.1.200');
+    setClientConfig({ transformJs: false }); // Global
+
+    // Reset all
+    resetClientConfig();
+
+    // All clients should get defaults
+    expect(getClientConfig('192.168.1.100').transformJs).toBe(true);
+    expect(getClientConfig('192.168.1.200').transformJs).toBe(true);
+    expect(getClientConfig().transformJs).toBe(true);
+  });
+
+  it('should return per-client effective config', () => {
+    setClientConfig({ transformJs: false, removeAds: false }, '192.168.1.100');
+    setClientConfig({ transformCss: false }, '192.168.1.200');
+
+    const effective1 = getEffectiveConfig('192.168.1.100');
+    const effective2 = getEffectiveConfig('192.168.1.200');
+
+    // Client 1 overrides
+    expect(effective1.transformJs).toBe(false);
+    expect(effective1.removeAds).toBe(false);
+    expect(effective1.transformCss).toBe(true); // Not overridden
+
+    // Client 2 overrides
+    expect(effective2.transformJs).toBe(true); // Not overridden
+    expect(effective2.transformCss).toBe(false);
+    expect(effective2.removeAds).toBe(true); // Not overridden
+  });
+
+  it('should handle IPv6 addresses as client IP', () => {
+    const ipv6Address = '2001:db8::1';
+    setClientConfig({ transformJs: false }, ipv6Address);
+
+    const config = getClientConfig(ipv6Address);
+    expect(config.transformJs).toBe(false);
+
+    const effective = getEffectiveConfig(ipv6Address);
+    expect(effective.transformJs).toBe(false);
+  });
+
+  it('should handle multiple clients with different settings', () => {
+    const clients = [
+      { ip: '10.0.0.1', config: { transformJs: false, cacheEnabled: true } },
+      { ip: '10.0.0.2', config: { transformCss: false, removeAds: false } },
+      { ip: '10.0.0.3', config: { injectPolyfills: false, spoofUserAgent: false } },
+    ];
+
+    // Set configs for all clients
+    clients.forEach(({ ip, config }) => setClientConfig(config, ip));
+
+    // Verify each client has correct config
+    expect(getClientConfig('10.0.0.1').transformJs).toBe(false);
+    expect(getClientConfig('10.0.0.2').transformCss).toBe(false);
+    expect(getClientConfig('10.0.0.3').injectPolyfills).toBe(false);
+
+    // Verify configs don't interfere with each other
+    expect(getClientConfig('10.0.0.1').transformCss).toBeUndefined();
+    expect(getClientConfig('10.0.0.2').transformJs).toBeUndefined();
+  });
+});
