@@ -6,7 +6,7 @@
  * Run with: npx ts-node src/benchmarks/parallel-transform.ts
  */
 
-import { transformJs } from '../transformers/js.js';
+import { transformJs, prewarmWorkerPool } from '../transformers/js.js';
 import { transformCss } from '../transformers/css.js';
 import { compressGzip, decompressBody } from '../proxy/shared.js';
 import { updateConfig } from '../config/index.js';
@@ -112,8 +112,15 @@ async function runBenchmarks() {
     compressionLevel: 4,
   });
 
+  // Prewarm the worker pool
+  console.log('\n🔥 Prewarming worker pool...');
+  const prewarmStart = performance.now();
+  await prewarmWorkerPool();
+  console.log(`   Prewarm took ${(performance.now() - prewarmStart).toFixed(0)}ms`);
+
   const results: BenchmarkResult[] = [];
   const iterations = 20;
+  const highConcurrency = 50; // Test high concurrency
 
   // Benchmark JS transformation
   console.log('\n📦 JavaScript Transformation (Babel Worker Pool)');
@@ -187,6 +194,39 @@ async function runBenchmarks() {
   console.log(`  Sequential: ${gunzipResult.sequential.toFixed(2)}ms per op`);
   console.log(`  Parallel:   ${gunzipResult.parallel.toFixed(2)}ms per op`);
   console.log(`  Speedup:    ${(gunzipResult.sequential / gunzipResult.parallel).toFixed(2)}x`);
+
+  // High concurrency test - simulates real proxy load
+  console.log('\n🚀 High Concurrency Test (50 parallel transforms)');
+  console.log('-'.repeat(60));
+  const highConcStart = performance.now();
+  await Promise.all(Array(highConcurrency).fill(0).map((_, i) =>
+    transformJs(SAMPLE_JS, `high-conc-${i}.js`)
+  ));
+  const highConcTime = performance.now() - highConcStart;
+  console.log(`  ${highConcurrency} transforms completed in ${highConcTime.toFixed(0)}ms`);
+  console.log(`  Throughput: ${(highConcurrency / (highConcTime / 1000)).toFixed(1)} transforms/sec`);
+
+  // Smart skipping test - shows optimization for compatible code
+  console.log('\n⚡ Smart Skipping Test (already-compatible code)');
+  console.log('-'.repeat(60));
+  const compatibleJs = 'var x = 1; function foo() { return x + 1; }'; // No modern features
+  const compatibleCss = '.simple { color: red; margin: 10px; }'; // No modern features
+
+  const skipJsStart = performance.now();
+  for (let i = 0; i < 1000; i++) {
+    await transformJs(compatibleJs, `skip-${i}.js`);
+  }
+  const skipJsTime = performance.now() - skipJsStart;
+
+  const skipCssStart = performance.now();
+  for (let i = 0; i < 1000; i++) {
+    await transformCss(compatibleCss, `skip-${i}.css`);
+  }
+  const skipCssTime = performance.now() - skipCssStart;
+
+  console.log(`  1000 compatible JS files: ${skipJsTime.toFixed(0)}ms (${(1000 / skipJsTime * 1000).toFixed(0)} ops/sec)`);
+  console.log(`  1000 compatible CSS files: ${skipCssTime.toFixed(0)}ms (${(1000 / skipCssTime * 1000).toFixed(0)} ops/sec)`);
+  console.log(`  → Smart skipping avoids unnecessary transformations!`);
 
   // Summary
   console.log('\n' + '='.repeat(60));

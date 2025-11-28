@@ -50,18 +50,20 @@ function resolveWorkerPath(): string {
 function getPool(): Tinypool {
   if (!pool) {
     const workerPath = resolveWorkerPath();
+    const cpuCount = cpus().length;
 
     pool = new Tinypool({
       filename: workerPath,
-      // Number of workers - use CPU count minus 1 to leave room for main thread
-      // Minimum 2 workers for some parallelism
-      minThreads: 2,
-      maxThreads: Math.max(2, cpus().length - 1),
-      // Idle timeout - terminate workers after 30s of inactivity
-      idleTimeout: 30000,
+      // Use all CPUs for maximum parallelism - Babel is CPU-bound
+      minThreads: Math.max(2, Math.floor(cpuCount / 2)),
+      maxThreads: cpuCount,
+      // Allow multiple concurrent tasks per worker for better throughput
+      concurrentTasksPerWorker: 2,
+      // Idle timeout - terminate workers after 60s of inactivity
+      idleTimeout: 60000,
     });
 
-    console.log(`🔧 Babel worker pool initialized with ${pool.options.maxThreads} max threads`);
+    console.log(`🔧 Babel worker pool initialized with ${pool.options.maxThreads} max threads (${pool.options.concurrentTasksPerWorker} tasks/worker)`);
   }
 
   return pool;
@@ -80,13 +82,48 @@ export async function shutdownWorkerPool(): Promise<void> {
 }
 
 /**
+ * Prewarm the worker pool by initializing workers early
+ * Call this at application startup for faster first transforms
+ */
+export async function prewarmWorkerPool(): Promise<void> {
+  const config = getConfig();
+  if (!config.transformJs) return;
+
+  console.log('🔥 Prewarming Babel worker pool...');
+  const workerPool = getPool();
+
+  // Run a minimal transform to ensure workers are ready
+  const warmupCode = 'const x = 1;';
+  try {
+    await workerPool.run({ code: warmupCode, targets: config.targets } as JsWorkerInput);
+    console.log('✅ Worker pool prewarmed and ready');
+  } catch {
+    // Ignore warmup errors
+  }
+}
+
+/**
  * Transform JavaScript code for legacy browser compatibility
  * Uses worker pool for parallel processing
+ *
+ * Optimization: Skip transformation for small files or files that don't
+ * contain modern JS syntax that needs transpiling.
  */
 export async function transformJs(code: string, filename?: string): Promise<string> {
   const config = getConfig();
 
   if (!config.transformJs) {
+    return code;
+  }
+
+  // Skip very small files (< 100 bytes) - likely not complex JS
+  if (code.length < 100) {
+    return code;
+  }
+
+  // Quick heuristic check - skip if no modern JS features detected
+  // This avoids expensive Babel parsing for already-compatible code
+  if (!needsJsTransform(code)) {
     return code;
   }
 

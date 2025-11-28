@@ -1,10 +1,11 @@
 /**
  * Cache implementation for transformed content
  * Uses file-based caching with in-memory LRU for hot data
+ * All file operations are async for non-blocking I/O
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, unlinkSync, readdirSync } from 'node:fs';
+import { access, mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getConfig } from '../config/index.js';
 
@@ -21,7 +22,7 @@ interface MemoryCacheEntry extends CacheEntry {
 
 // In-memory LRU cache for hot data
 const memoryCache = new Map<string, MemoryCacheEntry>();
-const MAX_MEMORY_CACHE_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_MEMORY_CACHE_SIZE = 100 * 1024 * 1024; // 100MB (increased for better hit rate)
 let currentMemorySize = 0;
 
 // Domains that should never be cached (e.g., iCloud for authentication/sync)
@@ -37,6 +38,21 @@ const redirectUrls = new Set<string>();
 
 // Redirect status codes
 const REDIRECT_STATUS_CODES = [301, 302, 303, 307, 308];
+
+// Track if cache dir has been created
+let cacheDirInitialized = false;
+
+/**
+ * Check if file exists (async)
+ */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Check if a status code is a redirect
@@ -77,10 +93,10 @@ function shouldSkipCache(url: string): boolean {
   if (isKnownRedirect(url)) {
     return true;
   }
-  
+
   try {
     const hostname = new URL(url).hostname.toLowerCase();
-    return NO_CACHE_DOMAINS.some(domain => 
+    return NO_CACHE_DOMAINS.some(domain =>
       hostname === domain || hostname.endsWith('.' + domain)
     );
   } catch {
@@ -99,10 +115,16 @@ function getCachePath(key: string): string {
   return join(dir, key);
 }
 
-function ensureCacheDir(): void {
+async function ensureCacheDir(): Promise<void> {
+  if (cacheDirInitialized) return;
+
   const config = getConfig();
-  if (!existsSync(config.cacheDir)) {
-    mkdirSync(config.cacheDir, { recursive: true });
+  try {
+    await mkdir(config.cacheDir, { recursive: true });
+    cacheDirInitialized = true;
+  } catch {
+    // Directory might already exist
+    cacheDirInitialized = true;
   }
 }
 
@@ -122,10 +144,10 @@ export async function getCached(url: string, contentType: string): Promise<Buffe
   const config = getConfig();
   if (!config.cacheEnabled) return null;
   if (shouldSkipCache(url)) return null;
-  
+
   const key = getCacheKey(url, contentType);
-  
-  // Check memory cache first
+
+  // Check memory cache first (fast path)
   const memEntry = memoryCache.get(key);
   if (memEntry) {
     if (Date.now() - memEntry.timestamp < config.cacheTTL * 1000) {
@@ -138,45 +160,47 @@ export async function getCached(url: string, contentType: string): Promise<Buffe
     currentMemorySize -= memEntry.size;
     memoryCache.delete(key);
   }
-  
-  // Check file cache
+
+  // Check file cache (async)
   const cachePath = getCachePath(key);
   const metaPath = cachePath + '.meta';
-  
-  if (existsSync(cachePath) && existsSync(metaPath)) {
-    try {
-      const meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+
+  try {
+    if (await fileExists(cachePath) && await fileExists(metaPath)) {
+      const [dataBuffer, metaBuffer] = await Promise.all([
+        readFile(cachePath),
+        readFile(metaPath, 'utf-8'),
+      ]);
+
+      const meta = JSON.parse(metaBuffer);
       if (Date.now() - meta.timestamp < config.cacheTTL * 1000) {
-        const data = readFileSync(cachePath);
-        
         // Add to memory cache
         const entry: MemoryCacheEntry = {
-          data,
+          data: dataBuffer,
           contentType: meta.contentType,
           timestamp: meta.timestamp,
           url: meta.url,
-          size: data.length,
+          size: dataBuffer.length,
         };
-        
+
         while (currentMemorySize + entry.size > MAX_MEMORY_CACHE_SIZE && memoryCache.size > 0) {
           evictOldestFromMemory();
         }
-        
+
         if (currentMemorySize + entry.size <= MAX_MEMORY_CACHE_SIZE) {
           memoryCache.set(key, entry);
           currentMemorySize += entry.size;
         }
-        
-        return data;
+
+        return dataBuffer;
       }
-      // Expired, clean up
-      unlinkSync(cachePath);
-      unlinkSync(metaPath);
-    } catch {
-      // Corrupted cache, ignore
+      // Expired, clean up async (don't wait)
+      Promise.all([unlink(cachePath), unlink(metaPath)]).catch(() => {});
     }
+  } catch {
+    // Cache miss or corrupted, ignore
   }
-  
+
   return null;
 }
 
@@ -184,13 +208,13 @@ export async function setCache(url: string, contentType: string, data: Buffer): 
   const config = getConfig();
   if (!config.cacheEnabled) return;
   if (shouldSkipCache(url)) return;
-  
-  ensureCacheDir();
-  
+
+  await ensureCacheDir();
+
   const key = getCacheKey(url, contentType);
   const timestamp = Date.now();
-  
-  // Add to memory cache
+
+  // Add to memory cache (sync, fast)
   const entry: MemoryCacheEntry = {
     data,
     contentType,
@@ -198,56 +222,65 @@ export async function setCache(url: string, contentType: string, data: Buffer): 
     url,
     size: data.length,
   };
-  
+
   while (currentMemorySize + entry.size > MAX_MEMORY_CACHE_SIZE && memoryCache.size > 0) {
     evictOldestFromMemory();
   }
-  
+
   if (currentMemorySize + entry.size <= MAX_MEMORY_CACHE_SIZE) {
     memoryCache.set(key, entry);
     currentMemorySize += entry.size;
   }
-  
-  // Write to file cache
+
+  // Write to file cache async (fire and forget for performance)
   const cachePath = getCachePath(key);
   const cacheDir = join(config.cacheDir, key.substring(0, 2));
-  
-  if (!existsSync(cacheDir)) {
-    mkdirSync(cacheDir, { recursive: true });
-  }
-  
-  writeFileSync(cachePath, data);
-  writeFileSync(cachePath + '.meta', JSON.stringify({
-    contentType,
-    timestamp,
-    url,
-  }));
+
+  // Don't await - let file writes happen in background
+  (async () => {
+    try {
+      await mkdir(cacheDir, { recursive: true });
+      await Promise.all([
+        writeFile(cachePath, data),
+        writeFile(cachePath + '.meta', JSON.stringify({
+          contentType,
+          timestamp,
+          url,
+        })),
+      ]);
+    } catch {
+      // Ignore write errors - memory cache is primary
+    }
+  })();
 }
 
 export function clearCache(): void {
-  // Clear memory cache
+  // Clear memory cache (sync)
   memoryCache.clear();
   currentMemorySize = 0;
-  
-  // Clear file cache
+  cacheDirInitialized = false;
+
+  // Clear file cache async (fire and forget)
   const config = getConfig();
-  if (existsSync(config.cacheDir)) {
-    const subdirs = readdirSync(config.cacheDir);
-    for (const subdir of subdirs) {
-      const subdirPath = join(config.cacheDir, subdir);
-      try {
-        const stat = statSync(subdirPath);
-        if (stat.isDirectory()) {
-          const files = readdirSync(subdirPath);
-          for (const file of files) {
-            unlinkSync(join(subdirPath, file));
+  (async () => {
+    try {
+      const subdirs = await readdir(config.cacheDir);
+      for (const subdir of subdirs) {
+        const subdirPath = join(config.cacheDir, subdir);
+        try {
+          const stats = await stat(subdirPath);
+          if (stats.isDirectory()) {
+            const files = await readdir(subdirPath);
+            await Promise.all(files.map(file => unlink(join(subdirPath, file)).catch(() => {})));
           }
+        } catch {
+          // Ignore errors
         }
-      } catch {
-        // Ignore errors
       }
+    } catch {
+      // Cache dir doesn't exist, ignore
     }
-  }
+  })();
 }
 
 export function getCacheStats(): { memoryEntries: number; memorySize: number } {

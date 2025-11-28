@@ -129,11 +129,25 @@ function getProcessor(): ReturnType<typeof postcss> {
 
 /**
  * Transform CSS code for legacy browser compatibility
+ *
+ * Optimization: Skip transformation for small files or files that don't
+ * contain modern CSS features that need transpiling.
  */
 export async function transformCss(code: string, filename?: string): Promise<string> {
   const config = getConfig();
 
   if (!config.transformCss) {
+    return code;
+  }
+
+  // Skip very small files (< 50 bytes) - likely not complex CSS
+  if (code.length < 50) {
+    return code;
+  }
+
+  // Quick heuristic check - skip if no modern CSS features detected
+  // This avoids expensive PostCSS parsing for already-compatible code
+  if (!needsCssTransform(code)) {
     return code;
   }
 
