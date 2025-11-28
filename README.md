@@ -1,17 +1,14 @@
-
-<img align="right" width="95" height="95"
-     alt="ReVamp logo"
-     src="public/revamp-logo.png">
-
-# Revamp 🔄
-
-[![CI](https://github.com/lifeart/revamp/actions/workflows/ci.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/ci.yml)
+# Revamp 🔄 [![CI](https://github.com/lifeart/revamp/actions/workflows/ci.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/ci.yml)
 [![Docker](https://github.com/lifeart/revamp/actions/workflows/docker.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/docker.yml)
 [![codecov](https://codecov.io/gh/lifeart/revamp/branch/master/graph/badge.svg)](https://codecov.io/gh/lifeart/revamp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
 [![Docker Image](https://img.shields.io/badge/Docker-ghcr.io%2Flifeart%2Frevamp-blue)](https://ghcr.io/lifeart/revamp)
+
+<img align="right" width="95" height="95"
+     alt="ReVamp logo"
+     src="public/revamp-logo.png">
 
 **Legacy Browser Compatibility Proxy** — Transform modern web content for older devices like iPads and iPods running iOS 9+.
 
