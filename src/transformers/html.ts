@@ -1,17 +1,47 @@
 /**
  * HTML Transformer
- * Removes ads, tracking scripts, and injects polyfills
+ *
+ * Transforms HTML content for legacy browser compatibility:
+ * - Removes ad scripts and containers
+ * - Removes tracking scripts and pixels
+ * - Transforms inline JavaScript for legacy browsers
+ * - Injects polyfills and compatibility scripts
+ * - Normalizes charset to UTF-8
+ *
+ * @module transformers/html
  */
 
 import * as cheerio from 'cheerio';
+import type { CheerioAPI, Cheerio, Element } from 'cheerio';
 import { getConfig } from '../config/index.js';
 import { transformJs } from './js.js';
 import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
 
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Script element with its content for transformation */
+interface InlineScript {
+  elem: Element;
+  content: string;
+}
+
+/** Result of HTML transformation */
+interface TransformResult {
+  removedAds: number;
+  removedTracking: number;
+}
+
+// =============================================================================
+// Ad Detection Patterns
+// =============================================================================
+
 /**
- * Common ad/tracking script patterns
+ * Patterns that identify ad-related scripts.
+ * Matches against both script src URLs and inline content.
  */
-const AD_SCRIPT_PATTERNS = [
+const AD_SCRIPT_PATTERNS: readonly RegExp[] = [
   /atob/i,
   /ads\//i,
   /googletag/i,
@@ -29,7 +59,54 @@ const AD_SCRIPT_PATTERNS = [
   /ads\.twitter\.com/i,
 ];
 
-const TRACKING_SCRIPT_PATTERNS = [
+/**
+ * CSS selectors for ad container elements.
+ *
+ * IMPORTANT: Uses boundary-aware selectors (^, $, ~) to avoid false positives.
+ * For example, [class^="ad-"] matches "ad-banner" but NOT "download-btn".
+ */
+const AD_CONTAINER_SELECTORS: readonly string[] = [
+  // Class-based selectors with word boundaries
+  '[class^="ad-"]',           // Class starts with "ad-"
+  '[class$="-ad"]',           // Class ends with "-ad"
+  '[class~="ad"]',            // Class contains word "ad" (space-separated)
+  '[class^="ads-"]',          // Class starts with "ads-"
+  '[class$="-ads"]',          // Class ends with "-ads"
+  '[class~="ads"]',           // Class contains word "ads" (space-separated)
+
+  // Specific ad-related class names
+  '.advertisement',
+  '.ad-container',
+  '.ad-wrapper',
+  '.ad-banner',
+  '.ad-unit',
+  '.advert',
+
+  // ID-based selectors
+  '[id*="google_ads"]',
+  '[id*="ad-container"]',
+  '[id*="ad_container"]',
+  '[id^="ad-"]',              // ID starts with "ad-"
+  '[id$="-ad"]',              // ID ends with "-ad"
+
+  // Ad network specific
+  'ins.adsbygoogle',
+
+  // Data attribute selectors
+  '[data-ad]',
+  '[data-ad-slot]',
+  '[data-ad-client]',
+];
+
+// =============================================================================
+// Tracking Detection Patterns
+// =============================================================================
+
+/**
+ * Patterns that identify tracking/analytics scripts.
+ * Matches against both script src URLs and inline content.
+ */
+const TRACKING_SCRIPT_PATTERNS: readonly RegExp[] = [
   /google-analytics\.com/i,
   /googletagmanager\.com/i,
   /metrika\/tag\.js/i,
@@ -52,23 +129,319 @@ const TRACKING_SCRIPT_PATTERNS = [
   /logrocket/i,
 ];
 
-function isAdScript(src: string | undefined, content: string): boolean {
-  const srcCheck = src ? AD_SCRIPT_PATTERNS.some(p => p.test(src)) : false;
-  const contentCheck = AD_SCRIPT_PATTERNS.some(p => p.test(content));
-  return srcCheck || contentCheck;
-}
+/**
+ * CSS selectors for tracking pixel elements (images and iframes).
+ */
+const TRACKING_PIXEL_SELECTORS: readonly string[] = [
+  'img[width="1"][height="1"]',
+  'img[src*="pixel"]',
+  'img[src*="beacon"]',
+  'iframe[width="0"]',
+  'iframe[height="0"]',
+  'iframe[style*="display:none"]',
+  'iframe[style*="display: none"]',
+  'noscript img',
+];
 
-function isTrackingScript(src: string | undefined, content: string): boolean {
-  const srcCheck = src ? TRACKING_SCRIPT_PATTERNS.some(p => p.test(src)) : false;
-  const contentCheck = TRACKING_SCRIPT_PATTERNS.some(p => p.test(content));
-  return srcCheck || contentCheck;
+// =============================================================================
+// Script Type Detection
+// =============================================================================
+
+/** Script types that should not be transformed (contain data, not executable JS) */
+const NON_TRANSFORMABLE_SCRIPT_TYPES: readonly string[] = [
+  'json',
+  'template',
+  'text/html',
+  'x-template',
+];
+
+/** Markers that identify Revamp's own injected scripts */
+const REVAMP_SCRIPT_MARKERS: readonly string[] = [
+  '[Revamp]',
+  'revamp-error',
+];
+
+/** Regex to detect HTML template content in script tags */
+const HTML_TEMPLATE_START_PATTERN = /^<[a-zA-Z]/;
+
+/** Regex to count HTML tags */
+const HTML_TAG_PATTERN = /<[a-zA-Z][^>]*>/g;
+
+/** Regex to count JavaScript keywords */
+const JS_KEYWORD_PATTERN = /\b(function|var|let|const|if|else|for|while|return|this)\b/g;
+
+// =============================================================================
+// Detection Functions
+// =============================================================================
+
+/**
+ * Check if a script is ad-related based on its src URL or content.
+ */
+function isAdScript(src: string | undefined, content: string): boolean {
+  return matchesAnyPattern(src, content, AD_SCRIPT_PATTERNS);
 }
 
 /**
- * Transform HTML content
- * - Remove ad scripts
- * - Remove tracking scripts
- * - Inject polyfills
+ * Check if a script is tracking-related based on its src URL or content.
+ */
+function isTrackingScript(src: string | undefined, content: string): boolean {
+  return matchesAnyPattern(src, content, TRACKING_SCRIPT_PATTERNS);
+}
+
+/**
+ * Check if src or content matches any of the given patterns.
+ */
+function matchesAnyPattern(
+  src: string | undefined,
+  content: string,
+  patterns: readonly RegExp[]
+): boolean {
+  const srcMatches = src ? patterns.some(p => p.test(src)) : false;
+  const contentMatches = patterns.some(p => p.test(content));
+  return srcMatches || contentMatches;
+}
+
+/**
+ * Check if a script type indicates non-transformable content.
+ */
+function isNonTransformableScriptType(type: string): boolean {
+  return NON_TRANSFORMABLE_SCRIPT_TYPES.some(t => type.includes(t));
+}
+
+/**
+ * Check if script content is a Revamp-injected script.
+ */
+function isRevampScript(content: string): boolean {
+  return REVAMP_SCRIPT_MARKERS.some(marker => content.includes(marker));
+}
+
+/**
+ * Check if script content looks like an HTML template rather than JavaScript.
+ */
+function isHtmlTemplateContent(content: string): boolean {
+  const trimmed = content.trim();
+
+  // Check if content starts with an HTML tag
+  if (HTML_TEMPLATE_START_PATTERN.test(trimmed)) {
+    return true;
+  }
+
+  // Check if content has more HTML tags than JS keywords
+  const htmlTagCount = (content.match(HTML_TAG_PATTERN) || []).length;
+  const jsKeywordCount = (content.match(JS_KEYWORD_PATTERN) || []).length;
+
+  return htmlTagCount > 3 && htmlTagCount > jsKeywordCount;
+}
+
+// =============================================================================
+// DOM Manipulation Functions
+// =============================================================================
+
+/**
+ * Remove integrity attributes from scripts and links.
+ * Required because transformed content won't match original hashes.
+ */
+function removeIntegrityAttributes($: CheerioAPI): void {
+  $('script[integrity]').removeAttr('integrity');
+  $('link[integrity]').removeAttr('integrity');
+}
+
+/**
+ * Process and optionally remove ad/tracking scripts.
+ * Returns count of removed scripts.
+ */
+function processScripts(
+  $: CheerioAPI,
+  removeAds: boolean,
+  removeTracking: boolean
+): TransformResult {
+  let removedAds = 0;
+  let removedTracking = 0;
+
+  $('script').each((_, elem) => {
+    const $script = $(elem);
+    const src = $script.attr('src') || '';
+    const content = $script.html() || '';
+    const type = $script.attr('type') || '';
+
+    // Skip JSON data scripts
+    if (type.includes('json')) {
+      return;
+    }
+
+    // Remove ad scripts
+    if (removeAds && isAdScript(src, content)) {
+      $script.remove();
+      removedAds++;
+      return;
+    }
+
+    // Remove tracking scripts
+    if (removeTracking && isTrackingScript(src, content)) {
+      $script.remove();
+      removedTracking++;
+      return;
+    }
+  });
+
+  return { removedAds, removedTracking };
+}
+
+/**
+ * Collect inline scripts that should be transformed.
+ */
+function collectInlineScripts($: CheerioAPI): InlineScript[] {
+  const scripts: InlineScript[] = [];
+
+  $('script').each((_, elem) => {
+    const $script = $(elem);
+    const src = $script.attr('src');
+    const type = $script.attr('type') || '';
+    const content = $script.html() || '';
+
+    // Only transform inline scripts (no src) with JavaScript content
+    const isInlineScript = !src && content.trim();
+    const isTransformable = !isNonTransformableScriptType(type) && type !== 'module';
+
+    if (isInlineScript && isTransformable) {
+      scripts.push({ elem, content });
+    }
+  });
+
+  return scripts;
+}
+
+/**
+ * Transform inline scripts for legacy browser compatibility.
+ */
+async function transformInlineScripts(
+  $: CheerioAPI,
+  url: string | undefined
+): Promise<void> {
+  const inlineScripts = collectInlineScripts($);
+
+  for (const { elem, content } of inlineScripts) {
+    // Skip Revamp's own scripts
+    if (isRevampScript(content)) {
+      continue;
+    }
+
+    // Skip HTML template content
+    if (isHtmlTemplateContent(content)) {
+      continue;
+    }
+
+    try {
+      const transformed = await transformJs(content, url ? `${url}#inline` : 'inline.js');
+      $(elem).html(transformed);
+    } catch (err) {
+      console.error(`⚠️ Failed to transform inline script: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+}
+
+/**
+ * Remove ad container elements.
+ */
+function removeAdContainers($: CheerioAPI): void {
+  for (const selector of AD_CONTAINER_SELECTORS) {
+    try {
+      $(selector).remove();
+    } catch {
+      // Ignore invalid selectors
+    }
+  }
+}
+
+/**
+ * Remove tracking pixels and hidden iframes.
+ */
+function removeTrackingPixels($: CheerioAPI): void {
+  for (const selector of TRACKING_PIXEL_SELECTORS) {
+    try {
+      $(selector).remove();
+    } catch {
+      // Ignore invalid selectors
+    }
+  }
+}
+
+/**
+ * Normalize charset meta tags to UTF-8.
+ */
+function normalizeCharset($: CheerioAPI): void {
+  $('meta[charset]').attr('charset', 'UTF-8');
+  $('meta[http-equiv="Content-Type"]').attr('content', 'text/html; charset=UTF-8');
+}
+
+/**
+ * Inject script content into the document head (or root if no head).
+ */
+function injectIntoHead($: CheerioAPI, content: string, prepend = true): void {
+  const head = $('head');
+  const target = head.length > 0 ? head : $.root();
+
+  if (prepend) {
+    target.prepend(content);
+  } else {
+    target.append(content);
+  }
+}
+
+/**
+ * Build and inject user-agent spoof script if enabled.
+ */
+function buildUserAgentSpoofScript(): string {
+  return `
+<!-- Revamp User-Agent Spoof -->
+<script>
+(function() {
+${userAgentPolyfill}
+})();
+</script>
+`;
+}
+
+/**
+ * Inject all Revamp scripts (config overlay, polyfills, error overlay).
+ */
+function injectRevampScripts(
+  $: CheerioAPI,
+  injectPolyfills: boolean,
+  spoofUserAgentInJs: boolean
+): void {
+  // Config overlay is always injected
+  injectIntoHead($, getConfigOverlayScript());
+
+  if (injectPolyfills) {
+    injectIntoHead($, getErrorOverlayScript());
+    injectIntoHead($, buildPolyfillScript());
+
+    if (spoofUserAgentInJs) {
+      // User-agent spoof should run first
+      injectIntoHead($, buildUserAgentSpoofScript());
+    }
+  }
+}
+
+/**
+ * Add a comment showing transformation statistics.
+ */
+function addTransformComment($: CheerioAPI, result: TransformResult): void {
+  const comment = `<!-- Revamp Proxy: Removed ${result.removedAds} ad scripts, ${result.removedTracking} tracking scripts -->`;
+  $('head').append(comment);
+}
+
+// =============================================================================
+// Main Transform Function
+// =============================================================================
+
+/**
+ * Transform HTML content for legacy browser compatibility.
+ *
+ * @param html - The HTML content to transform
+ * @param url - Optional URL for context (used in error messages)
+ * @returns Transformed HTML string
  */
 export async function transformHtml(html: string, url?: string): Promise<string> {
   const config = getConfig();
@@ -78,203 +451,37 @@ export async function transformHtml(html: string, url?: string): Promise<string>
   }
 
   try {
-    const $ = cheerio.load(html, {
-      xml: false,
-    });
+    const $ = cheerio.load(html, { xml: false });
 
-    let removedAds = 0;
-    let removedTracking = 0;
+    // Remove integrity attributes (required for transformed content)
+    removeIntegrityAttributes($);
 
-    // Remove integrity attributes from scripts and links since we transform content
-    // (transformed content won't match the original hash)
-    $('script[integrity]').removeAttr('integrity');
-    $('link[integrity]').removeAttr('integrity');
+    // Process and remove ad/tracking scripts
+    const result = processScripts($, config.removeAds, config.removeTracking);
 
-    // Process all script tags
-    $('script').each((_, elem) => {
-      const $script = $(elem);
-      const src = $script.attr('src') || '';
-      const content = $script.html() || '';
-      const type = $script.attr('type') || '';
-
-      // Skip JSON data scripts (application/json, application/ld+json, etc.)
-      if (type.includes('json')) {
-        return;
-      }
-
-      // Remove ad scripts
-      if (config.removeAds && isAdScript(src, content)) {
-        $script.remove();
-        removedAds++;
-        return;
-      }
-
-      // Remove tracking scripts
-      if (config.removeTracking && isTrackingScript(src, content)) {
-        $script.remove();
-        removedTracking++;
-        return;
-      }
-    });
-
-    // Transform inline scripts with Babel for legacy browser compatibility
+    // Transform inline scripts for legacy browsers
     if (config.transformJs) {
-      const inlineScripts: Array<{ elem: ReturnType<typeof $>[number]; content: string }> = [];
-
-      $('script').each((_, elem) => {
-        const $script = $(elem);
-        const src = $script.attr('src');
-        const type = $script.attr('type') || '';
-        const content = $script.html() || '';
-
-        // Only transform inline scripts (no src) with JavaScript content
-        // Skip JSON, templates, and other non-JS types
-        if (!src && content.trim() &&
-            !type.includes('json') &&
-            !type.includes('template') &&
-            !type.includes('text/html') &&
-            !type.includes('x-template') &&
-            type !== 'module') { // Skip ES modules as they may have import/export
-          inlineScripts.push({ elem, content });
-        }
-      });
-
-      // Transform each inline script
-      for (const { elem, content } of inlineScripts) {
-        try {
-          // Skip our own polyfill/error overlay scripts
-          if (content.includes('[Revamp]') || content.includes('revamp-error')) {
-            continue;
-          }
-
-          // Skip content that looks like HTML templates (starts with < followed by tag name)
-          // This catches cases where HTML is stored in script tags as templates
-          const trimmedContent = content.trim();
-          if (/^<[a-zA-Z]/.test(trimmedContent)) {
-            continue;
-          }
-
-          // Skip content that's mostly HTML (contains many HTML tags)
-          const htmlTagCount = (content.match(/<[a-zA-Z][^>]*>/g) || []).length;
-          const jsKeywordCount = (content.match(/\b(function|var|let|const|if|else|for|while|return|this)\b/g) || []).length;
-          if (htmlTagCount > 3 && htmlTagCount > jsKeywordCount) {
-            continue;
-          }
-
-          const transformed = await transformJs(content, url ? `${url}#inline` : 'inline.js');
-          $(elem).html(transformed);
-        } catch (err) {
-          // If transformation fails, leave the original script
-          console.error(`⚠️ Failed to transform inline script: ${err instanceof Error ? err.message : err}`);
-        }
-      }
+      await transformInlineScripts($, url);
     }
 
-    // Remove common ad containers
-    // NOTE: We use specific patterns to avoid removing legitimate elements
-    // e.g., "download-btn" contains "ad-" but is not an ad element
+    // Remove ad containers
     if (config.removeAds) {
-      const adSelectors = [
-        // Specific ad-related classes (avoid substring matches that catch words like "download")
-        '[class^="ad-"]',           // Class starts with "ad-"
-        '[class$="-ad"]',           // Class ends with "-ad"
-        '[class~="ad"]',            // Class is exactly "ad"
-        '[class^="ads-"]',          // Class starts with "ads-"
-        '[class$="-ads"]',          // Class ends with "-ads"
-        '[class~="ads"]',           // Class is exactly "ads"
-        '.advertisement',
-        '.ad-container',
-        '.ad-wrapper',
-        '.ad-banner',
-        '.ad-unit',
-        '.advert',
-        '[id*="google_ads"]',
-        '[id*="ad-container"]',
-        '[id*="ad_container"]',
-        '[id^="ad-"]',              // ID starts with "ad-"
-        '[id$="-ad"]',              // ID ends with "-ad"
-        'ins.adsbygoogle',
-        '[data-ad]',
-        '[data-ad-slot]',
-        '[data-ad-client]',
-      ];
-
-      adSelectors.forEach(selector => {
-        try {
-          $(selector).remove();
-        } catch {
-          // Ignore invalid selectors
-        }
-      });
+      removeAdContainers($);
     }
 
-    // Remove tracking pixels (1x1 images, invisible iframes)
+    // Remove tracking pixels
     if (config.removeTracking) {
-      $('img[width="1"][height="1"]').remove();
-      $('img[src*="pixel"]').remove();
-      $('img[src*="beacon"]').remove();
-      $('iframe[width="0"]').remove();
-      $('iframe[height="0"]').remove();
-      $('iframe[style*="display:none"]').remove();
-      $('iframe[style*="display: none"]').remove();
-      $('noscript img').remove(); // Tracking pixels often in noscript
+      removeTrackingPixels($);
     }
 
-    // Normalize charset to UTF-8 (since we decode content to UTF-8 during transformation)
-    // Update meta charset tag
-    $('meta[charset]').attr('charset', 'UTF-8');
-    // Update http-equiv Content-Type meta tag
-    $('meta[http-equiv="Content-Type"]').attr('content', 'text/html; charset=UTF-8');
+    // Normalize charset to UTF-8
+    normalizeCharset($);
 
-    // Always inject config overlay so users can access settings
-    // This must be injected regardless of other settings
-    const configOverlayScript = getConfigOverlayScript();
-    const head = $('head');
-    if (head.length > 0) {
-      head.prepend(configOverlayScript);
-    } else {
-      $.root().prepend(configOverlayScript);
-    }
+    // Inject Revamp scripts
+    injectRevampScripts($, config.injectPolyfills, config.spoofUserAgentInJs);
 
-    // Inject polyfills at the beginning of <head>
-    if (config.injectPolyfills) {
-      const polyfillScript = buildPolyfillScript();
-      const errorOverlayScript = getErrorOverlayScript();
-
-      // Conditionally build user-agent spoof script
-      let userAgentScript = '';
-      if (config.spoofUserAgentInJs) {
-        userAgentScript = `
-<!-- Revamp User-Agent Spoof -->
-<script>
-(function() {
-${userAgentPolyfill}
-})();
-</script>
-`;
-      }
-
-      const head = $('head');
-      if (head.length > 0) {
-        head.prepend(errorOverlayScript);
-        head.prepend(polyfillScript);
-        if (userAgentScript) {
-          // User-agent spoof should run first, before any other scripts
-          head.prepend(userAgentScript);
-        }
-      } else {
-        // No head tag, try to add at the beginning
-        $.root().prepend(errorOverlayScript);
-        $.root().prepend(polyfillScript);
-        if (userAgentScript) {
-          $.root().prepend(userAgentScript);
-        }
-      }
-    }
-
-    // Add a comment showing what Revamp did
-    const revampComment = `<!-- Revamp Proxy: Removed ${removedAds} ad scripts, ${removedTracking} tracking scripts -->`;
-    $('head').append(revampComment);
+    // Add transformation statistics comment
+    addTransformComment($, result);
 
     return $.html();
   } catch (error) {
@@ -283,8 +490,15 @@ ${userAgentPolyfill}
   }
 }
 
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
 /**
- * Check if this looks like an HTML document
+ * Check if content looks like an HTML document.
+ *
+ * @param content - Content to check
+ * @returns true if content appears to be an HTML document
  */
 export function isHtmlDocument(content: string): boolean {
   const trimmed = content.trim().toLowerCase();
