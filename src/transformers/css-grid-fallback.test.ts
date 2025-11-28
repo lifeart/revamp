@@ -159,4 +159,14 @@ describe('transformGridToFlexbox', () => {
     expect(result).toContain('color: blue');
     expect(result).toContain('display: flex');
   });
+
+  it('should process CSS with grid-template-rows', () => {
+    const css = `.container { display: grid; grid-template-rows: auto 100px 1fr; grid-template-columns: 1fr 1fr; }`;
+    const result = transformGridToFlexbox(css);
+    // grid-template-rows should be captured (coverage line 52) but grid layout preserved
+    expect(result).toContain('grid-template-rows');
+    expect(result).toContain('grid-template-columns');
+    // Flexbox fallback should be added
+    expect(result).toContain('display: flex');
+  });
 });

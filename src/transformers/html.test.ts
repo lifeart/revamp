@@ -318,6 +318,18 @@ describe('transformHtml', () => {
     expect(result).toContain('Revamp');
   });
 
+  it('should inject polyfills at root when no head tag exists', async () => {
+    updateConfig({ injectPolyfills: true, spoofUserAgentInJs: true });
+    // Use minimal HTML fragment without any html/head/body structure
+    const html = '<div>Just a div</div>';
+    const result = await transformHtml(html);
+    // Polyfills should still be injected (at root level)
+    expect(result).toContain('Revamp');
+    expect(result).toContain('Just a div');
+    // User-agent spoof should also be present when no head
+    expect(result).toContain('User-Agent');
+  });
+
   it('should inject user-agent spoof when enabled', async () => {
     updateConfig({ injectPolyfills: true, spoofUserAgentInJs: true });
     const html = '<html><head></head><body></body></html>';

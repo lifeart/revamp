@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import sharp from 'sharp';
 import {
   isWebP,
   isAVIF,
@@ -173,6 +174,47 @@ describe('transformImage', () => {
     // Should return original on error
     expect(result.data).toBe(buffer);
     expect(result.transformed).toBe(false);
+  });
+
+  it('should successfully convert valid WebP image to JPEG', async () => {
+    // Create a valid WebP image using sharp
+    const webpBuffer = await sharp({
+      create: {
+        width: 100,
+        height: 100,
+        channels: 3,
+        background: { r: 255, g: 0, b: 0 }
+      }
+    }).webp().toBuffer();
+
+    const result = await transformImage(webpBuffer, 'image/webp', 'https://example.com/test.webp');
+
+    // Should successfully convert
+    expect(result.transformed).toBe(true);
+    expect(result.contentType).toBe('image/jpeg');
+    expect(result.data).not.toBe(webpBuffer);
+    // JPEG data should start with FF D8 FF
+    expect(result.data[0]).toBe(0xFF);
+    expect(result.data[1]).toBe(0xD8);
+  });
+
+  it('should successfully convert valid AVIF image to JPEG', async () => {
+    // Create a valid AVIF image using sharp
+    const avifBuffer = await sharp({
+      create: {
+        width: 100,
+        height: 100,
+        channels: 3,
+        background: { r: 0, g: 255, b: 0 }
+      }
+    }).avif().toBuffer();
+
+    const result = await transformImage(avifBuffer, 'image/avif', 'https://example.com/test.avif');
+
+    // Should successfully convert
+    expect(result.transformed).toBe(true);
+    expect(result.contentType).toBe('image/jpeg');
+    expect(result.data).not.toBe(avifBuffer);
   });
 });
 

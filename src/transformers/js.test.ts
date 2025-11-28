@@ -143,6 +143,21 @@ describe('transformJs', () => {
     expect(result).toContain('obj');
   });
 
+  it('should handle non-ignorable babel errors', async () => {
+    // Code that triggers a babel error that doesn't match ignorable patterns
+    // Very deeply nested code can cause stack overflow-like errors
+    const code = `
+      // Code with enough content to pass threshold
+      const x = obj?.foo?.bar?.baz;
+      const y = value ?? defaultValue;
+      ${Array(200).fill('((((').join('')}
+      ${Array(200).fill(')))).foo').join('')}
+    `;
+    const result = await transformJs(code);
+    // Should return original code on error
+    expect(result).toContain('const x');
+  });
+
   it('should preserve functionality of valid code', async () => {
     // Code must be > 100 bytes and contain modern features
     const code = `

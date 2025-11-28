@@ -172,6 +172,20 @@ describe('transformCss', () => {
     expect(result).toBeDefined();
   });
 
+  it('should return original code when PostCSS throws during processing', async () => {
+    // Create CSS that will trigger PostCSS error during processing
+    // Severely malformed CSS that triggers processing error
+    const malformedCss = `
+/* padding to exceed 50 bytes threshold */
+.test { display: flex; }
+@media (invalid { .broken { color
+    unclosed brackets and syntax error
+    .another { `;
+    const result = await transformCss(malformedCss);
+    // Should return original code on processing error
+    expect(result).toBe(malformedCss);
+  });
+
   it('should preserve valid CSS functionality', async () => {
     const code = `
 .container {
@@ -245,6 +259,19 @@ describe('resetCssProcessor', () => {
     // Should work again
     const result2 = await transformCss('.container { display: flex; justify-content: center; }');
     // Should still produce valid CSS
+    expect(result2).toContain('display');
+    expect(result2).toContain('flex');
+  });
+
+  it('should reuse cached processor on consecutive transforms', async () => {
+    // First transform initializes processor
+    const css1 = '.first { display: flex; flex-direction: column; align-items: center; gap: 5px; }';
+    const result1 = await transformCss(css1);
+    expect(result1).toContain('display');
+
+    // Second transform reuses cached processor (line 85 coverage)
+    const css2 = '.second { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }';
+    const result2 = await transformCss(css2);
     expect(result2).toContain('display');
     expect(result2).toContain('flex');
   });
