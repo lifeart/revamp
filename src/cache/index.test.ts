@@ -97,6 +97,21 @@ describe('cache with invalid URLs', () => {
     // Invalid URL should not throw
     await expect(setCache('::invalid-url::', 'text/html', Buffer.from('test'))).resolves.not.toThrow();
   });
+
+  it('should handle unwritable cache directory gracefully', async () => {
+    // Use /dev/null as cache directory - this will fail to create subdirectories
+    // but should not throw, just continue with memory-only caching
+    updateConfig({ cacheDir: '/dev/null/impossible/path' });
+    clearCache();
+
+    const data = Buffer.from('test data for unwritable dir');
+    // Should not throw even though mkdir will fail
+    await expect(setCache('http://unwritable-test.com/data', 'text/plain', data)).resolves.not.toThrow();
+
+    // Memory cache should still work
+    const result = await getCached('http://unwritable-test.com/data', 'text/plain');
+    expect(result).toBeTruthy();
+  });
 });
 
 describe('getCached and setCache', () => {
@@ -270,30 +285,30 @@ describe('getCached and setCache', () => {
     // 2. Entry NOT in memory cache (pushed out by other entries)
     // 3. Memory cache near full
     // 4. Read the entry - loads from file, triggers eviction
-    
+
     const entrySize = 45 * 1024 * 1024; // 45MB per entry
-    
+
     // Add first entry - goes to both memory and file
     const largeData1 = Buffer.alloc(entrySize, '1');
     await setCache('http://file-evict-test1.com/data', 'text/plain', largeData1);
-    
+
     // Wait for file write
     await new Promise(resolve => setTimeout(resolve, 200));
-    
+
     // Add more entries to push first one out of memory (45*3=135MB > 100MB)
     const largeData2 = Buffer.alloc(entrySize, '2');
     const largeData3 = Buffer.alloc(entrySize, '3');
     await setCache('http://file-evict-test2.com/data', 'text/plain', largeData2);
     await setCache('http://file-evict-test3.com/data', 'text/plain', largeData3);
-    
+
     // Now entry1 should be evicted from memory but still in file cache
     // Access entry1 - should load from file and potentially trigger eviction
     const result1 = await getCached('http://file-evict-test1.com/data', 'text/plain');
-    
+
     // Should be loaded from file cache
     expect(result1).toBeTruthy();
     expect(result1?.length).toBe(entrySize);
-    
+
     // Memory should still be within limits
     const stats = getCacheStats();
     expect(stats.memorySize).toBeLessThanOrEqual(100 * 1024 * 1024);
