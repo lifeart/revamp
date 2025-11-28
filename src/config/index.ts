@@ -9,10 +9,10 @@ export interface RevampConfig {
   httpProxyPort: number;
   captivePortalPort: number; // Port for captive portal (certificate download page)
   bindAddress: string; // '0.0.0.0' for LAN access, '127.0.0.1' for localhost only
-  
+
   // Target browser compatibility
   targets: string[];
-  
+
   // Feature flags
   transformJs: boolean;
   transformCss: boolean;
@@ -22,21 +22,24 @@ export interface RevampConfig {
   injectPolyfills: boolean;
   spoofUserAgent: boolean; // Simulate a modern browser User-Agent in HTTP headers
   spoofUserAgentInJs: boolean; // Override navigator.userAgent in JavaScript
-  
+
+  // Performance settings
+  compressionLevel: number; // gzip level 1-9 (1=fastest, 9=smallest, default 6)
+
   // Cache settings
   cacheEnabled: boolean;
   cacheTTL: number; // in seconds
   cacheDir: string;
-  
+
   // Certificate settings
   certDir: string;
   caKeyFile: string;
   caCertFile: string;
-  
+
   // Domain filtering (for future extensibility)
   whitelist: string[];
   blacklist: string[];
-  
+
   // Ad/tracking domains to block
   adDomains: string[];
   trackingDomains: string[];
@@ -49,10 +52,10 @@ export const defaultConfig: RevampConfig = {
   httpProxyPort: 8080,
   captivePortalPort: 8888, // Captive portal for certificate download
   bindAddress: '0.0.0.0', // Bind to all interfaces for LAN access
-  
+
   // iOS 9.3.5 Safari = Safari 9 (iPad 2), iOS 11 Safari = Safari 11
   targets: ['safari 9', 'ios 9'],
-  
+
   transformJs: true,
   transformCss: true,
   transformHtml: true,
@@ -61,18 +64,21 @@ export const defaultConfig: RevampConfig = {
   injectPolyfills: true,
   spoofUserAgent: true, // Enabled by default to get better content from servers
   spoofUserAgentInJs: true, // Enabled by default to fool JS-based browser detection
-  
+
+  // Performance: level 4 is a good balance of speed vs compression
+  compressionLevel: 4,
+
   cacheEnabled: true,
   cacheTTL: 3600, // 1 hour
   cacheDir: './.revamp-cache',
-  
+
   certDir: './.revamp-certs',
   caKeyFile: 'ca.key',
   caCertFile: 'ca.crt',
-  
+
   whitelist: [], // empty = allow all
   blacklist: [],
-  
+
   // Common ad domains
   adDomains: [
     'doubleclick.net',
@@ -87,7 +93,7 @@ export const defaultConfig: RevampConfig = {
     'ads.twitter.com',
     'amazon-adsystem.com',
   ],
-  
+
   // Common tracking domains
   trackingDomains: [
     'google-analytics.com',
@@ -103,7 +109,7 @@ export const defaultConfig: RevampConfig = {
     'mc.yandex.ru',
     'counter.yadro.ru',
   ],
-  
+
   // Specific tracking URL patterns to block
   trackingUrls: [
     '/tracker.js',
@@ -196,7 +202,7 @@ export function getEffectiveConfig(): RevampConfig {
   if (!clientConfig) {
     return currentConfig;
   }
-  
+
   // Merge client config with current config (client overrides server)
   return {
     ...currentConfig,

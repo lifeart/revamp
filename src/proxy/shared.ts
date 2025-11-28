@@ -251,9 +251,13 @@ export async function decompressBody(body: Buffer, encoding: string | undefined)
 
 /**
  * Compress body with gzip (async, non-blocking)
+ *
+ * @param body - Buffer to compress
+ * @param level - Compression level 1-9 (1=fastest, 9=smallest). Defaults to config value.
  */
-export async function compressGzip(body: Buffer): Promise<Buffer> {
-  return await gzipAsync(body);
+export async function compressGzip(body: Buffer, level?: number): Promise<Buffer> {
+  const effectiveLevel = level ?? getConfig().compressionLevel;
+  return await gzipAsync(body, { level: effectiveLevel });
 }
 
 // Binary file signatures (magic bytes)

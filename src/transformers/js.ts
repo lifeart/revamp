@@ -10,6 +10,7 @@ import { Tinypool } from 'tinypool';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { cpus } from 'os';
+import { existsSync } from 'fs';
 import { getConfig } from '../config/index.js';
 import type { JsWorkerInput, JsWorkerOutput } from './js-worker.js';
 
@@ -21,12 +22,34 @@ const __dirname = dirname(__filename);
 let pool: Tinypool | null = null;
 
 /**
+ * Resolve the worker file path.
+ * When running with tsx (development), the worker needs to be in dist/.
+ * When running compiled code, it's in the same directory.
+ */
+function resolveWorkerPath(): string {
+  // First try the same directory (for compiled code)
+  const sameDirPath = resolve(__dirname, 'js-worker.js');
+  if (existsSync(sameDirPath)) {
+    return sameDirPath;
+  }
+
+  // For tsx/development: look in dist/transformers/
+  const distPath = resolve(__dirname, '../../dist/transformers/js-worker.js');
+  if (existsSync(distPath)) {
+    return distPath;
+  }
+
+  // Fallback to same directory path (will error but with clear message)
+  return sameDirPath;
+}
+
+/**
  * Get or create the Babel worker pool
  * Uses lazy initialization to avoid startup overhead if JS transform is disabled
  */
 function getPool(): Tinypool {
   if (!pool) {
-    const workerPath = resolve(__dirname, 'js-worker.js');
+    const workerPath = resolveWorkerPath();
 
     pool = new Tinypool({
       filename: workerPath,
