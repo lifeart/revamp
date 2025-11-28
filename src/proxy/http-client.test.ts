@@ -5,7 +5,7 @@
  * NO MOCKING - uses actual HTTP/HTTPS servers.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -17,6 +17,8 @@ import {
   type Server as HttpsServer,
 } from 'node:https';
 import { gzipSync, deflateSync } from 'node:zlib';
+import { existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { makeHttpRequest, makeHttpsRequest } from './http-client.js';
 import { updateConfig, resetConfig } from '../config/index.js';
 import { generateDomainCert } from '../certs/index.js';
@@ -319,6 +321,72 @@ describe('HTTP Client Integration Tests', () => {
       const response = await makeHttpRequest('GET', '127.0.0.1', httpPort, '/image-webp', {}, Buffer.alloc(0));
       expect(response.statusCode).toBe(200);
       // Image transformation may or may not occur depending on content
+    });
+  });
+
+  describe('JSON Request Logging (SOCKS5 integration)', () => {
+    const testLogDir = './.test-http-client-json-logs';
+
+    afterEach(async () => {
+      resetConfig();
+      // Clean up test directory
+      if (existsSync(testLogDir)) {
+        await rm(testLogDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should log JSON responses when logging is enabled', async () => {
+      updateConfig({ logJsonRequests: true, jsonLogDir: testLogDir });
+
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/headers',
+        { 'accept': 'application/json' },
+        Buffer.alloc(0),
+        '192.168.1.50' // clientIp
+      );
+
+      expect(response.statusCode).toBe(200);
+      // Should have created the log directory
+      expect(existsSync(testLogDir)).toBe(true);
+    });
+
+    it('should not log JSON responses when logging is disabled', async () => {
+      updateConfig({ logJsonRequests: false, jsonLogDir: testLogDir });
+
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/headers',
+        { 'accept': 'application/json' },
+        Buffer.alloc(0),
+        '192.168.1.50' // clientIp
+      );
+
+      expect(response.statusCode).toBe(200);
+      // Should NOT have created the log directory
+      expect(existsSync(testLogDir)).toBe(false);
+    });
+
+    it('should not log non-JSON responses even when logging is enabled', async () => {
+      updateConfig({ logJsonRequests: true, jsonLogDir: testLogDir });
+
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/plain',
+        {},
+        Buffer.alloc(0),
+        '192.168.1.50' // clientIp
+      );
+
+      expect(response.statusCode).toBe(200);
+      // Should NOT have created the log directory for plain text
+      expect(existsSync(testLogDir)).toBe(false);
     });
   });
 });

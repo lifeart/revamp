@@ -46,6 +46,10 @@ export interface RevampConfig {
   adDomains: string[];
   trackingDomains: string[];
   trackingUrls: string[]; // Specific URL patterns to block (supports wildcards)
+
+  // JSON request logging
+  logJsonRequests: boolean; // Log application/json requests (disabled by default)
+  jsonLogDir: string; // Directory for JSON request logs
 }
 
 // Default configuration targeting iOS 9+ (iPad 2) and iOS 11+
@@ -129,6 +133,10 @@ export const defaultConfig: RevampConfig = {
     '/hit/',
     '/event/',
   ],
+
+  // JSON request logging (disabled by default)
+  logJsonRequests: false, // Log application/json requests
+  jsonLogDir: './.revamp-json-logs', // Directory for JSON request logs
 };
 
 // Current active configuration (mutable for runtime changes)

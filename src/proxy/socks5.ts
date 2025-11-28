@@ -32,12 +32,6 @@ import {
   makeHttpsRequest,
 } from './http-client.js';
 import {
-  // Config Endpoint
-  isConfigEndpoint,
-  handleConfigRequest,
-  buildRawHttpResponse,
-} from './config-endpoint.js';
-import {
   // Revamp API
   isRevampEndpoint,
   handleRevampRequest,

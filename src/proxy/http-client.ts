@@ -22,6 +22,10 @@ import {
   SPOOFED_USER_AGENT,
 } from './shared.js';
 import type { HttpResponse, RequestHeaders } from './types.js';
+import {
+  shouldLogJsonRequest,
+  logJsonRequest,
+} from '../logger/json-request-logger.js';
 
 /**
  * Make an HTTPS request to a remote server with transformation support
@@ -74,7 +78,8 @@ export async function makeHttpsRequest(
             res,
             Buffer.concat(chunks),
             `https://${hostname}${path}`,
-            clientIp
+            clientIp,
+            requestHeaders
           );
           resolve(response);
         } catch (err) {
@@ -136,7 +141,8 @@ export async function makeHttpRequest(
             res,
             Buffer.concat(chunks),
             `http://${hostname}${path}`,
-            clientIp
+            clientIp,
+            headers
           );
           resolve(response);
         } catch (err) {
@@ -162,13 +168,15 @@ export async function makeHttpRequest(
  * @param rawBody - Raw response body
  * @param targetUrl - Full target URL for logging and transformation
  * @param clientIp - Optional client IP for per-client cache separation
+ * @param requestHeaders - Optional request headers for JSON logging
  * @returns Processed HttpResponse
  */
 async function processResponse(
   res: IncomingMessage,
   rawBody: Buffer,
   targetUrl: string,
-  clientIp?: string
+  clientIp?: string,
+  requestHeaders?: RequestHeaders
 ): Promise<HttpResponse> {
   // Decompress if needed
   const encoding = res.headers['content-encoding'];
@@ -186,6 +194,17 @@ async function processResponse(
   // Mark redirecting URLs so we don't cache them
   if (isRedirect) {
     markAsRedirect(targetUrl);
+  }
+
+  // Log JSON requests if enabled (before transformation)
+  if (clientIp && requestHeaders && shouldLogJsonRequest(updatedHeaders)) {
+    logJsonRequest(
+      clientIp,
+      targetUrl,
+      requestHeaders,
+      updatedHeaders,
+      responseBody
+    );
   }
 
   // Transform content if not a redirect and has content

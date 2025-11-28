@@ -87,6 +87,14 @@ describe('defaultConfig', () => {
     expect(defaultConfig.trackingUrls).toContain('/metrics');
     expect(defaultConfig.trackingUrls.length).toBeGreaterThan(0);
   });
+
+  it('should have JSON logging disabled by default', () => {
+    expect(defaultConfig.logJsonRequests).toBe(false);
+  });
+
+  it('should have JSON log directory configured', () => {
+    expect(defaultConfig.jsonLogDir).toBe('./.revamp-json-logs');
+  });
 });
 
 describe('getConfig', () => {

@@ -47,6 +47,10 @@ import {
   isRevampEndpoint,
   handleRevampRequest,
 } from './revamp-api.js';
+import {
+  shouldLogJsonRequest,
+  logJsonRequest,
+} from '../logger/json-request-logger.js';
 
 // =============================================================================
 // Revamp API Endpoint Handler
@@ -322,6 +326,18 @@ async function proxyRequest(
 
           res.writeHead(proxyRes.statusCode || 200, headers);
           res.end(body);
+
+          // Log JSON requests if enabled
+          if (shouldLogJsonRequest(headers)) {
+            // Use the decompressed body before any transformation for logging
+            logJsonRequest(
+              effectiveClientIp,
+              targetUrl,
+              req.headers,
+              headers,
+              body
+            );
+          }
 
           // Record bandwidth metrics
           const bytesIn = Buffer.concat(chunks).length;
