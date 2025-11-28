@@ -7,7 +7,7 @@ FROM node:25-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN npm install -g pnpm@9.15.9
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
@@ -28,7 +28,7 @@ FROM node:25-alpine AS production
 WORKDIR /app
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN npm install -g pnpm@9.15.9
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
