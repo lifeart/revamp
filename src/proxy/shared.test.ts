@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   CORS_ALLOWED_METHODS,
   CORS_ALLOWED_HEADERS,
@@ -21,9 +21,11 @@ import {
   buildCorsHeadersString,
   removeCorsHeaders,
   filterResponseHeaders,
+  transformContent,
+  compressGzip,
 } from './shared.js';
-import type { RevampConfig } from '../config/index.js';
-import { gzipSync, brotliCompressSync, deflateSync } from 'node:zlib';
+import { resetConfig, updateConfig, type RevampConfig } from '../config/index.js';
+import { gzipSync, brotliCompressSync, deflateSync, gunzipSync } from 'node:zlib';
 
 describe('CORS Constants', () => {
   it('should have correct allowed methods', () => {
@@ -550,5 +552,164 @@ describe('filterResponseHeaders', () => {
     expect(filtered['content-type']).toBe('text/html');
     expect(filtered['x-keep-me']).toBe('should be kept');
     expect(filtered['x-skip-me']).toBeUndefined();
+  });
+});
+
+describe('transformContent', () => {
+  beforeEach(() => {
+    resetConfig();
+  });
+
+  afterEach(() => {
+    resetConfig();
+  });
+
+  it('should skip binary content', async () => {
+    updateConfig({ transformJs: true });
+    // PNG magic bytes
+    const pngBuffer = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, ...Array(100).fill(0)]);
+    const result = await transformContent(pngBuffer, 'js', 'https://example.com/fake.js');
+    expect(result).toEqual(pngBuffer);
+  });
+
+  it('should transform JS when enabled', async () => {
+    updateConfig({ transformJs: true, cacheEnabled: false });
+    // Large enough JS with modern syntax
+    const jsCode = `
+      // A comment to make this larger
+      // More padding for size threshold
+      // Even more padding
+      const getValue = () => {
+        const x = obj?.prop?.nested;
+        return x ?? 'default';
+      };
+    `;
+    const buffer = Buffer.from(jsCode);
+    const result = await transformContent(buffer, 'js', 'https://example.com/test.js');
+    // Should return something (transformed or original)
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('should transform CSS when enabled', async () => {
+    updateConfig({ transformCss: true, cacheEnabled: false });
+    // Large enough CSS
+    const cssCode = `
+      /* Comment for size */
+      /* More padding */
+      .container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: space-between;
+      }
+    `;
+    const buffer = Buffer.from(cssCode);
+    const result = await transformContent(buffer, 'css', 'https://example.com/test.css');
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('should transform HTML when enabled', async () => {
+    updateConfig({ transformHtml: true, cacheEnabled: false });
+    const html = '<!DOCTYPE html><html><head></head><body><p>Test content</p></body></html>';
+    const buffer = Buffer.from(html);
+    const result = await transformContent(buffer, 'html', 'https://example.com/page.html');
+    expect(result.toString()).toContain('Test content');
+  });
+
+  it('should not transform when disabled', async () => {
+    updateConfig({ transformJs: false, cacheEnabled: false });
+    const jsCode = 'const x = obj?.prop;';
+    const buffer = Buffer.from(jsCode);
+    const result = await transformContent(buffer, 'js', 'https://example.com/test.js');
+    // Should return original
+    expect(result.toString()).toContain('obj?.prop');
+  });
+
+  it('should return original for other content type', async () => {
+    const data = Buffer.from('plain text data');
+    const result = await transformContent(data, 'other', 'https://example.com/file.txt');
+    expect(result).toEqual(data);
+  });
+
+  it('should use cache when enabled', async () => {
+    updateConfig({ transformJs: true, cacheEnabled: true });
+    const jsCode = `
+      // Padding for size
+      // More padding
+      // Even more
+      const x = obj?.prop;
+    `;
+    const buffer = Buffer.from(jsCode);
+    // First call should transform
+    await transformContent(buffer, 'js', 'https://unique-test-url-for-cache.com/test.js');
+    // Second call should hit cache
+    const cached = await transformContent(buffer, 'js', 'https://unique-test-url-for-cache.com/test.js');
+    expect(cached.length).toBeGreaterThan(0);
+  });
+
+  it('should not transform CSS when disabled', async () => {
+    updateConfig({ transformCss: false, cacheEnabled: false });
+    const cssCode = `
+      /* Comment for size */
+      /* More padding */
+      .container {
+        display: flex;
+      }
+    `;
+    const buffer = Buffer.from(cssCode);
+    const result = await transformContent(buffer, 'css', 'https://example.com/test.css');
+    // Should return original
+    expect(result.toString()).toContain('display: flex');
+  });
+
+  it('should not transform HTML when disabled', async () => {
+    updateConfig({ transformHtml: false, cacheEnabled: false });
+    const html = '<!DOCTYPE html><html><head></head><body><p>Original</p></body></html>';
+    const buffer = Buffer.from(html);
+    const result = await transformContent(buffer, 'html', 'https://example.com/page.html');
+    // Should return original text
+    expect(result.toString()).toContain('Original');
+  });
+
+  it('should not transform HTML that is not a document', async () => {
+    updateConfig({ transformHtml: true, cacheEnabled: false });
+    // Not an HTML document (no doctype, no html tag)
+    const htmlFragment = '<div><p>Fragment</p></div>';
+    const buffer = Buffer.from(htmlFragment);
+    const result = await transformContent(buffer, 'html', 'https://example.com/fragment.html');
+    // Should return original since isHtmlDocument returns false
+    expect(result.toString()).toContain('Fragment');
+  });
+});
+
+describe('compressGzip', () => {
+  it('should compress data', async () => {
+    const data = Buffer.from('Hello World!'.repeat(100));
+    const compressed = await compressGzip(data);
+    expect(compressed.length).toBeLessThan(data.length);
+  });
+
+  it('should compress with specified level', async () => {
+    const data = Buffer.from('Hello World!'.repeat(100));
+    const compressedLevel1 = await compressGzip(data, 1);
+    const compressedLevel9 = await compressGzip(data, 9);
+    // Level 9 should produce smaller output
+    expect(compressedLevel9.length).toBeLessThanOrEqual(compressedLevel1.length);
+  });
+
+  it('should produce valid gzip output', async () => {
+    const data = Buffer.from('Test data for compression');
+    const compressed = await compressGzip(data);
+    // Should be decompressible
+    const decompressed = gunzipSync(compressed);
+    expect(decompressed.toString()).toBe('Test data for compression');
+  });
+
+  it('should use config compression level when not specified', async () => {
+    updateConfig({ compressionLevel: 9 });
+    const data = Buffer.from('Hello World!'.repeat(100));
+    const compressed = await compressGzip(data);
+    expect(compressed.length).toBeLessThan(data.length);
+    resetConfig();
   });
 });

@@ -308,4 +308,112 @@ describe('transformHtml', () => {
     const result = await transformHtml(html);
     expect(result).toContain('Normal content');
   });
+
+  it('should handle HTML without head tag', async () => {
+    updateConfig({ injectPolyfills: true });
+    const html = '<html><body><p>Content without head</p></body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('Content without head');
+    // Should still inject at root level
+    expect(result).toContain('Revamp');
+  });
+
+  it('should inject user-agent spoof when enabled', async () => {
+    updateConfig({ injectPolyfills: true, spoofUserAgentInJs: true });
+    const html = '<html><head></head><body></body></html>';
+    const result = await transformHtml(html);
+    expect(result).toContain('User-Agent');
+  });
+
+  it('should not inject user-agent spoof when disabled', async () => {
+    updateConfig({ injectPolyfills: true, spoofUserAgentInJs: false });
+    const html = '<html><head></head><body></body></html>';
+    const result = await transformHtml(html);
+    // The script block with "Revamp User-Agent Spoof" should not be present
+    expect(result).not.toContain('User-Agent Spoof');
+  });
+
+  it('should skip scripts containing revamp markers', async () => {
+    updateConfig({ transformJs: true });
+    const html = `
+      <html><head>
+        <script>
+          // [Revamp] This is our own script
+          console.log('revamp-error handler');
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    // Our marker scripts should be preserved
+    expect(result).toContain('[Revamp]');
+  });
+
+  it('should skip scripts that look like HTML templates', async () => {
+    updateConfig({ transformJs: true });
+    const html = `
+      <html><head>
+        <script type="text/x-template">
+          <div class="template"><p>HTML Template Content</p></div>
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('HTML Template Content');
+  });
+
+  it('should handle multiple ad containers', async () => {
+    updateConfig({ removeAds: true });
+    const html = `
+      <html><head></head><body>
+        <div class="ad-banner">Ad 1</div>
+        <div class="sidebar-ads">Ad 2</div>
+        <ins class="adsbygoogle">Ad 3</ins>
+        <div data-ad-slot="12345">Ad 4</div>
+        <div id="google_ads_iframe">Ad 5</div>
+        <div id="ad-container-main">Ad 6</div>
+        <div data-ad-client="ca-pub-xxx">Ad 7</div>
+        <div data-ad="true">Ad 8</div>
+        <p>Real content</p>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('Real content');
+    expect(result).not.toContain('Ad 1');
+    expect(result).not.toContain('Ad 2');
+  });
+
+  it('should remove all tracking pixels and beacons', async () => {
+    updateConfig({ removeTracking: true });
+    const html = `
+      <html><head></head><body>
+        <img width="1" height="1" src="pixel.gif">
+        <img src="https://example.com/pixel.png">
+        <img src="https://tracker.com/beacon.gif">
+        <iframe width="0" height="100"></iframe>
+        <iframe width="100" height="0"></iframe>
+        <iframe style="display:none"></iframe>
+        <iframe style="display: none"></iframe>
+        <noscript><img src="noscript-tracker.png"></noscript>
+        <p>Real content</p>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('Real content');
+    expect(result).not.toContain('pixel.gif');
+    expect(result).not.toContain('beacon.gif');
+  });
+
+  it('should handle HTML with many HTML tags in script', async () => {
+    updateConfig({ transformJs: true });
+    const html = `
+      <html><head>
+        <script>
+          <div><p><span><a><ul><li></li></ul></a></span></p></div>
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    // Script with mostly HTML should be skipped
+    expect(result).toContain('<div>');
+  });
 });

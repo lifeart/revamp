@@ -260,3 +260,73 @@ describe('getCacheStats', () => {
     expect(stats.memorySize).toBe(15); // 5 + 5 + 5 bytes
   });
 });
+
+describe('file cache operations', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-file-cache-test-' + Date.now());
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should persist cache to file system', async () => {
+    const url = 'https://file-cache-test.com/page';
+    const data = Buffer.from('File cache test data');
+
+    await setCache(url, 'text/html', data);
+
+    // Wait a bit for async file write
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Clear memory cache
+    clearCache();
+
+    // Should retrieve from file cache
+    const result = await getCached(url, 'text/html');
+    expect(result).not.toBeNull();
+    expect(result?.toString()).toBe('File cache test data');
+  });
+
+  it('should handle expired file cache entries', async () => {
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 1, // 1 second TTL
+    });
+
+    const url = 'https://expired-cache-test.com/page';
+    const data = Buffer.from('Expiring data');
+
+    await setCache(url, 'text/html', data);
+
+    // Wait for expiration
+    await new Promise(resolve => setTimeout(resolve, 1100));
+
+    // Clear memory to force file cache read
+    clearCache();
+
+    // Should return null for expired entry
+    const result = await getCached(url, 'text/html');
+    expect(result).toBeNull();
+  });
+});
