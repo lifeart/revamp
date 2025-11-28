@@ -7,10 +7,10 @@ export const configOverlayScript = `
 <script>
 (function() {
   'use strict';
-  
+
   // Config API endpoint (intercepted by proxy regardless of domain)
   var CONFIG_ENDPOINT = '/__revamp__/config';
-  
+
   // Default config values (should match server defaults)
   var defaultConfig = {
     transformJs: true,
@@ -23,7 +23,7 @@ export const configOverlayScript = `
     spoofUserAgentInJs: true,
     cacheEnabled: true
   };
-  
+
   // Load saved config from proxy via API
   function loadConfigAsync(callback) {
     var xhr = new XMLHttpRequest();
@@ -58,13 +58,13 @@ export const configOverlayScript = `
     };
     xhr.send();
   }
-  
+
   // Load config synchronously (for initial load) - fallback to defaults
   function loadConfigSync() {
     // On initial load, use defaults; async load will update later
     return JSON.parse(JSON.stringify(defaultConfig));
   }
-  
+
   // Save config to proxy via API
   function saveConfigAsync(config, callback) {
     var xhr = new XMLHttpRequest();
@@ -90,7 +90,7 @@ export const configOverlayScript = `
     };
     xhr.send(JSON.stringify(config));
   }
-  
+
   // Reset config on proxy via API
   function resetConfigAsync(callback) {
     var xhr = new XMLHttpRequest();
@@ -105,15 +105,15 @@ export const configOverlayScript = `
     };
     xhr.send();
   }
-  
+
   var currentConfig = loadConfigSync();
   var configLoaded = false;
   var overlay = null;
   var isVisible = false;
-  
+
   // Create styles
   var style = document.createElement('style');
-  style.textContent = 
+  style.textContent =
     '#revamp-config-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);' +
     'color:#fff;z-index:2147483645;overflow:auto;font-family:-apple-system,BlinkMacSystemFont,sans-serif;' +
     'font-size:14px;line-height:1.5;display:none;padding:0;margin:0;-webkit-overflow-scrolling:touch;}' +
@@ -162,14 +162,14 @@ export const configOverlayScript = `
     '.revamp-config-status.success{display:block;background:#27ae60;color:#fff;}' +
     '.revamp-config-status.error{display:block;background:#e74c3c;color:#fff;}' +
     '#revamp-config-version{text-align:center;color:#666;font-size:11px;margin-top:24px;}';
-  
+
   function createToggle(id, checked) {
     return '<label class="revamp-config-toggle">' +
       '<input type="checkbox" id="' + id + '"' + (checked ? ' checked' : '') + '>' +
       '<span class="revamp-config-toggle-slider"></span>' +
       '</label>';
   }
-  
+
   function createOption(id, label, description, checked) {
     return '<div class="revamp-config-option">' +
       '<div class="revamp-config-label">' +
@@ -179,15 +179,15 @@ export const configOverlayScript = `
       createToggle(id, checked) +
     '</div>';
   }
-  
+
   function createOverlay() {
     if (overlay) return;
-    
+
     document.head.appendChild(style);
-    
+
     overlay = document.createElement('div');
     overlay.id = 'revamp-config-overlay';
-    overlay.innerHTML = 
+    overlay.innerHTML =
       '<div id="revamp-config-header">' +
         '<h1>⚙️ Revamp Settings</h1>' +
         '<button id="revamp-config-close">Close</button>' +
@@ -195,32 +195,32 @@ export const configOverlayScript = `
       '<div id="revamp-config-content">' +
         '<div class="revamp-config-section">' +
           '<div class="revamp-config-section-title">🔧 Transformation</div>' +
-          createOption('revamp-opt-transformJs', 'Transform JavaScript', 
+          createOption('revamp-opt-transformJs', 'Transform JavaScript',
             'Convert modern JS to Safari 9 compatible code', currentConfig.transformJs) +
-          createOption('revamp-opt-transformCss', 'Transform CSS', 
+          createOption('revamp-opt-transformCss', 'Transform CSS',
             'Convert modern CSS features for older browsers', currentConfig.transformCss) +
-          createOption('revamp-opt-transformHtml', 'Transform HTML', 
-            'Inject polyfills and modify HTML', currentConfig.transformHtml) +
+          createOption('revamp-opt-transformHtml', 'Transform HTML',
+            'Process and modify HTML structure', currentConfig.transformHtml) +
         '</div>' +
         '<div class="revamp-config-section">' +
           '<div class="revamp-config-section-title">🛡️ Privacy</div>' +
-          createOption('revamp-opt-removeAds', 'Remove Ads', 
+          createOption('revamp-opt-removeAds', 'Remove Ads',
             'Block ad domains and remove ad elements', currentConfig.removeAds) +
-          createOption('revamp-opt-removeTracking', 'Remove Tracking', 
+          createOption('revamp-opt-removeTracking', 'Remove Tracking',
             'Block tracking scripts and pixels', currentConfig.removeTracking) +
         '</div>' +
         '<div class="revamp-config-section">' +
           '<div class="revamp-config-section-title">🔌 Polyfills & Compatibility</div>' +
-          createOption('revamp-opt-injectPolyfills', 'Inject Polyfills', 
+          createOption('revamp-opt-injectPolyfills', 'Inject Polyfills',
             'Add missing browser features (Promise, fetch, etc.)', currentConfig.injectPolyfills) +
-          createOption('revamp-opt-spoofUserAgent', 'Spoof User-Agent (HTTP)', 
+          createOption('revamp-opt-spoofUserAgent', 'Spoof User-Agent (HTTP)',
             'Send modern browser headers to servers', currentConfig.spoofUserAgent) +
-          createOption('revamp-opt-spoofUserAgentInJs', 'Spoof User-Agent (JS)', 
+          createOption('revamp-opt-spoofUserAgentInJs', 'Spoof User-Agent (JS)',
             'Override navigator.userAgent in JavaScript', currentConfig.spoofUserAgentInJs) +
         '</div>' +
         '<div class="revamp-config-section">' +
           '<div class="revamp-config-section-title">💾 Cache</div>' +
-          createOption('revamp-opt-cacheEnabled', 'Enable Cache', 
+          createOption('revamp-opt-cacheEnabled', 'Enable Cache',
             'Cache transformed content for faster loading', currentConfig.cacheEnabled) +
         '</div>' +
         '<button id="revamp-config-apply">Apply & Reload</button>' +
@@ -234,14 +234,14 @@ export const configOverlayScript = `
         '<div id="revamp-config-version">Revamp Proxy v1.0</div>' +
       '</div>';
     document.body.appendChild(overlay);
-    
+
     // Create settings badge (gear icon)
     var badge = document.createElement('div');
     badge.id = 'revamp-config-badge';
     badge.innerHTML = '⚙️';
     badge.title = 'Revamp Settings';
     document.body.appendChild(badge);
-    
+
     // Event listeners
     document.getElementById('revamp-config-close').onclick = hideOverlay;
     badge.onclick = function() {
@@ -251,11 +251,11 @@ export const configOverlayScript = `
         showOverlay();
       }
     };
-    
+
     document.getElementById('revamp-config-apply').onclick = applyConfig;
     document.getElementById('revamp-config-reset').onclick = resetConfig;
   }
-  
+
   function showOverlay() {
     if (!overlay) createOverlay();
     // Refresh checkbox states from current config
@@ -263,14 +263,14 @@ export const configOverlayScript = `
     overlay.className = 'visible';
     isVisible = true;
   }
-  
+
   function hideOverlay() {
     if (overlay) {
       overlay.className = '';
     }
     isVisible = false;
   }
-  
+
   function updateCheckboxes() {
     var mappings = {
       'revamp-opt-transformJs': 'transformJs',
@@ -283,7 +283,7 @@ export const configOverlayScript = `
       'revamp-opt-spoofUserAgentInJs': 'spoofUserAgentInJs',
       'revamp-opt-cacheEnabled': 'cacheEnabled'
     };
-    
+
     for (var id in mappings) {
       if (mappings.hasOwnProperty(id)) {
         var checkbox = document.getElementById(id);
@@ -293,7 +293,7 @@ export const configOverlayScript = `
       }
     }
   }
-  
+
   function getConfigFromUI() {
     return {
       transformJs: document.getElementById('revamp-opt-transformJs').checked,
@@ -307,7 +307,7 @@ export const configOverlayScript = `
       cacheEnabled: document.getElementById('revamp-opt-cacheEnabled').checked
     };
   }
-  
+
   function showStatus(message, isError) {
     var status = document.getElementById('revamp-config-status');
     if (status) {
@@ -318,7 +318,7 @@ export const configOverlayScript = `
       }, 3000);
     }
   }
-  
+
   function applyConfig() {
     var newConfig = getConfigFromUI();
     var applyBtn = document.getElementById('revamp-config-apply');
@@ -326,12 +326,12 @@ export const configOverlayScript = `
       applyBtn.disabled = true;
       applyBtn.textContent = 'Saving...';
     }
-    
+
     saveConfigAsync(newConfig, function(success, error) {
       if (success) {
         currentConfig = newConfig;
         showStatus('✓ Settings saved! Reloading...', false);
-        
+
         // Reload the page after a short delay to show the success message
         setTimeout(function() {
           // Clear any cached data for this page
@@ -354,7 +354,7 @@ export const configOverlayScript = `
       }
     });
   }
-  
+
   function resetConfig() {
     if (confirm('Reset all settings to defaults?')) {
       var resetBtn = document.getElementById('revamp-config-reset');
@@ -362,7 +362,7 @@ export const configOverlayScript = `
         resetBtn.disabled = true;
         resetBtn.textContent = 'Resetting...';
       }
-      
+
       resetConfigAsync(function(success) {
         if (success) {
           currentConfig = JSON.parse(JSON.stringify(defaultConfig));
@@ -378,11 +378,11 @@ export const configOverlayScript = `
       });
     }
   }
-  
+
   // Initialize when DOM is ready
   function init() {
     createOverlay();
-    
+
     // Load config from proxy API asynchronously
     loadConfigAsync(function(config) {
       currentConfig = config;
@@ -390,10 +390,10 @@ export const configOverlayScript = `
       updateCheckboxes();
       console.log('[Revamp] Config loaded from proxy');
     });
-    
+
     console.log('[Revamp] Config overlay initialized');
   }
-  
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

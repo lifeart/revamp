@@ -8,7 +8,7 @@ export default defineConfig({
   workers: 1, // Single worker to avoid proxy conflicts
   reporter: [['html'], ['list']],
 
-  timeout: 60000, // 60 seconds per test
+  timeout: 5000, // 5 seconds per test
   expect: {
     timeout: 10000,
   },

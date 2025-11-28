@@ -63,7 +63,7 @@ test.describe('Config Overlay', () => {
 
       // Check for polyfill options
       await expect(page.locator('text=Inject Polyfills')).toBeVisible();
-      await expect(page.locator('text=Spoof User-Agent')).toBeVisible();
+      await expect(page.locator('text=Spoof User-Agent (HTTP)')).toBeVisible();
 
       // Check for cache option
       await expect(page.locator('text=Enable Cache')).toBeVisible();
@@ -113,9 +113,13 @@ test.describe('Config Overlay', () => {
       await badge.click();
       await expect(page.locator('#revamp-config-overlay.visible')).toBeVisible();
 
-      // Close via badge
-      await badge.click();
+      // Close via close button (badge is covered by overlay)
+      await page.locator('#revamp-config-close').click();
       await expect(page.locator('#revamp-config-overlay.visible')).not.toBeVisible();
+
+      // Re-open via badge
+      await badge.click();
+      await expect(page.locator('#revamp-config-overlay.visible')).toBeVisible();
 
       console.log('✅ Badge toggles settings panel');
     });
