@@ -33,7 +33,7 @@ test-results
 .editorconfig
 .eslintrc*
 .prettierrc*
-tsconfig.json
+# Note: tsconfig.json is needed for build stage
 
 # macOS
 .DS_Store
