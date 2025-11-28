@@ -45,7 +45,7 @@ describe('generateDashboardHtml', () => {
   it('should include configuration section', () => {
     const html = generateDashboardHtml();
     expect(html).toContain('Active Configuration');
-    expect(html).toContain('Transform JS');
+    expect(html).toContain('Transform JavaScript');
     expect(html).toContain('Transform CSS');
     expect(html).toContain('Transform HTML');
     expect(html).toContain('Remove Ads');
