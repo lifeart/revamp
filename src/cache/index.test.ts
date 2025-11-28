@@ -292,14 +292,17 @@ describe('getCached and setCache', () => {
     const largeData1 = Buffer.alloc(entrySize, '1');
     await setCache('http://file-evict-test1.com/data', 'text/plain', largeData1);
 
-    // Wait for file write
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Wait for file write to complete (fire-and-forget writes need time)
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Add more entries to push first one out of memory (45*3=135MB > 100MB)
     const largeData2 = Buffer.alloc(entrySize, '2');
     const largeData3 = Buffer.alloc(entrySize, '3');
     await setCache('http://file-evict-test2.com/data', 'text/plain', largeData2);
     await setCache('http://file-evict-test3.com/data', 'text/plain', largeData3);
+
+    // Wait for all file writes to complete
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // Now entry1 should be evicted from memory but still in file cache
     // Access entry1 - should load from file and potentially trigger eviction
