@@ -16,7 +16,7 @@ A clear and concise description of the bug.
 - **OS Version**: (e.g., iOS 9.3.5, iOS 11.4)
 - **Browser**: (e.g., Safari)
 - **Revamp Version**: (e.g., 1.0.0)
-- **Node.js Version**: (e.g., 18.17.0)
+- **Node.js Version**: (e.g., 20.x, 22.x)
 - **Host OS**: (e.g., macOS 14, Windows 11, Ubuntu 22.04)
 
 ## Steps to Reproduce

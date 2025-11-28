@@ -10,7 +10,7 @@ Please be respectful and constructive in all interactions. We're all here to mak
 
 ### Prerequisites
 
-- Node.js 18+ (LTS recommended)
+- Node.js 20+ (LTS recommended)
 - pnpm (recommended) or npm
 - A device running iOS 9+ or other legacy browser for testing
 

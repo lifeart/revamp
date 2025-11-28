@@ -1,0 +1,140 @@
+# Labels for issue/PR categorization
+# Sync with: .github/workflows/labels.yml
+
+# Type labels
+- name: bug
+  color: "d73a4a"
+  description: "Something isn't working"
+
+- name: enhancement
+  color: "a2eeef"
+  description: "New feature or request"
+
+- name: documentation
+  color: "0075ca"
+  description: "Improvements or additions to documentation"
+
+- name: question
+  color: "d876e3"
+  description: "Further information is requested"
+
+# Priority labels
+- name: "priority: critical"
+  color: "b60205"
+  description: "Requires immediate attention"
+
+- name: "priority: high"
+  color: "d93f0b"
+  description: "Important issue"
+
+- name: "priority: medium"
+  color: "fbca04"
+  description: "Normal priority"
+
+- name: "priority: low"
+  color: "0e8a16"
+  description: "Nice to have"
+
+# Status labels
+- name: stale
+  color: "fef2c0"
+  description: "No recent activity"
+
+- name: "needs triage"
+  color: "ededed"
+  description: "Needs initial review"
+
+- name: "help wanted"
+  color: "008672"
+  description: "Extra attention is needed"
+
+- name: "good first issue"
+  color: "7057ff"
+  description: "Good for newcomers"
+
+- name: wontfix
+  color: "ffffff"
+  description: "This will not be worked on"
+
+- name: duplicate
+  color: "cfd3d7"
+  description: "This issue or pull request already exists"
+
+- name: invalid
+  color: "e4e669"
+  description: "This doesn't seem right"
+
+# Component labels
+- name: "area: proxy"
+  color: "c5def5"
+  description: "Related to proxy functionality"
+
+- name: "area: transformers"
+  color: "c5def5"
+  description: "Related to JS/CSS/HTML transformers"
+
+- name: "area: polyfills"
+  color: "c5def5"
+  description: "Related to browser polyfills"
+
+- name: "area: cache"
+  color: "c5def5"
+  description: "Related to caching system"
+
+- name: "area: certificates"
+  color: "c5def5"
+  description: "Related to SSL certificates"
+
+- name: "area: docker"
+  color: "c5def5"
+  description: "Related to Docker setup"
+
+- name: "area: ci"
+  color: "c5def5"
+  description: "Related to CI/CD pipelines"
+
+# Device labels
+- name: "device: ios"
+  color: "bfdadc"
+  description: "iOS specific issue"
+
+- name: "device: safari"
+  color: "bfdadc"
+  description: "Safari browser specific"
+
+- name: "device: ipad"
+  color: "bfdadc"
+  description: "iPad specific issue"
+
+# Automation labels
+- name: dependencies
+  color: "0366d6"
+  description: "Pull requests that update a dependency file"
+
+- name: automated
+  color: "ededed"
+  description: "Automated pull request"
+
+- name: github-actions
+  color: "000000"
+  description: "GitHub Actions related"
+
+- name: docker
+  color: "0db7ed"
+  description: "Docker related"
+
+- name: security
+  color: "d73a4a"
+  description: "Security related issue"
+
+- name: pinned
+  color: "006b75"
+  description: "Exempt from stale bot"
+
+- name: performance
+  color: "fbca04"
+  description: "Performance related"
+
+- name: breaking-change
+  color: "b60205"
+  description: "Breaking change"
