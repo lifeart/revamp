@@ -1,88 +1,97 @@
 /**
- * JavaScript Transformer using Babel
+ * JavaScript Transformer using Babel Worker Pool
  * Transforms modern JavaScript to be compatible with iOS 11 Safari
+ *
+ * Uses tinypool to offload CPU-intensive Babel transforms to worker threads,
+ * keeping the main event loop free for handling concurrent requests.
  */
 
-import { transformAsync, type TransformOptions } from '@babel/core';
+import { Tinypool } from 'tinypool';
+import { fileURLToPath } from 'url';
+import { dirname, resolve } from 'path';
+import { cpus } from 'os';
 import { getConfig } from '../config/index.js';
+import type { JsWorkerInput, JsWorkerOutput } from './js-worker.js';
 
-// Babel configuration for iOS 11 compatibility
-function getBabelConfig(): TransformOptions {
-  const config = getConfig();
-  
-  return {
-    presets: [
-      [
-        '@babel/preset-env',
-        {
-          targets: config.targets.join(', '),
-          useBuiltIns: false, // We'll handle polyfills separately
-          modules: false, // Preserve ES modules
-          bugfixes: true,
-        },
-      ],
-    ],
-    // Parser options to handle edge cases in minified/concatenated files
-    parserOpts: {
-      // Allow duplicate declarations (common in concatenated minified files)
-      allowReturnOutsideFunction: true,
-      // More lenient parsing for real-world JS
-      errorRecovery: true,
-    },
-    // Don't include source maps for transformed content
-    sourceMaps: false,
-    // Compact output for smaller payload
-    compact: true,
-    // Comments can be stripped for smaller output
-    comments: false,
-  };
+// Get the directory of this file for resolving the worker
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Lazy-initialized worker pool
+let pool: Tinypool | null = null;
+
+/**
+ * Get or create the Babel worker pool
+ * Uses lazy initialization to avoid startup overhead if JS transform is disabled
+ */
+function getPool(): Tinypool {
+  if (!pool) {
+    const workerPath = resolve(__dirname, 'js-worker.js');
+
+    pool = new Tinypool({
+      filename: workerPath,
+      // Number of workers - use CPU count minus 1 to leave room for main thread
+      // Minimum 2 workers for some parallelism
+      minThreads: 2,
+      maxThreads: Math.max(2, cpus().length - 1),
+      // Idle timeout - terminate workers after 30s of inactivity
+      idleTimeout: 30000,
+    });
+
+    console.log(`🔧 Babel worker pool initialized with ${pool.options.maxThreads} max threads`);
+  }
+
+  return pool;
+}
+
+/**
+ * Gracefully shutdown the worker pool
+ * Call this when the application is shutting down
+ */
+export async function shutdownWorkerPool(): Promise<void> {
+  if (pool) {
+    console.log('🔧 Shutting down Babel worker pool...');
+    await pool.destroy();
+    pool = null;
+  }
 }
 
 /**
  * Transform JavaScript code for legacy browser compatibility
+ * Uses worker pool for parallel processing
  */
 export async function transformJs(code: string, filename?: string): Promise<string> {
   const config = getConfig();
-  
+
   if (!config.transformJs) {
     return code;
   }
-  
+
   try {
-    const babelConfig = getBabelConfig();
-    
-    if (filename) {
-      babelConfig.filename = filename;
-    }
-    
-    const result = await transformAsync(code, babelConfig);
-    
-    if (result?.code) {
+    const workerPool = getPool();
+
+    const input: JsWorkerInput = {
+      code,
+      filename,
+      targets: config.targets,
+    };
+
+    const result = await workerPool.run(input) as JsWorkerOutput;
+
+    if (result.error) {
+      if (result.isIgnorable) {
+        console.warn(`⚠️ Skipping JS transform (non-critical parse issue): ${filename || 'unknown'}`);
+        return result.code;
+      }
+
+      console.error('❌ Babel transform error:', result.error);
       return result.code;
     }
-    
-    return code;
+
+    return result.code;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    
-    // Known non-critical errors that we can safely ignore
-    // These usually occur in minified/concatenated files that still work in browsers
-    const ignorableErrors = [
-      'has already been declared',  // Duplicate declarations in concatenated files
-      'Identifier .* has already been declared',
-      'Unexpected token',           // Sometimes minified code has edge cases
-    ];
-    
-    const isIgnorable = ignorableErrors.some(pattern => 
-      new RegExp(pattern).test(errorMessage)
-    );
-    
-    if (isIgnorable) {
-      console.warn(`⚠️ Skipping JS transform (non-critical parse issue): ${filename || 'unknown'}`);
-      return code;
-    }
-    
-    console.error('❌ Babel transform error:', errorMessage);
+    console.error('❌ Babel worker error:', errorMessage);
     // Return original code on error to not break the page
     return code;
   }
@@ -110,6 +119,6 @@ export function needsJsTransform(code: string): boolean {
     /Promise\.allSettled/,    // Promise.allSettled
     /globalThis/,             // globalThis
   ];
-  
+
   return modernPatterns.some(pattern => pattern.test(code));
 }
