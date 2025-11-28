@@ -289,6 +289,30 @@ describe('transformHtml', () => {
     expect(result).toContain('"key"');
   });
 
+  it('should not remove JSON scripts even with ad/tracking-like content', async () => {
+    updateConfig({ removeAds: true, removeTracking: true });
+    const html = `
+      <html><head>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "url": "https://google-analytics.com/test",
+            "description": "Contains googletag and ads patterns"
+          }
+        </script>
+        <script type="application/json" id="config-data">
+          {"analytics": "https://doubleclick.net", "tracking": true}
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).toContain('application/ld+json');
+    expect(result).toContain('google-analytics.com');
+    expect(result).toContain('application/json');
+    expect(result).toContain('doubleclick.net');
+    expect(result).toContain('config-data');
+  });
+
   it('should skip template scripts', async () => {
     const html = `
       <html><head>

@@ -95,6 +95,12 @@ export async function transformHtml(html: string, url?: string): Promise<string>
       const $script = $(elem);
       const src = $script.attr('src') || '';
       const content = $script.html() || '';
+      const type = $script.attr('type') || '';
+      
+      // Skip JSON data scripts (application/json, application/ld+json, etc.)
+      if (type.includes('json')) {
+        return;
+      }
       
       // Remove ad scripts
       if (config.removeAds && isAdScript(src, content)) {
