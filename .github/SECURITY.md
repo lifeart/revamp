@@ -14,8 +14,9 @@ We take security vulnerabilities seriously. If you discover a security issue, pl
 ### How to Report
 
 1. **Do NOT** open a public GitHub issue for security vulnerabilities
-2. Email the maintainer directly or use GitHub's private vulnerability reporting
-3. Include as much information as possible:
+2. Use [GitHub's private vulnerability reporting](https://github.com/lifeart/revamp/security/advisories/new) (preferred)
+3. Or email the maintainer directly
+4. Include as much information as possible:
    - Type of vulnerability
    - Steps to reproduce
    - Potential impact

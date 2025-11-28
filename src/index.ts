@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Revamp - Legacy Browser Compatibility Proxy
  *

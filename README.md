@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/lifeart/revamp/actions/workflows/ci.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/ci.yml)
 [![Docker](https://github.com/lifeart/revamp/actions/workflows/docker.yml/badge.svg)](https://github.com/lifeart/revamp/actions/workflows/docker.yml)
+[![codecov](https://codecov.io/gh/lifeart/revamp/branch/master/graph/badge.svg)](https://codecov.io/gh/lifeart/revamp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
@@ -210,6 +211,8 @@ fetch('http://any-proxied-site/__revamp__/config', {
 src/
 ├── index.ts              # Main entry point
 ├── config/               # Configuration management
+│   ├── index.ts          # Config defaults and getters
+│   └── client-options.ts # Single source of truth for client options
 ├── proxy/                # Proxy servers
 │   ├── http-proxy.ts     # HTTP/HTTPS proxy
 │   ├── socks5.ts         # SOCKS5 proxy
@@ -233,6 +236,9 @@ src/
 ├── certs/                # Certificate generation
 ├── portal/               # Captive portal
 └── benchmarks/           # Performance benchmarks
+
+tests/                    # E2E tests (Playwright)
+config/                   # External configuration (blocked domains)
 ```
 
 ## 🌐 API Endpoints

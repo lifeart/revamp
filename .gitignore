@@ -44,3 +44,7 @@ tests/mock-server.js
 # Misc
 *.tgz
 *.tsbuildinfo
+
+# Local files that shouldn't be committed
+.env.production
+*.local

@@ -5,6 +5,22 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "revamp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "config",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lifeart/revamp.git"
@@ -26,7 +42,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "mock-server": "tsx --no-warnings tests/mock-server.ts",
-    "prepublishOnly": "npm run build"
+    "lint": "echo 'No linter configured yet'",
+    "prepublishOnly": "npm run build && npm run test:unit:run"
   },
   "keywords": [
     "proxy",

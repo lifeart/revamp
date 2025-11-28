@@ -36,21 +36,36 @@ pnpm test           # E2E tests with Playwright
 
 ```
 src/
-├── index.ts           # Main entry point and server creation
-├── config/            # Configuration management
-├── proxy/             # HTTP and SOCKS5 proxy implementations
-│   ├── http-proxy.ts  # HTTP/HTTPS proxy server
-│   ├── socks5.ts      # SOCKS5 proxy server
-│   ├── shared.ts      # Shared utilities
-│   └── types.ts       # Type definitions
-├── transformers/      # Content transformation
-│   ├── js.ts          # JavaScript transpilation (Babel)
-│   ├── css.ts         # CSS transformation (PostCSS)
-│   ├── html.ts        # HTML modification (Cheerio)
-│   └── polyfills/     # Polyfill scripts
-├── cache/             # Caching system
-├── certs/             # Certificate generation
-└── portal/            # Captive portal for certificate installation
+├── index.ts              # Main entry point and server creation
+├── config/               # Configuration management
+│   ├── index.ts          # Config defaults and getters
+│   └── client-options.ts # Single source of truth for client options
+├── proxy/                # HTTP and SOCKS5 proxy implementations
+│   ├── http-proxy.ts     # HTTP/HTTPS proxy server
+│   ├── socks5.ts         # SOCKS5 proxy server
+│   ├── socks5-protocol.ts # SOCKS5 protocol parsing
+│   ├── http-client.ts    # HTTP request utilities
+│   ├── shared.ts         # Shared utilities and transformation
+│   ├── revamp-api.ts     # API endpoint handler
+│   └── types.ts          # Type definitions
+├── transformers/         # Content transformation
+│   ├── js.ts             # JavaScript transpilation (Babel worker pool)
+│   ├── js-worker.ts      # Babel worker thread
+│   ├── css.ts            # CSS transformation (PostCSS)
+│   ├── css-grid-fallback.ts # CSS Grid → Flexbox
+│   ├── dark-mode-strip.ts # Dark mode CSS removal
+│   ├── html.ts           # HTML modification (Cheerio)
+│   ├── image.ts          # Image optimization
+│   └── polyfills/        # 25+ polyfill scripts
+├── metrics/              # Metrics collection and dashboard
+├── pac/                  # PAC file generation
+├── cache/                # Caching system
+├── certs/                # Certificate generation
+├── portal/               # Captive portal
+└── benchmarks/           # Performance benchmarks
+
+tests/                    # E2E tests with Playwright
+config/                   # External configuration files
 ```
 
 ## How to Contribute
@@ -92,6 +107,20 @@ fix: handle empty response bodies correctly
 docs: update README with new config options
 test: add tests for CSS transformation
 refactor: extract SOCKS5 protocol parsing
+chore: update dependencies
+perf: optimize cache lookup
+```
+
+### Branch Naming
+
+Use descriptive branch names:
+
+```
+feat/websocket-support
+fix/empty-response-handling
+docs/config-options
+test/css-transformation
+refactor/socks5-protocol
 ```
 
 ## Code Style
