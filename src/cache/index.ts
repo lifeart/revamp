@@ -104,8 +104,12 @@ function shouldSkipCache(url: string): boolean {
   }
 }
 
-function getCacheKey(url: string, contentType: string): string {
-  const hash = createHash('sha256').update(`${url}:${contentType}`).digest('hex');
+function getCacheKey(url: string, contentType: string, clientIp?: string): string {
+  // Include client IP in cache key if provided for multi-client support
+  const keySource = clientIp
+    ? `${clientIp}:${url}:${contentType}`
+    : `${url}:${contentType}`;
+  const hash = createHash('sha256').update(keySource).digest('hex');
   return hash;
 }
 
@@ -140,12 +144,12 @@ function evictOldestFromMemory(): void {
   }
 }
 
-export async function getCached(url: string, contentType: string): Promise<Buffer | null> {
+export async function getCached(url: string, contentType: string, clientIp?: string): Promise<Buffer | null> {
   const config = getConfig();
   if (!config.cacheEnabled) return null;
   if (shouldSkipCache(url)) return null;
 
-  const key = getCacheKey(url, contentType);
+  const key = getCacheKey(url, contentType, clientIp);
 
   // Check memory cache first (fast path)
   const memEntry = memoryCache.get(key);
@@ -204,14 +208,14 @@ export async function getCached(url: string, contentType: string): Promise<Buffe
   return null;
 }
 
-export async function setCache(url: string, contentType: string, data: Buffer): Promise<void> {
+export async function setCache(url: string, contentType: string, data: Buffer, clientIp?: string): Promise<void> {
   const config = getConfig();
   if (!config.cacheEnabled) return;
   if (shouldSkipCache(url)) return;
 
   await ensureCacheDir();
 
-  const key = getCacheKey(url, contentType);
+  const key = getCacheKey(url, contentType, clientIp);
   const timestamp = Date.now();
 
   // Add to memory cache (sync, fast)

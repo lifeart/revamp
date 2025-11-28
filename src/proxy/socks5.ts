@@ -99,6 +99,13 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   // Track connection for metrics
   updateConnections(1);
 
+  // Extract client IP for per-client cache separation
+  const rawClientIp = clientSocket.remoteAddress || '';
+  // Normalize IPv6 localhost to IPv4 for consistency
+  const clientIp = rawClientIp === '::1' || rawClientIp === '::ffff:127.0.0.1'
+    ? '127.0.0.1'
+    : rawClientIp.replace(/^::ffff:/, '');
+
   // Data buffer for partial reads
   let buffer = Buffer.alloc(0);
 
@@ -369,7 +376,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       // Make request to real server
       try {
         console.log(`📤 Fetching: ${method} ${targetUrl}`);
-        const response = await makeHttpsRequest(method, hostname, path, headers, requestBody);
+        const response = await makeHttpsRequest(method, hostname, path, headers, requestBody, clientIp);
         console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
 
         // Apply gzip compression for text-based content if client supports it
@@ -576,7 +583,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       }
 
       try {
-        const response = await makeHttpRequest(method, hostname, port, path, headers, requestBody);
+        const response = await makeHttpRequest(method, hostname, port, path, headers, requestBody, clientIp);
 
         let responseHeaders = `HTTP/1.1 ${response.statusCode} ${response.statusMessage || 'OK'}\r\n`;
 

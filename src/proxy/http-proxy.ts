@@ -101,6 +101,30 @@ function readRequestBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * Extract client IP from request, handling X-Forwarded-For headers
+ * and falling back to socket address
+ */
+function getClientIp(req: IncomingMessage): string {
+  // Check X-Forwarded-For header (set by reverse proxies)
+  const forwardedFor = req.headers['x-forwarded-for'];
+  if (forwardedFor) {
+    // X-Forwarded-For can be comma-separated list, take the first (original client)
+    const ips = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+    const clientIp = ips.split(',')[0].trim();
+    if (clientIp) return clientIp;
+  }
+
+  // Fall back to direct socket address
+  const socketAddress = req.socket?.remoteAddress || '';
+  // Normalize IPv6 localhost to IPv4 for consistency
+  if (socketAddress === '::1' || socketAddress === '::ffff:127.0.0.1') {
+    return '127.0.0.1';
+  }
+  // Remove IPv6 prefix if present (::ffff:192.168.1.1 -> 192.168.1.1)
+  return socketAddress.replace(/^::ffff:/, '');
+}
+
 // =============================================================================
 // Proxy Request Handler
 // =============================================================================
@@ -109,8 +133,12 @@ async function proxyRequest(
   req: IncomingMessage,
   res: ServerResponse,
   targetUrl: string,
-  isHttps: boolean
+  isHttps: boolean,
+  clientIp?: string
 ): Promise<void> {
+  // Extract client IP for per-client cache separation
+  const effectiveClientIp = clientIp || getClientIp(req);
+
   // Check if this is a Revamp API endpoint request first
   const parsedUrl = new URL(targetUrl);
   const isRevampPath = isRevampEndpoint(parsedUrl.pathname);
@@ -230,7 +258,7 @@ async function proxyRequest(
 
               if (contentType !== 'other') {
                 const originalSize = body.length;
-                body = Buffer.from(await transformContent(body, contentType, targetUrl, charset, config));
+                body = Buffer.from(await transformContent(body, contentType, targetUrl, charset, config, effectiveClientIp));
                 recordTransform(contentType);
               }
             }

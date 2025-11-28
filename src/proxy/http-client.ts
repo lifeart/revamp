@@ -31,6 +31,7 @@ import type { HttpResponse, RequestHeaders } from './types.js';
  * @param path - Request path including query string
  * @param headers - Request headers
  * @param body - Request body
+ * @param clientIp - Optional client IP for per-client cache separation
  * @returns Promise resolving to HttpResponse with transformed content
  */
 export async function makeHttpsRequest(
@@ -38,7 +39,8 @@ export async function makeHttpsRequest(
   hostname: string,
   path: string,
   headers: RequestHeaders,
-  body: Buffer
+  body: Buffer,
+  clientIp?: string
 ): Promise<HttpResponse> {
   const config = getConfig();
 
@@ -71,7 +73,8 @@ export async function makeHttpsRequest(
           const response = await processResponse(
             res,
             Buffer.concat(chunks),
-            `https://${hostname}${path}`
+            `https://${hostname}${path}`,
+            clientIp
           );
           resolve(response);
         } catch (err) {
@@ -99,6 +102,7 @@ export async function makeHttpsRequest(
  * @param path - Request path including query string
  * @param headers - Request headers
  * @param body - Request body
+ * @param clientIp - Optional client IP for per-client cache separation
  * @returns Promise resolving to HttpResponse with transformed content
  */
 export async function makeHttpRequest(
@@ -107,7 +111,8 @@ export async function makeHttpRequest(
   port: number,
   path: string,
   headers: RequestHeaders,
-  body: Buffer
+  body: Buffer,
+  clientIp?: string
 ): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
     const options = {
@@ -130,7 +135,8 @@ export async function makeHttpRequest(
           const response = await processResponse(
             res,
             Buffer.concat(chunks),
-            `http://${hostname}${path}`
+            `http://${hostname}${path}`,
+            clientIp
           );
           resolve(response);
         } catch (err) {
@@ -155,12 +161,14 @@ export async function makeHttpRequest(
  * @param res - Node.js IncomingMessage
  * @param rawBody - Raw response body
  * @param targetUrl - Full target URL for logging and transformation
+ * @param clientIp - Optional client IP for per-client cache separation
  * @returns Processed HttpResponse
  */
 async function processResponse(
   res: IncomingMessage,
   rawBody: Buffer,
-  targetUrl: string
+  targetUrl: string,
+  clientIp?: string
 ): Promise<HttpResponse> {
   // Decompress if needed
   const encoding = res.headers['content-encoding'];
@@ -201,7 +209,7 @@ async function processResponse(
 
       if (contentType !== 'other') {
         const originalSize = responseBody.length;
-        responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset));
+        responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset, undefined, clientIp));
         recordTransform(contentType);
 
         // Update Content-Type header to UTF-8 since we converted the content

@@ -311,13 +311,20 @@ export function decodeBufferToString(body: Buffer, charset: string): string {
 
 /**
  * Transform content (JS, CSS, HTML) based on type and config
+ * @param body - The content body to transform
+ * @param contentType - The type of content (js, css, html, other)
+ * @param url - The URL of the content
+ * @param charset - The charset to use for decoding (defaults to 'utf-8')
+ * @param config - Optional config override
+ * @param clientIp - Optional client IP for per-client cache separation
  */
 export async function transformContent(
   body: Buffer,
   contentType: ContentType,
   url: string,
   charset: string = 'utf-8',
-  config?: RevampConfig
+  config?: RevampConfig,
+  clientIp?: string
 ): Promise<Buffer> {
   const effectiveConfig = config || getConfig();
 
@@ -329,9 +336,9 @@ export async function transformContent(
 
   // Check cache first (only if cache is enabled in config)
   if (effectiveConfig.cacheEnabled) {
-    const cached = await getCached(url, contentType);
+    const cached = await getCached(url, contentType, clientIp);
     if (cached) {
-      console.log(`📦 Cache hit: ${url}`);
+      console.log(`📦 Cache hit: ${url}${clientIp ? ` (client: ${clientIp})` : ''}`);
       recordCacheHit();
       return cached;
     }
@@ -373,7 +380,7 @@ export async function transformContent(
 
   // Cache the result (only if cache is enabled)
   if (effectiveConfig.cacheEnabled) {
-    await setCache(url, contentType, result);
+    await setCache(url, contentType, result, clientIp);
   }
 
   return result;

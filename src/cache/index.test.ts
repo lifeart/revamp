@@ -485,3 +485,145 @@ describe('file cache operations', () => {
     expect(result).toBeNull();
   });
 });
+
+describe('multi-client cache isolation', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-multiclient-test-' + Date.now());
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should isolate cache entries by client IP', async () => {
+    const url = 'https://example.com/shared-page';
+    const contentType = 'text/html';
+    const client1Data = Buffer.from('<html>Client 1 version</html>');
+    const client2Data = Buffer.from('<html>Client 2 version</html>');
+
+    // Client 1 caches data
+    await setCache(url, contentType, client1Data, '192.168.1.100');
+
+    // Client 2 caches different data for same URL
+    await setCache(url, contentType, client2Data, '192.168.1.200');
+
+    // Each client should get their own cached version
+    const result1 = await getCached(url, contentType, '192.168.1.100');
+    const result2 = await getCached(url, contentType, '192.168.1.200');
+
+    expect(result1?.toString()).toBe('<html>Client 1 version</html>');
+    expect(result2?.toString()).toBe('<html>Client 2 version</html>');
+  });
+
+  it('should return null for different client IP even with same URL cached', async () => {
+    const url = 'https://example.com/cached-page';
+    const contentType = 'text/html';
+    const data = Buffer.from('<html>Cached content</html>');
+
+    // Client 1 caches data
+    await setCache(url, contentType, data, '10.0.0.1');
+
+    // Client 2 tries to retrieve - should not get client 1's cache
+    const result = await getCached(url, contentType, '10.0.0.2');
+    expect(result).toBeNull();
+  });
+
+  it('should work without client IP (backward compatibility)', async () => {
+    const url = 'https://example.com/global-page';
+    const contentType = 'text/html';
+    const data = Buffer.from('<html>Global cache</html>');
+
+    // Cache without client IP
+    await setCache(url, contentType, data);
+
+    // Retrieve without client IP
+    const result = await getCached(url, contentType);
+    expect(result?.toString()).toBe('<html>Global cache</html>');
+  });
+
+  it('should keep global cache separate from per-client cache', async () => {
+    const url = 'https://example.com/mixed-page';
+    const contentType = 'text/html';
+    const globalData = Buffer.from('<html>Global version</html>');
+    const clientData = Buffer.from('<html>Client-specific version</html>');
+
+    // Cache globally (no IP)
+    await setCache(url, contentType, globalData);
+
+    // Cache for specific client
+    await setCache(url, contentType, clientData, '172.16.0.50');
+
+    // Both should be retrievable separately
+    const globalResult = await getCached(url, contentType);
+    const clientResult = await getCached(url, contentType, '172.16.0.50');
+
+    expect(globalResult?.toString()).toBe('<html>Global version</html>');
+    expect(clientResult?.toString()).toBe('<html>Client-specific version</html>');
+  });
+
+  it('should persist per-client cache to file system', async () => {
+    const url = 'https://client-file-test.com/page';
+    const contentType = 'text/html';
+    const data = Buffer.from('Per-client file cache test');
+    const clientIp = '192.168.100.1';
+
+    await setCache(url, contentType, data, clientIp);
+
+    // Wait for async file write
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    // Clear memory cache
+    clearCache();
+
+    // Should retrieve from file cache
+    const result = await getCached(url, contentType, clientIp);
+    expect(result).not.toBeNull();
+    expect(result?.toString()).toBe('Per-client file cache test');
+  });
+
+  it('should handle IPv6 addresses as client IP', async () => {
+    const url = 'https://ipv6-test.com/page';
+    const contentType = 'text/html';
+    const data = Buffer.from('IPv6 client data');
+    const ipv6Address = '2001:db8::1';
+
+    await setCache(url, contentType, data, ipv6Address);
+
+    const result = await getCached(url, contentType, ipv6Address);
+    expect(result?.toString()).toBe('IPv6 client data');
+  });
+
+  it('should track separate stats for different clients', async () => {
+    const url1 = 'https://stats-test.com/page1';
+    const url2 = 'https://stats-test.com/page2';
+    const contentType = 'text/html';
+
+    // Different clients caching same URLs
+    await setCache(url1, contentType, Buffer.from('data1'), '10.0.0.1');
+    await setCache(url1, contentType, Buffer.from('data2'), '10.0.0.2');
+    await setCache(url2, contentType, Buffer.from('data3'), '10.0.0.1');
+
+    const stats = getCacheStats();
+    // Should have 3 separate entries (2 clients for url1, 1 client for url2)
+    expect(stats.memoryEntries).toBe(3);
+  });
+});
