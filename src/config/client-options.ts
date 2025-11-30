@@ -51,6 +51,13 @@ export const CLIENT_CONFIG_OPTIONS: readonly ConfigOptionMeta[] = [
     defaultValue: true,
     category: 'transformation',
   },
+  {
+    key: 'bundleEsModules',
+    label: 'Bundle ES Modules',
+    description: 'Bundle ES modules for legacy browsers using esbuild',
+    defaultValue: true,
+    category: 'transformation',
+  },
 
   // Privacy options
   {

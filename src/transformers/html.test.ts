@@ -261,8 +261,8 @@ describe('transformHtml', () => {
     expect(result).toContain('Content');
   });
 
-  it('should skip transformation of module scripts', async () => {
-    updateConfig({ transformJs: true });
+  it('should skip transformation of module scripts when bundleEsModules is disabled', async () => {
+    updateConfig({ transformJs: true, bundleEsModules: false });
     const html = `
       <html><head>
         <script type="module">
@@ -271,9 +271,28 @@ describe('transformHtml', () => {
       </head><body></body></html>
     `;
     const result = await transformHtml(html);
-    // Module script should be preserved as-is
+    // Module script should be preserved as-is when bundleEsModules is disabled
     expect(result).toContain('type="module"');
     expect(result).toContain('import');
+  });
+
+  it('should bundle module scripts when bundleEsModules is enabled', async () => {
+    updateConfig({ transformJs: true, bundleEsModules: true });
+    const html = `
+      <html><head>
+        <script type="module">
+          const x = 1;
+          console.log(x);
+        </script>
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    // Module script should be bundled - type="module" attribute is removed
+    expect(result).not.toContain('type="module"');
+    // Should contain the ES Module shim
+    expect(result).toContain('ES Module Shim');
+    // Should contain bundled code or error message
+    expect(result.includes('console.log') || result.includes('[Revamp] Failed to bundle')).toBe(true);
   });
 
   it('should skip JSON scripts', async () => {

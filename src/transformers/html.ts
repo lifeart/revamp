@@ -17,6 +17,7 @@ import type { Element } from 'domhandler';
 import { getConfig } from '../config/index.js';
 import { transformJs } from './js.js';
 import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
+import { bundleEsModule, bundleInlineModule, getModuleShimScript, isModuleScript } from './esm-bundler.js';
 
 // =============================================================================
 // Types
@@ -28,10 +29,18 @@ interface InlineScript {
   content: string;
 }
 
+/** Module script element (external or inline) */
+interface ModuleScript {
+  elem: Element;
+  src?: string;
+  content?: string;
+}
+
 /** Result of HTML transformation */
 interface TransformResult {
   removedAds: number;
   removedTracking: number;
+  bundledModules: number;
 }
 
 // =============================================================================
@@ -312,7 +321,7 @@ function processScripts(
     }
   });
 
-  return { removedAds, removedTracking };
+  return { removedAds, removedTracking, bundledModules: 0 };
 }
 
 /**
@@ -366,6 +375,101 @@ async function transformInlineScripts(
       console.error(`⚠️ Failed to transform inline script: ${err instanceof Error ? err.message : err}`);
     }
   }
+}
+
+/**
+ * Collect ES module scripts (both external and inline).
+ */
+function collectModuleScripts($: CheerioAPI): ModuleScript[] {
+  const modules: ModuleScript[] = [];
+
+  $('script[type="module"]').each((_, elem) => {
+    const $script = $(elem);
+    const src = $script.attr('src');
+    const content = $script.html() || '';
+
+    modules.push({
+      elem,
+      src: src || undefined,
+      content: content.trim() || undefined,
+    });
+  });
+
+  return modules;
+}
+
+/**
+ * Transform ES module scripts by bundling them for legacy browsers.
+ * Converts module scripts to regular scripts with bundled code.
+ */
+async function transformModuleScripts(
+  $: CheerioAPI,
+  url: string | undefined
+): Promise<number> {
+  const config = getConfig();
+
+  // Check if ES module bundling is enabled
+  if (!config.bundleEsModules) {
+    return 0;
+  }
+
+  const moduleScripts = collectModuleScripts($);
+
+  if (moduleScripts.length === 0) {
+    return 0;
+  }
+
+  console.log(`📦 Found ${moduleScripts.length} ES module script(s) to bundle`);
+
+  // Inject module shim before any module processing
+  const firstModule = $(moduleScripts[0].elem);
+  firstModule.before(getModuleShimScript());
+
+  let bundledCount = 0;
+
+  for (const { elem, src, content } of moduleScripts) {
+    const $script = $(elem);
+
+    try {
+      let bundleResult;
+
+      if (src) {
+        // External module - resolve URL and bundle
+        const moduleUrl = new URL(src, url || 'http://localhost').href;
+        console.log(`📦 Bundling external module: ${moduleUrl}`);
+        bundleResult = await bundleEsModule(moduleUrl);
+      } else if (content) {
+        // Inline module - bundle with base URL for resolving imports
+        const baseUrl = url || 'http://localhost/inline-module.js';
+        console.log(`📦 Bundling inline module from: ${baseUrl}`);
+        bundleResult = await bundleInlineModule(content, baseUrl);
+      } else {
+        // Empty module script - remove it
+        $script.remove();
+        continue;
+      }
+
+      // Replace module script with bundled IIFE
+      $script.removeAttr('type');
+      $script.removeAttr('src');
+      $script.html(bundleResult.code);
+
+      if (bundleResult.success) {
+        bundledCount++;
+        if (bundleResult.bundledModules.length > 0) {
+          console.log(`✅ Bundled ${bundleResult.bundledModules.length} module(s) for: ${src || 'inline'}`);
+        }
+      } else {
+        console.warn(`⚠️ Module bundling failed for ${src || 'inline'}: ${bundleResult.error}`);
+      }
+    } catch (err) {
+      console.error(`❌ Failed to bundle module ${src || 'inline'}: ${err instanceof Error ? err.message : err}`);
+      // Remove the failing module script to prevent errors
+      $script.remove();
+    }
+  }
+
+  return bundledCount;
 }
 
 /**
@@ -492,7 +596,11 @@ function injectRevampScripts(
  * Add a comment showing transformation statistics.
  */
 function addTransformComment($: CheerioAPI, result: TransformResult): void {
-  const comment = `<!-- Revamp Proxy: Removed ${result.removedAds} ad scripts, ${result.removedTracking} tracking scripts -->`;
+  let comment = `<!-- Revamp Proxy: Removed ${result.removedAds} ad scripts, ${result.removedTracking} tracking scripts`;
+  if (result.bundledModules > 0) {
+    comment += `, bundled ${result.bundledModules} ES modules`;
+  }
+  comment += ' -->';
   $('head').append(comment);
 }
 
@@ -526,6 +634,11 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     // Transform inline scripts for legacy browsers
     if (config.transformJs) {
       await transformInlineScripts($, url);
+    }
+
+    // Bundle ES modules for legacy browsers
+    if (config.bundleEsModules) {
+      result.bundledModules = await transformModuleScripts($, url);
     }
 
     // Remove ad containers

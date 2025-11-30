@@ -19,6 +19,7 @@ export interface RevampConfig {
   transformJs: boolean;
   transformCss: boolean;
   transformHtml: boolean;
+  bundleEsModules: boolean; // Bundle ES modules for legacy browsers using esbuild
   removeAds: boolean;
   removeTracking: boolean;
   injectPolyfills: boolean;
@@ -65,6 +66,7 @@ export const defaultConfig: RevampConfig = {
   transformJs: true,
   transformCss: true,
   transformHtml: true,
+  bundleEsModules: true, // Bundle ES modules by default for legacy browser support
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
@@ -168,6 +170,7 @@ export interface ClientConfig {
   transformJs?: boolean;
   transformCss?: boolean;
   transformHtml?: boolean;
+  bundleEsModules?: boolean;
   removeAds?: boolean;
   removeTracking?: boolean;
   injectPolyfills?: boolean;

@@ -248,6 +248,165 @@ main {
 `,
 
   '/test-image.png': 'BINARY_IMAGE_PLACEHOLDER', // Will be handled specially
+
+  // =============================================================================
+  // ES Module Test Pages
+  // =============================================================================
+
+  // Page with ES modules for testing bundling
+  '/esm-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ES Module Test Page</title>
+</head>
+<body>
+  <h1>ES Module Test</h1>
+  <div id="result">Loading...</div>
+  <div id="nested-result">Nested: Loading...</div>
+  <div id="math-result">Math: Loading...</div>
+
+  <!-- External ES Module -->
+  <script type="module" src="/modules/main.js"></script>
+</body>
+</html>`,
+
+  // Page with inline ES module
+  '/esm-inline-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Inline ES Module Test</title>
+</head>
+<body>
+  <h1>Inline ES Module Test</h1>
+  <div id="inline-result">Loading...</div>
+
+  <script type="module">
+    // Inline ES module code
+    const message = 'Hello from inline module!';
+    const result = document.getElementById('inline-result');
+    if (result) {
+      result.textContent = message;
+      result.dataset.loaded = 'true';
+    }
+    console.log('[ESM Test] Inline module executed:', message);
+    window.__inlineModuleExecuted = true;
+  </script>
+</body>
+</html>`,
+
+  // Main entry module
+  '/modules/main.js': `// Main ES Module - imports nested modules
+import { greet } from './utils/greeting.js';
+import { add, multiply } from './utils/math.js';
+
+console.log('[ESM Test] Main module loading...');
+
+// Use the imported functions
+const greeting = greet('World');
+const sum = add(10, 20);
+const product = multiply(5, 6);
+
+// Update the DOM
+document.addEventListener('DOMContentLoaded', () => {
+  const resultEl = document.getElementById('result');
+  const nestedEl = document.getElementById('nested-result');
+  const mathEl = document.getElementById('math-result');
+
+  if (resultEl) {
+    resultEl.textContent = greeting;
+    resultEl.dataset.loaded = 'true';
+  }
+
+  if (nestedEl) {
+    nestedEl.textContent = 'Nested import works!';
+    nestedEl.dataset.loaded = 'true';
+  }
+
+  if (mathEl) {
+    mathEl.textContent = 'Sum: ' + sum + ', Product: ' + product;
+    mathEl.dataset.loaded = 'true';
+  }
+
+  console.log('[ESM Test] DOM updated with:', { greeting, sum, product });
+});
+
+// Export for verification
+window.__esmTestData = {
+  greeting,
+  sum,
+  product,
+  loaded: true
+};
+
+console.log('[ESM Test] Main module initialized');
+`,
+
+  // Nested utility module - greeting
+  '/modules/utils/greeting.js': `// Greeting utility module - uses another nested import
+import { capitalize } from './string-helpers.js';
+
+console.log('[ESM Test] Greeting module loading...');
+
+export function greet(name) {
+  const capitalizedName = capitalize(name);
+  return 'Hello, ' + capitalizedName + '!';
+}
+
+export function farewell(name) {
+  return 'Goodbye, ' + capitalize(name) + '!';
+}
+
+console.log('[ESM Test] Greeting module loaded');
+`,
+
+  // Nested utility module - math operations
+  '/modules/utils/math.js': `// Math utility module
+console.log('[ESM Test] Math module loading...');
+
+export function add(a, b) {
+  return a + b;
+}
+
+export function subtract(a, b) {
+  return a - b;
+}
+
+export function multiply(a, b) {
+  return a * b;
+}
+
+export function divide(a, b) {
+  if (b === 0) throw new Error('Division by zero');
+  return a / b;
+}
+
+console.log('[ESM Test] Math module loaded');
+`,
+
+  // Deeply nested module - string helpers (third level)
+  '/modules/utils/string-helpers.js': `// String helper utilities - third level nesting
+console.log('[ESM Test] String helpers module loading...');
+
+export function capitalize(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+export function lowercase(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.toLowerCase();
+}
+
+export function uppercase(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.toUpperCase();
+}
+
+console.log('[ESM Test] String helpers module loaded');
+`,
 };
 
 // Generate a simple PNG image (1x1 transparent pixel for testing)
