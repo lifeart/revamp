@@ -180,51 +180,71 @@ function generateConfigOverlayScript(): string {
     '</div>';
   }
 
+  // Helper to wait for document.body to be available
+  function waitForBody(callback) {
+    if (document.body) {
+      callback();
+    } else {
+      var checkInterval = setInterval(function() {
+        if (document.body) {
+          clearInterval(checkInterval);
+          callback();
+        }
+      }, 10);
+    }
+  }
+
   function createOverlay() {
     if (overlay) return;
 
-    document.head.appendChild(style);
+    waitForBody(function() {
+      if (overlay) return; // Double-check in case of race condition
 
-    overlay = document.createElement('div');
-    overlay.id = 'revamp-config-overlay';
-    overlay.innerHTML =
-      '<div id="revamp-config-header">' +
-        '<h1>⚙️ Revamp Settings</h1>' +
-        '<button id="revamp-config-close">Close</button>' +
-      '</div>' +
-      '<div id="revamp-config-content">' +
-        ${generateOverlaySections()} +
-        '<button id="revamp-config-apply">Apply & Reload</button>' +
-        '<button id="revamp-config-reset">Reset to Defaults</button>' +
-        '<div id="revamp-config-status" class="revamp-config-status"></div>' +
-        '<div id="revamp-config-note" style="text-align:center;color:#888;font-size:11px;margin-top:16px;' +
-          'padding:12px;background:#1a1a1a;border-radius:4px;">' +
-          '💡 Settings are saved on the proxy server.<br>' +
-          'Changes take effect on next page load.' +
-        '</div>' +
-        '<div id="revamp-config-version">Revamp Proxy v1.0</div>' +
-      '</div>';
-    document.body.appendChild(overlay);
-
-    // Create settings badge (gear icon)
-    var badge = document.createElement('div');
-    badge.id = 'revamp-config-badge';
-    badge.innerHTML = '⚙️';
-    badge.title = 'Revamp Settings';
-    document.body.appendChild(badge);
-
-    // Event listeners
-    document.getElementById('revamp-config-close').onclick = hideOverlay;
-    badge.onclick = function() {
-      if (isVisible) {
-        hideOverlay();
-      } else {
-        showOverlay();
+      if (document.head) {
+        document.head.appendChild(style);
       }
-    };
 
-    document.getElementById('revamp-config-apply').onclick = applyConfig;
-    document.getElementById('revamp-config-reset').onclick = resetConfig;
+      overlay = document.createElement('div');
+      overlay.id = 'revamp-config-overlay';
+      overlay.innerHTML =
+        '<div id="revamp-config-header">' +
+          '<h1>⚙️ Revamp Settings</h1>' +
+          '<button id="revamp-config-close">Close</button>' +
+        '</div>' +
+        '<div id="revamp-config-content">' +
+          ${generateOverlaySections()} +
+          '<button id="revamp-config-apply">Apply & Reload</button>' +
+          '<button id="revamp-config-reset">Reset to Defaults</button>' +
+          '<div id="revamp-config-status" class="revamp-config-status"></div>' +
+          '<div id="revamp-config-note" style="text-align:center;color:#888;font-size:11px;margin-top:16px;' +
+            'padding:12px;background:#1a1a1a;border-radius:4px;">' +
+            '💡 Settings are saved on the proxy server.<br>' +
+            'Changes take effect on next page load.' +
+          '</div>' +
+          '<div id="revamp-config-version">Revamp Proxy v1.0</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+
+      // Create settings badge (gear icon)
+      var badge = document.createElement('div');
+      badge.id = 'revamp-config-badge';
+      badge.innerHTML = '⚙️';
+      badge.title = 'Revamp Settings';
+      document.body.appendChild(badge);
+
+      // Event listeners
+      document.getElementById('revamp-config-close').onclick = hideOverlay;
+      badge.onclick = function() {
+        if (isVisible) {
+          hideOverlay();
+        } else {
+          showOverlay();
+        }
+      };
+
+      document.getElementById('revamp-config-apply').onclick = applyConfig;
+      document.getElementById('revamp-config-reset').onclick = resetConfig;
+    });
   }
 
   function showOverlay() {

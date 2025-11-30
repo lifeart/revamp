@@ -10,10 +10,10 @@ export const errorOverlayScript = `
   var overlay = null;
   var isVisible = false;
   var errorCount = 0;
-  
+
   // Create error overlay styles
   var style = document.createElement('style');
-  style.textContent = 
+  style.textContent =
     '#revamp-error-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);' +
     'color:#fff;z-index:2147483647;overflow:auto;font-family:-apple-system,BlinkMacSystemFont,monospace;' +
     'font-size:13px;line-height:1.5;display:none;padding:0;margin:0;-webkit-overflow-scrolling:touch;}' +
@@ -49,67 +49,87 @@ export const errorOverlayScript = `
     '#revamp-error-clear{background:#2c3e50;border:none;color:#fff;padding:8px 16px;border-radius:4px;' +
     'font-size:14px;cursor:pointer;margin-left:8px;-webkit-tap-highlight-color:transparent;}' +
     '#revamp-error-clear:active{background:#1a252f;}';
-  
+
+  // Helper to wait for document.body to be available
+  function waitForBody(callback) {
+    if (document.body) {
+      callback();
+    } else {
+      var checkInterval = setInterval(function() {
+        if (document.body) {
+          clearInterval(checkInterval);
+          callback();
+        }
+      }, 10);
+    }
+  }
+
   // Create overlay element
   function createOverlay() {
     if (overlay) return;
-    
-    document.head.appendChild(style);
-    
-    overlay = document.createElement('div');
-    overlay.id = 'revamp-error-overlay';
-    overlay.innerHTML = 
-      '<div id="revamp-error-header">' +
-        '<h1>⚠️ JavaScript Errors</h1>' +
-        '<div>' +
-          '<button id="revamp-error-clear">Clear</button>' +
-          '<button id="revamp-error-close">Close</button>' +
-        '</div>' +
-      '</div>' +
-      '<ul id="revamp-error-list"></ul>';
-    document.body.appendChild(overlay);
-    
-    // Create error badge
-    var badge = document.createElement('div');
-    badge.id = 'revamp-error-badge';
-    badge.textContent = '0';
-    document.body.appendChild(badge);
-    
-    // Event listeners
-    document.getElementById('revamp-error-close').onclick = function() {
-      hideOverlay();
-    };
-    
-    document.getElementById('revamp-error-clear').onclick = function() {
-      errors = [];
-      errorCount = 0;
-      updateErrorList();
-      updateBadge();
-      hideOverlay();
-    };
-    
-    badge.onclick = function() {
-      if (isVisible) {
-        hideOverlay();
-      } else {
-        showOverlay();
+
+    waitForBody(function() {
+      if (overlay) return; // Double-check in case of race condition
+
+      if (document.head) {
+        document.head.appendChild(style);
       }
-    };
+
+      overlay = document.createElement('div');
+      overlay.id = 'revamp-error-overlay';
+      overlay.innerHTML =
+        '<div id="revamp-error-header">' +
+          '<h1>⚠️ JavaScript Errors</h1>' +
+          '<div>' +
+            '<button id="revamp-error-clear">Clear</button>' +
+            '<button id="revamp-error-close">Close</button>' +
+          '</div>' +
+        '</div>' +
+        '<ul id="revamp-error-list"></ul>';
+      document.body.appendChild(overlay);
+
+      // Create error badge
+      var badge = document.createElement('div');
+      badge.id = 'revamp-error-badge';
+      badge.textContent = '0';
+      document.body.appendChild(badge);
+
+      // Event listeners
+      document.getElementById('revamp-error-close').onclick = function() {
+        hideOverlay();
+      };
+
+      document.getElementById('revamp-error-clear').onclick = function() {
+        errors = [];
+        errorCount = 0;
+        updateErrorList();
+        updateBadge();
+        hideOverlay();
+      };
+
+      badge.onclick = function() {
+        if (isVisible) {
+          hideOverlay();
+        } else {
+          showOverlay();
+        }
+      };
+    });
   }
-  
+
   function showOverlay() {
     if (!overlay) createOverlay();
     overlay.className = 'visible';
     isVisible = true;
   }
-  
+
   function hideOverlay() {
     if (overlay) {
       overlay.className = '';
     }
     isVisible = false;
   }
-  
+
   function updateBadge() {
     var badge = document.getElementById('revamp-error-badge');
     if (badge) {
@@ -117,48 +137,48 @@ export const errorOverlayScript = `
       badge.className = errorCount > 0 ? 'visible' : '';
     }
   }
-  
+
   function escapeHtml(text) {
     var div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
   }
-  
+
   function updateErrorList() {
     var list = document.getElementById('revamp-error-list');
     if (!list) return;
-    
+
     if (errors.length === 0) {
       list.innerHTML = '<li class="revamp-error-item" style="color:#888;text-align:center;padding:40px;">No errors captured</li>';
       return;
     }
-    
+
     var html = '';
     for (var i = errors.length - 1; i >= 0; i--) {
       var err = errors[i];
       var typeClass = '';
       if (err.type.indexOf('Warning') >= 0) typeClass = ' warning';
       else if (err.type.indexOf('Promise') >= 0) typeClass = ' promise';
-      
+
       html += '<li class="revamp-error-item">' +
         '<div class="revamp-error-type' + typeClass + '">' + escapeHtml(err.type) + '</div>' +
         '<div class="revamp-error-message">' + escapeHtml(err.message) + '</div>';
-      
+
       if (err.location) {
         html += '<div class="revamp-error-location">📍 ' + escapeHtml(err.location) + '</div>';
       }
-      
+
       if (err.stack) {
         html += '<div class="revamp-error-stack-label">📚 Stack Trace:</div>' +
                 '<div class="revamp-error-stack">' + escapeHtml(err.stack) + '</div>';
       }
-      
+
       html += '<div class="revamp-error-time">🕐 ' + err.time + '</div>' +
         '</li>';
     }
     list.innerHTML = html;
   }
-  
+
   // Polyfill padStart for older browsers
   function padStart(str, len, char) {
     str = String(str);
@@ -168,7 +188,7 @@ export const errorOverlayScript = `
     }
     return str;
   }
-  
+
   function formatTime() {
     var d = new Date();
     return padStart(d.getHours(), 2, '0') + ':' +
@@ -176,7 +196,7 @@ export const errorOverlayScript = `
            padStart(d.getSeconds(), 2, '0') + '.' +
            padStart(d.getMilliseconds(), 3, '0');
   }
-  
+
   function addError(type, message, filename, lineno, colno, stack) {
     var location = '';
     if (filename) {
@@ -184,7 +204,7 @@ export const errorOverlayScript = `
       if (lineno) location += ':' + lineno;
       if (colno) location += ':' + colno;
     }
-    
+
     errors.push({
       type: type,
       message: message || 'Unknown error',
@@ -192,19 +212,19 @@ export const errorOverlayScript = `
       stack: stack || '',
       time: formatTime()
     });
-    
+
     // Keep only last 50 errors
     if (errors.length > 50) {
       errors.shift();
     }
-    
+
     errorCount++;
-    
+
     if (!overlay) createOverlay();
     updateErrorList();
     updateBadge();
   }
-  
+
   // Global error handler
   window.onerror = function(message, source, lineno, colno, error) {
     var stack = '';
@@ -214,12 +234,12 @@ export const errorOverlayScript = `
     addError('Error', message, source, lineno, colno, stack);
     return false; // Don't suppress the error
   };
-  
+
   // Unhandled promise rejection handler
   window.onunhandledrejection = function(event) {
     var message = 'Unhandled Promise Rejection';
     var stack = '';
-    
+
     if (event.reason) {
       if (typeof event.reason === 'string') {
         message = event.reason;
@@ -234,10 +254,10 @@ export const errorOverlayScript = `
         }
       }
     }
-    
+
     addError('Promise Rejection', message, '', '', '', stack);
   };
-  
+
   // Console.error interceptor
   var originalConsoleError = console.error;
   console.error = function() {
@@ -255,7 +275,7 @@ export const errorOverlayScript = `
       }
       return String(arg);
     }).join(' ');
-    
+
     // Try to extract stack from Error objects in arguments
     var stack = '';
     for (var i = 0; i < args.length; i++) {
@@ -264,7 +284,7 @@ export const errorOverlayScript = `
         break;
       }
     }
-    
+
     // If no Error object found, generate a stack trace
     if (!stack) {
       try {
@@ -278,11 +298,11 @@ export const errorOverlayScript = `
         }
       }
     }
-    
+
     addError('Console Error', message, '', '', '', stack);
     originalConsoleError.apply(console, arguments);
   };
-  
+
   // Console.warn interceptor (optional, for warnings)
   var originalConsoleWarn = console.warn;
   console.warn = function() {
@@ -300,7 +320,7 @@ export const errorOverlayScript = `
       }
       return String(arg);
     }).join(' ');
-    
+
     // Generate stack trace for warnings too
     var stack = '';
     for (var i = 0; i < args.length; i++) {
@@ -309,7 +329,7 @@ export const errorOverlayScript = `
         break;
       }
     }
-    
+
     if (!stack) {
       try {
         throw new Error('Console warn stack trace');
@@ -321,11 +341,11 @@ export const errorOverlayScript = `
         }
       }
     }
-    
+
     addError('Console Warning', message, '', '', '', stack);
     originalConsoleWarn.apply(console, arguments);
   };
-  
+
   console.log('[Revamp] Error overlay initialized - errors will show a red badge');
 })();
 </script>
