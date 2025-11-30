@@ -5,7 +5,8 @@
  * blocking the main event loop during CPU-intensive transpilation.
  */
 
-import { transformAsync, type TransformOptions } from '@babel/core';
+import { transformAsync, type TransformOptions, type PluginObj } from '@babel/core';
+import type { NodePath, types as t } from '@babel/core';
 
 export interface JsWorkerInput {
   code: string;
@@ -17,6 +18,65 @@ export interface JsWorkerOutput {
   code: string;
   error?: string;
   isIgnorable?: boolean;
+}
+
+/**
+ * Custom Babel plugin to preserve BigInt exponentiation
+ *
+ * The exponentiation operator transform converts `a ** b` to `Math.pow(a, b)`,
+ * but Math.pow doesn't work with BigInt values. This plugin runs AFTER
+ * preset-env and converts any `Math.pow(BigIntLiteral, BigIntLiteral)` back
+ * to the `**` operator.
+ */
+function preserveBigIntExponentiation(): PluginObj {
+  return {
+    name: 'preserve-bigint-exponentiation',
+    visitor: {
+      CallExpression(path: NodePath<t.CallExpression>) {
+        const { node } = path;
+        const callee = node.callee;
+
+        // Check if it's Math.pow(...)
+        if (
+          callee.type === 'MemberExpression' &&
+          callee.object.type === 'Identifier' &&
+          callee.object.name === 'Math' &&
+          callee.property.type === 'Identifier' &&
+          callee.property.name === 'pow' &&
+          node.arguments.length === 2
+        ) {
+          const [base, exponent] = node.arguments;
+
+          // Check if either argument is a BigInt literal (ends with 'n')
+          const isBigIntLiteral = (arg: t.Node): boolean => {
+            return arg.type === 'BigIntLiteral';
+          };
+
+          // Also check for numeric literals that might have been BigInt
+          // by looking at the raw source (contains 'n' suffix)
+          const mightBeBigInt = (arg: t.Node): boolean => {
+            if (arg.type === 'BigIntLiteral') return true;
+            if (arg.type === 'NumericLiteral' && arg.extra?.raw?.toString().endsWith('n')) return true;
+            return false;
+          };
+
+          if (
+            (base.type === 'BigIntLiteral' || base.type === 'NumericLiteral') &&
+            (exponent.type === 'BigIntLiteral' || exponent.type === 'NumericLiteral') &&
+            (mightBeBigInt(base) || mightBeBigInt(exponent))
+          ) {
+            // Convert back to BinaryExpression with ** operator
+            path.replaceWith({
+              type: 'BinaryExpression',
+              operator: '**',
+              left: base as t.Expression,
+              right: exponent as t.Expression,
+            });
+          }
+        }
+      },
+    },
+  };
 }
 
 /**
@@ -41,6 +101,11 @@ function getBabelConfig(targets: string[]): TransformOptions {
           bugfixes: false,
         },
       ],
+    ],
+    plugins: [
+      // Fix BigInt exponentiation - must run after preset-env transforms
+      // Math.pow() doesn't work with BigInt, so we need to preserve **
+      preserveBigIntExponentiation,
     ],
     parserOpts: {
       allowReturnOutsideFunction: true,

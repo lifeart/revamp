@@ -188,6 +188,23 @@ describe('transformJs', () => {
     expect(result).not.toContain('??');
     expect(result).not.toContain('?.');
   });
+
+  it('should preserve BigInt exponentiation operator', async () => {
+    // BigInt exponentiation must NOT be transformed to Math.pow because Math.pow doesn't work with BigInt
+    const code = `
+      // This is a test file with BigInt exponentiation
+      const bigValue = 10n ** 12n;
+      const anotherBig = 2n ** 64n;
+      console.log('BigInt result:', bigValue);
+    `;
+    const result = await transformJs(code);
+    // Math.pow doesn't work with BigInt, so ** must be preserved
+    expect(result).not.toContain('Math.pow(10n');
+    expect(result).not.toContain('Math.pow(2n');
+    // The ** operator should still be present (or code uses polyfill)
+    expect(result).toContain('10n');
+    expect(result).toContain('12n');
+  });
 });
 
 describe('prewarmWorkerPool', () => {
