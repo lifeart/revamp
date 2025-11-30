@@ -12,7 +12,7 @@ export const promisePolyfill = `
       );
     };
   }
-  
+
   // Promise.allSettled polyfill
   if (typeof Promise !== 'undefined' && !Promise.allSettled) {
     Promise.allSettled = function(promises) {
@@ -22,6 +22,21 @@ export const promisePolyfill = `
           function(reason) { return { status: 'rejected', reason: reason }; }
         );
       }));
+    };
+  }
+
+  // queueMicrotask polyfill (Safari 9/10 doesn't have it)
+  if (typeof queueMicrotask === 'undefined') {
+    window.queueMicrotask = function(callback) {
+      if (typeof callback !== 'function') {
+        throw new TypeError('queueMicrotask requires a callback function');
+      }
+      // Use Promise.resolve().then() to queue a microtask
+      // This is the standard way to polyfill queueMicrotask
+      Promise.resolve().then(callback).catch(function(err) {
+        // Re-throw errors asynchronously to avoid swallowing them
+        setTimeout(function() { throw err; }, 0);
+      });
     };
   }
 `;
