@@ -60,6 +60,9 @@ const moduleCache = new Map<string, ModuleCache>();
 /** Maximum number of modules to bundle (prevent infinite loops) */
 const MAX_MODULES = 100;
 
+/** Maximum redirect hops to follow */
+const MAX_REDIRECTS = 5;
+
 /** Request timeout in milliseconds */
 const FETCH_TIMEOUT = 30000;
 
@@ -73,7 +76,7 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 /**
  * Fetch a URL and return its content
  */
-async function fetchUrl(url: string): Promise<FetchResult> {
+async function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
   // Check cache first
   const cached = moduleCache.get(url);
   if (cached) {
@@ -84,8 +87,20 @@ async function fetchUrl(url: string): Promise<FetchResult> {
     };
   }
 
+  // Check for max redirects
+  if (redirectCount >= MAX_REDIRECTS) {
+    throw new Error(`Too many redirects (${MAX_REDIRECTS}) for ${url}`);
+  }
+
   return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url);
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      reject(new Error(`Invalid URL: ${url}`));
+      return;
+    }
+
     const isHttps = parsedUrl.protocol === 'https:';
     const requestFn = isHttps ? httpsRequest : httpRequest;
 
@@ -107,7 +122,7 @@ async function fetchUrl(url: string): Promise<FetchResult> {
       // Handle redirects
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const redirectUrl = new URL(res.headers.location, url).href;
-        fetchUrl(redirectUrl).then(resolve).catch(reject);
+        fetchUrl(redirectUrl, redirectCount + 1).then(resolve).catch(reject);
         return;
       }
 
@@ -150,13 +165,22 @@ async function fetchUrl(url: string): Promise<FetchResult> {
 function resolveModuleUrl(specifier: string, baseUrl: string): string | null {
   // Handle bare specifiers (npm packages) - these can't be resolved without import maps
   if (!specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('http')) {
-    console.log(`[ESM Bundler] Cannot resolve bare specifier: ${specifier}`);
+    // Check for common CDN patterns that look like bare specifiers but have URLs
+    if (specifier.includes('://')) {
+      try {
+        return new URL(specifier).href;
+      } catch {
+        // Not a valid URL
+      }
+    }
+    console.warn(`[ESM Bundler] Cannot resolve bare specifier: "${specifier}" - consider using an import map or full URL`);
     return null;
   }
 
   try {
     return new URL(specifier, baseUrl).href;
   } catch {
+    console.warn(`[ESM Bundler] Failed to resolve "${specifier}" from "${baseUrl}"`);
     return null;
   }
 }
