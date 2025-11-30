@@ -15,5 +15,10 @@ export {
   isModuleScript,
   getModuleShimScript,
   parseImportMap,
+  fetchUrlsConcurrently,
+  isCssUrl,
+  generateCssInjectionCode,
+  detectTopLevelAwait,
+  wrapTopLevelAwait,
 } from './esm-bundler.js';
 export type { BundleResult, ImportMap } from './esm-bundler.js';

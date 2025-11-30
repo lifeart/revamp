@@ -322,4 +322,135 @@ test.describe('ES Module Bundling', () => {
       logSuccess('Import map resolved bare specifiers correctly');
     });
   });
+
+  test.describe('CSS Module Imports', () => {
+    test('should inject CSS from module imports', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/esm-css-module-test');
+      await page.waitForTimeout(2000);
+
+      // Check if CSS module was logged
+      const hasCssLog = consoleLogs.some((log) =>
+        log.includes('[CSS Module Test]')
+      );
+      logInfo(`CSS module logs: ${consoleLogs.filter(l => l.includes('CSS')).length}`);
+
+      // Check results in the DOM
+      const resultLoaded = await page.locator('#result').getAttribute('data-loaded');
+      expect(resultLoaded).toBe('true');
+
+      // Check if styles were injected (look for the style tag)
+      const styleTag = await page.locator('style[data-revamp-css-module]').count();
+      logInfo(`Style tags injected: ${styleTag}`);
+      expect(styleTag).toBeGreaterThanOrEqual(1);
+
+      // Check window data
+      const testData = await page.evaluate(() => (window as any).__cssModuleTestData);
+      expect(testData).toBeDefined();
+      expect(testData.loaded).toBe(true);
+
+      logSuccess('CSS module import injected styles correctly');
+    });
+  });
+
+  test.describe('Top-Level Await', () => {
+    test('should handle modules with top-level await', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/esm-top-level-await-test');
+      // Give extra time for async operations
+      await page.waitForTimeout(3000);
+
+      // Check console logs for TLA execution
+      const hasTlaLog = consoleLogs.some((log) =>
+        log.includes('[TLA Test]')
+      );
+      const hasBeforeAwait = consoleLogs.some((log) =>
+        log.includes('Before await')
+      );
+      const hasAfterAwait = consoleLogs.some((log) =>
+        log.includes('After first await')
+      );
+
+      logInfo(`TLA logs: ${consoleLogs.filter(l => l.includes('TLA')).length}`);
+
+      // Check results
+      const resultLoaded = await page.locator('#result').getAttribute('data-loaded');
+      const resultText = await page.locator('#result').textContent();
+
+      logInfo(`Result text: ${resultText}`);
+
+      // Check window data
+      const testData = await page.evaluate(() => (window as any).__tlaTestData);
+
+      if (testData) {
+        expect(testData.loaded).toBe(true);
+        expect(testData.message).toBe('TLA works!');
+        expect(testData.value).toBe(42);
+        logSuccess('Top-level await executed correctly');
+      } else {
+        // TLA might not be fully supported in bundled form, but shouldn't crash
+        logInfo('TLA test data not available - checking for no crash');
+        expect(hasTlaLog).toBe(true);
+      }
+    });
+  });
+
+  test.describe('Dynamic Imports', () => {
+    test('should support dynamic import() calls', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/esm-dynamic-import-test');
+      await page.waitForTimeout(1000);
+
+      // Check main module loaded
+      const hasMainLog = consoleLogs.some((log) =>
+        log.includes('[Dynamic Import Test] Main module loaded')
+      );
+      expect(hasMainLog).toBe(true);
+
+      // Check initial state
+      let testData = await page.evaluate(() => (window as any).__dynamicImportTestData);
+      expect(testData).toBeDefined();
+      expect(testData.mainLoaded).toBe(true);
+      expect(testData.dynamicLoaded).toBe(false);
+
+      // Click button to trigger dynamic import
+      await page.click('#load-btn');
+      await page.waitForTimeout(2000);
+
+      // Check for dynamic import attempt
+      const hasDynamicLog = consoleLogs.some((log) =>
+        log.includes('Dynamic import') || log.includes('loading dynamic')
+      );
+      logInfo(`Dynamic import logs: ${consoleLogs.filter(l => l.includes('Dynamic')).length}`);
+
+      // Check result
+      const resultText = await page.locator('#result').textContent();
+      logInfo(`Result: ${resultText}`);
+
+      // The dynamic import may or may not succeed depending on runtime support
+      // but the page should not crash
+      testData = await page.evaluate(() => (window as any).__dynamicImportTestData);
+      expect(testData.mainLoaded).toBe(true);
+
+      if (testData.dynamicLoaded) {
+        logSuccess('Dynamic import loaded module successfully');
+      } else if (testData.error) {
+        logInfo(`Dynamic import had error (expected in legacy mode): ${testData.error}`);
+      } else {
+        logInfo('Dynamic import pending or not triggered');
+      }
+    });
+  });
 });

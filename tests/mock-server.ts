@@ -453,6 +453,163 @@ console.log('[ESM Test] String helpers module loaded');
   </script>
 </body>
 </html>`,
+
+  // =============================================================================
+  // CSS Module Test Pages
+  // =============================================================================
+
+  // Page with CSS module import
+  '/esm-css-module-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CSS Module Test</title>
+</head>
+<body>
+  <h1>CSS Module Test</h1>
+  <div id="styled-box" class="test-box">This box should be styled</div>
+  <div id="result">Loading...</div>
+
+  <script type="module">
+    // Import CSS module - should inject styles into the page
+    import './modules/styles.css';
+
+    console.log('[CSS Module Test] CSS module imported');
+
+    document.getElementById('result').textContent = 'CSS module loaded!';
+    document.getElementById('result').dataset.loaded = 'true';
+
+    // Check if styles were applied
+    const box = document.getElementById('styled-box');
+    const computedStyle = window.getComputedStyle(box);
+    window.__cssModuleTestData = {
+      loaded: true,
+      backgroundColor: computedStyle.backgroundColor
+    };
+    console.log('[CSS Module Test] Computed style:', computedStyle.backgroundColor);
+  </script>
+</body>
+</html>`,
+
+  // CSS module file
+  '/modules/styles.css': `/* Test CSS Module */
+.test-box {
+  background-color: rgb(0, 128, 255);
+  color: white;
+  padding: 20px;
+  border-radius: 8px;
+  margin: 10px 0;
+}
+
+.test-box:hover {
+  background-color: rgb(0, 100, 200);
+}
+`,
+
+  // =============================================================================
+  // Dynamic Import Test Pages
+  // =============================================================================
+
+  // Page with dynamic import
+  '/esm-dynamic-import-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dynamic Import Test</title>
+</head>
+<body>
+  <h1>Dynamic Import Test</h1>
+  <div id="result">Loading...</div>
+  <button id="load-btn">Load Module Dynamically</button>
+
+  <script type="module">
+    console.log('[Dynamic Import Test] Main module loaded');
+
+    const resultEl = document.getElementById('result');
+    const button = document.getElementById('load-btn');
+
+    // Mark initial load
+    window.__dynamicImportTestData = { mainLoaded: true, dynamicLoaded: false };
+
+    button.addEventListener('click', async function() {
+      console.log('[Dynamic Import Test] Button clicked, loading dynamic module...');
+      resultEl.textContent = 'Loading dynamic module...';
+
+      try {
+        // Dynamic import - should be handled by runtime loader
+        const module = await import('./modules/dynamic-module.js');
+        console.log('[Dynamic Import Test] Dynamic module loaded:', module);
+
+        resultEl.textContent = 'Dynamic module loaded: ' + (module.message || module.default?.message || 'success');
+        resultEl.dataset.loaded = 'true';
+        window.__dynamicImportTestData.dynamicLoaded = true;
+        window.__dynamicImportTestData.moduleContent = module;
+      } catch (e) {
+        console.error('[Dynamic Import Test] Failed:', e);
+        resultEl.textContent = 'Failed: ' + e.message;
+        window.__dynamicImportTestData.error = e.message;
+      }
+    });
+
+    resultEl.textContent = 'Ready - click button to load';
+  </script>
+</body>
+</html>`,
+
+  // Dynamic module that gets loaded at runtime
+  '/modules/dynamic-module.js': `// This module is loaded dynamically
+console.log('[Dynamic Module] I was loaded dynamically!');
+
+export const message = 'Hello from dynamic module!';
+export const timestamp = Date.now();
+
+export default {
+  message: 'Default export from dynamic module',
+  loaded: true
+};
+`,
+
+  // =============================================================================
+  // Top-Level Await Test Pages
+  // =============================================================================
+
+  // Page with top-level await
+  '/esm-top-level-await-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Top-Level Await Test</title>
+</head>
+<body>
+  <h1>Top-Level Await Test</h1>
+  <div id="result">Loading...</div>
+
+  <script type="module">
+    console.log('[TLA Test] Starting top-level await test...');
+
+    // Simulate async operation with top-level await
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    console.log('[TLA Test] Before await');
+    await delay(100);
+    console.log('[TLA Test] After first await');
+
+    const data = await Promise.resolve({ message: 'TLA works!', value: 42 });
+    console.log('[TLA Test] After second await, data:', data);
+
+    document.getElementById('result').textContent = 'TLA Result: ' + data.message;
+    document.getElementById('result').dataset.loaded = 'true';
+
+    window.__tlaTestData = {
+      loaded: true,
+      message: data.message,
+      value: data.value
+    };
+
+    console.log('[TLA Test] Module complete');
+  </script>
+</body>
+</html>`,
 };
 
 // Generate a simple PNG image (1x1 transparent pixel for testing)

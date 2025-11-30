@@ -3,12 +3,12 @@
  *
  * Bundles ES modules using esbuild for legacy browser compatibility.
  * When a <script type="module"> is detected in HTML, this module:
- * 1. Fetches the module and all its dependencies
+ * 1. Fetches the module and all its dependencies (concurrently when possible)
  * 2. Bundles them into a single IIFE using esbuild
  * 3. Transforms the bundled code for legacy browsers
- *
- * For dynamic imports and complex module graphs that can't be statically
- * resolved, falls back to runtime resolution.
+ * 4. Handles dynamic imports with runtime loader
+ * 5. Transforms top-level await for legacy browser support
+ * 6. Processes CSS module imports by injecting styles
  *
  * @module transformers/esm-bundler
  */
@@ -75,32 +75,77 @@ const MAX_REDIRECTS = 5;
 /** Request timeout in milliseconds */
 const FETCH_TIMEOUT = 30000;
 
+/** Maximum concurrent fetch operations */
+const MAX_CONCURRENT_FETCHES = 6;
+
 /** User agent for fetching modules */
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// =============================================================================
+// Concurrent Fetch Queue
+// =============================================================================
+
+/** Queue for managing concurrent fetches */
+interface FetchQueueItem {
+  url: string;
+  resolve: (result: FetchResult) => void;
+  reject: (error: Error) => void;
+  redirectCount: number;
+}
+
+const fetchQueue: FetchQueueItem[] = [];
+let activeFetches = 0;
+
+/**
+ * Process the fetch queue, starting new fetches if under the limit
+ */
+function processFetchQueue(): void {
+  while (activeFetches < MAX_CONCURRENT_FETCHES && fetchQueue.length > 0) {
+    const item = fetchQueue.shift()!;
+    activeFetches++;
+
+    fetchUrlInternal(item.url, item.redirectCount)
+      .then((result) => {
+        activeFetches--;
+        item.resolve(result);
+        processFetchQueue();
+      })
+      .catch((error) => {
+        activeFetches--;
+        item.reject(error);
+        processFetchQueue();
+      });
+  }
+}
+
+/**
+ * Fetch multiple URLs concurrently
+ */
+export async function fetchUrlsConcurrently(urls: string[]): Promise<Map<string, FetchResult>> {
+  const results = new Map<string, FetchResult>();
+  const uniqueUrls = [...new Set(urls)];
+
+  const fetchPromises = uniqueUrls.map(async (url) => {
+    try {
+      const result = await fetchUrl(url);
+      results.set(url, result);
+    } catch (error) {
+      console.warn(`[ESM Bundler] Failed to prefetch ${url}: ${error instanceof Error ? error.message : error}`);
+    }
+  });
+
+  await Promise.all(fetchPromises);
+  return results;
+}
 
 // =============================================================================
 // Module Fetching
 // =============================================================================
 
 /**
- * Fetch a URL and return its content
+ * Internal fetch implementation - does the actual HTTP request
  */
-async function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
-  // Check cache first
-  const cached = moduleCache.get(url);
-  if (cached) {
-    return {
-      content: cached.content,
-      contentType: 'application/javascript',
-      finalUrl: cached.url,
-    };
-  }
-
-  // Check for max redirects
-  if (redirectCount >= MAX_REDIRECTS) {
-    throw new Error(`Too many redirects (${MAX_REDIRECTS}) for ${url}`);
-  }
-
+function fetchUrlInternal(url: string, redirectCount: number): Promise<FetchResult> {
   return new Promise((resolve, reject) => {
     let parsedUrl: URL;
     try {
@@ -130,8 +175,12 @@ async function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
     const req = requestFn(options, (res) => {
       // Handle redirects
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        if (redirectCount >= MAX_REDIRECTS) {
+          reject(new Error(`Too many redirects (${MAX_REDIRECTS}) for ${url}`));
+          return;
+        }
         const redirectUrl = new URL(res.headers.location, url).href;
-        fetchUrl(redirectUrl, redirectCount + 1).then(resolve).catch(reject);
+        fetchUrlInternal(redirectUrl, redirectCount + 1).then(resolve).catch(reject);
         return;
       }
 
@@ -165,6 +214,27 @@ async function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
     });
 
     req.end();
+  });
+}
+
+/**
+ * Fetch a URL and return its content (uses queue for concurrency control)
+ */
+async function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
+  // Check cache first
+  const cached = moduleCache.get(url);
+  if (cached) {
+    return {
+      content: cached.content,
+      contentType: 'application/javascript',
+      finalUrl: cached.url,
+    };
+  }
+
+  // Add to queue for concurrent fetching
+  return new Promise((resolve, reject) => {
+    fetchQueue.push({ url, resolve, reject, redirectCount });
+    processFetchQueue();
   });
 }
 
@@ -246,11 +316,167 @@ function resolveModuleUrl(specifier: string, baseUrl: string, importMap?: Import
 }
 
 // =============================================================================
-// esbuild Plugin
+// Top-Level Await Handling
+// =============================================================================
+
+/**
+ * Detect if code contains top-level await
+ * This is a simple heuristic - looks for await outside of async functions
+ */
+export function detectTopLevelAwait(code: string): boolean {
+  // Remove string literals and comments to avoid false positives
+  const stripped = code
+    .replace(/\/\/[^\n]*/g, '') // Remove single-line comments
+    .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
+    .replace(/'(?:[^'\\]|\\.)*'/g, '""') // Remove single-quoted strings
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""') // Remove double-quoted strings
+    .replace(/`(?:[^`\\]|\\.)*`/g, '""'); // Remove template literals
+
+  // Look for await that's not inside an async function
+  // This is a simplified check - we look for 'await' at the top level
+  // by checking if it appears outside of function/arrow function bodies
+
+  // Count nested function depth
+  let depth = 0;
+  let inAsyncFunction = false;
+  const tokens = stripped.split(/\b/);
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i].trim();
+
+    if (token === 'async') {
+      // Check if next meaningful token is 'function' or arrow
+      const rest = tokens.slice(i + 1).join('');
+      if (/^\s*(function|\()/.test(rest)) {
+        inAsyncFunction = true;
+      }
+    }
+
+    if (token === 'function' || token === '=>') {
+      depth++;
+      if (!inAsyncFunction) {
+        inAsyncFunction = false;
+      }
+    }
+
+    if (token === '{') {
+      // Could be function body or object literal - hard to tell without proper parsing
+    }
+
+    if (token === 'await' && depth === 0) {
+      // Found await at top level
+      return true;
+    }
+  }
+
+  // Fallback: simple regex check for common patterns
+  // Look for await followed by something that looks like a call or identifier
+  const topLevelAwaitPattern = /(?:^|;|\{|\})\s*(?:const|let|var|export)?\s*(?:\w+\s*=\s*)?await\s+/m;
+  return topLevelAwaitPattern.test(stripped);
+}
+
+/**
+ * Wrap code with top-level await in an async IIFE
+ * This transforms:
+ *   const data = await fetch(...);
+ *   export { data };
+ * Into:
+ *   (async function() {
+ *     const data = await fetch(...);
+ *     window.__moduleExports = { data };
+ *   })();
+ */
+export function wrapTopLevelAwait(code: string): string {
+  // Check if there are exports that need to be captured
+  const hasExports = /\bexport\s+/.test(code);
+
+  if (hasExports) {
+    // Transform exports to window assignments for the async context
+    // This is a simplified approach - proper handling would need AST parsing
+    let transformedCode = code
+      // export const x = ... -> const x = ...; window.__tlaExports.x = x;
+      .replace(/export\s+(const|let|var)\s+(\w+)\s*=/g, '$1 $2 =')
+      // export { x, y } -> (handled at the end)
+      .replace(/export\s*\{([^}]+)\}/g, (_, names) => {
+        const exports = names.split(',').map((n: string) => n.trim().split(/\s+as\s+/));
+        return exports.map(([local, exported]: string[]) =>
+          `window.__tlaExports.${exported || local} = ${local};`
+        ).join('\n');
+      })
+      // export default x -> window.__tlaExports.default = x;
+      .replace(/export\s+default\s+/g, 'window.__tlaExports.default = ');
+
+    return `
+window.__tlaExports = window.__tlaExports || {};
+(async function() {
+  'use strict';
+  try {
+${transformedCode}
+  } catch (e) {
+    console.error('[Revamp] Top-level await error:', e);
+  }
+})();
+`;
+  }
+
+  // No exports, just wrap in async IIFE
+  return `
+(async function() {
+  'use strict';
+  try {
+${code}
+  } catch (e) {
+    console.error('[Revamp] Top-level await error:', e);
+  }
+})();
+`;
+}
+
+// =============================================================================
+// CSS Module Handling
+// =============================================================================
+
+/**
+ * Check if a URL points to a CSS file
+ */
+export function isCssUrl(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    return pathname.endsWith('.css');
+  } catch {
+    return url.toLowerCase().endsWith('.css');
+  }
+}
+
+/**
+ * Generate code to inject CSS into the page at runtime
+ */
+export function generateCssInjectionCode(css: string, url: string): string {
+  // Escape the CSS content for embedding in JavaScript
+  const escapedCss = css
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\$/g, '\\$');
+
+  return `
+(function() {
+  var css = \`${escapedCss}\`;
+  var style = document.createElement('style');
+  style.setAttribute('data-revamp-css-module', '${url}');
+  style.textContent = css;
+  (document.head || document.documentElement).appendChild(style);
+  console.log('[Revamp] Injected CSS module: ${url}');
+})();
+`;
+}
+
+// =============================================================================
+// esbuild Plugins
 // =============================================================================
 
 /**
  * Create an esbuild plugin that resolves ES module imports via HTTP(S)
+ * Also handles CSS module imports by converting them to style injection code
  */
 function createHttpResolverPlugin(baseUrl: string, bundledModules: string[], importMap?: ImportMap): esbuild.Plugin {
   return {
@@ -264,6 +490,18 @@ function createHttpResolverPlugin(baseUrl: string, bundledModules: string[], imp
         // Handle entry point
         if (args.kind === 'entry-point') {
           return { path: baseUrl, namespace: 'http' };
+        }
+
+        // Handle dynamic imports - these need special runtime handling
+        if (args.kind === 'dynamic-import') {
+          const resolveBase = args.namespace === 'http' && args.importer ? args.importer : baseUrl;
+          const resolvedUrl = resolveModuleUrl(args.path, resolveBase, importMap);
+
+          if (resolvedUrl) {
+            // Store the resolved URL for the dynamic import handler
+            return { path: resolvedUrl, namespace: 'dynamic-import' };
+          }
+          return { external: true };
         }
 
         // Determine the base for resolution
@@ -280,6 +518,12 @@ function createHttpResolverPlugin(baseUrl: string, bundledModules: string[], imp
           return { external: true };
         }
 
+        // Check if this is a CSS file - route to css namespace for special handling
+        if (isCssUrl(resolvedUrl)) {
+          console.log(`🎨 CSS import detected: ${args.path} -> ${resolvedUrl}`);
+          return { path: resolvedUrl, namespace: 'css-http' };
+        }
+
         // Check for circular dependencies or too many modules
         if (loadedModules.size >= MAX_MODULES) {
           console.warn(`[ESM Bundler] Max modules reached (${MAX_MODULES}), marking ${args.path} as external`);
@@ -287,6 +531,37 @@ function createHttpResolverPlugin(baseUrl: string, bundledModules: string[], imp
         }
 
         return { path: resolvedUrl, namespace: 'http' };
+      });
+
+      // Handle CSS files loaded via HTTP
+      build.onLoad({ filter: /.*/, namespace: 'css-http' }, async (args) => {
+        const url = args.path;
+        bundledModules.push(url);
+
+        try {
+          console.log(`🎨 Loading CSS module: ${url}`);
+          const result = await fetchUrl(url);
+          const jsCode = generateCssInjectionCode(result.content, url);
+          return { contents: jsCode, loader: 'js' };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[ESM Bundler] Failed to load CSS ${url}: ${message}`);
+          return { contents: `console.warn('[Revamp] Failed to load CSS: ${url}');`, loader: 'js' };
+        }
+      });
+
+      // Handle dynamic imports - generate runtime loader code
+      build.onLoad({ filter: /.*/, namespace: 'dynamic-import' }, async (args) => {
+        const url = args.path;
+        console.log(`⚡ Dynamic import detected: ${url}`);
+
+        // Generate code that uses the runtime dynamic import loader
+        const code = `
+// Dynamic import placeholder for: ${url}
+var __dynamicImportUrl = "${url}";
+export default window.__revampDynamicImport ? window.__revampDynamicImport(__dynamicImportUrl) : Promise.reject(new Error('[Revamp] Dynamic import not supported: ' + __dynamicImportUrl));
+`;
+        return { contents: code, loader: 'js' };
       });
 
       // Load modules via HTTP(S)
@@ -379,6 +654,13 @@ export async function bundleEsModule(moduleUrl: string, inlineCode?: string, imp
       entryContent = fetchResult.content;
     }
 
+    // Check for top-level await and wrap if needed
+    const hasTopLevelAwait = detectTopLevelAwait(entryContent);
+    if (hasTopLevelAwait) {
+      console.log(`⏳ Top-level await detected in: ${moduleUrl}`);
+      entryContent = wrapTopLevelAwait(entryContent);
+    }
+
     // Bundle with esbuild
     const result = await esbuild.build({
       stdin: {
@@ -396,7 +678,9 @@ export async function bundleEsModule(moduleUrl: string, inlineCode?: string, imp
       platform: 'browser',
       minify: false, // Don't minify - we want readable code for further transform
       sourcemap: false,
-      plugins: [createHttpResolverPlugin(moduleUrl, bundledModules, importMap)],
+      plugins: [
+        createHttpResolverPlugin(moduleUrl, bundledModules, importMap),
+      ],
       logLevel: 'silent',
       // Handle dynamic imports by converting to require
       splitting: false,
@@ -567,8 +851,56 @@ export function getModuleShimScript(): string {
   // Track loaded modules for debugging
   window.__revampModules = window.__revampModules || {};
 
+  // Top-level await exports storage
+  window.__tlaExports = window.__tlaExports || {};
+
   // Provide a fake import.meta for modules that need it
   window.__importMeta = window.__importMeta || { url: location.href };
+
+  // Dynamic import runtime loader
+  // This fetches and evaluates modules at runtime for dynamic import() calls
+  window.__revampDynamicImport = function(url) {
+    console.log('[Revamp] Dynamic import:', url);
+
+    // Check if module is already loaded
+    if (window.__revampModules[url]) {
+      return Promise.resolve(window.__revampModules[url]);
+    }
+
+    return new Promise(function(resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.onload = function() {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            // Create a module-like object
+            var moduleExports = {};
+
+            // Wrap the code to capture exports
+            var wrappedCode = '(function(exports) {' +
+              'var module = { exports: exports };' +
+              xhr.responseText +
+              ';return module.exports;' +
+              '})(window.__revampModules["' + url + '"] = {});';
+
+            // Evaluate the module code
+            var result = eval(wrappedCode);
+            window.__revampModules[url] = result || window.__revampModules[url];
+            resolve(window.__revampModules[url]);
+          } catch (e) {
+            console.error('[Revamp] Dynamic import eval error:', e);
+            reject(e);
+          }
+        } else {
+          reject(new Error('Failed to load module: ' + url + ' (HTTP ' + xhr.status + ')'));
+        }
+      };
+      xhr.onerror = function() {
+        reject(new Error('Network error loading module: ' + url));
+      };
+      xhr.send();
+    });
+  };
 
   console.log('[Revamp] ES Module runtime initialized');
 })();
