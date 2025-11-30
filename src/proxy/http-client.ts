@@ -54,6 +54,17 @@ export async function makeHttpsRequest(
     requestHeaders['user-agent'] = SPOOFED_USER_AGENT;
   }
 
+  // Strip cache validation headers for JS/CSS files to ensure we always get
+  // the full response body for transformation. Without this, the server may
+  // return 304 Not Modified and the browser uses its cached (untransformed) version.
+  const pathLower = path.toLowerCase();
+  if (pathLower.includes('/js/') || pathLower.includes('/_/js/') ||
+      pathLower.endsWith('.js') || pathLower.endsWith('.css') ||
+      pathLower.includes('/css/') || pathLower.includes('/_/css/')) {
+    delete requestHeaders['if-none-match'];
+    delete requestHeaders['if-modified-since'];
+  }
+
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
@@ -120,6 +131,17 @@ export async function makeHttpRequest(
   body: Buffer,
   clientIp?: string
 ): Promise<HttpResponse> {
+  // Strip cache validation headers for JS/CSS files to ensure we always get
+  // the full response body for transformation.
+  const requestHeaders = { ...headers };
+  const pathLower = path.toLowerCase();
+  if (pathLower.includes('/js/') || pathLower.includes('/_/js/') ||
+      pathLower.endsWith('.js') || pathLower.endsWith('.css') ||
+      pathLower.includes('/css/') || pathLower.includes('/_/css/')) {
+    delete requestHeaders['if-none-match'];
+    delete requestHeaders['if-modified-since'];
+  }
+
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
@@ -127,7 +149,7 @@ export async function makeHttpRequest(
       path,
       method,
       headers: {
-        ...headers,
+        ...requestHeaders,
         'accept-encoding': 'gzip, deflate',
       },
     };

@@ -149,10 +149,10 @@ const TRACKING_PIXEL_SELECTORS: readonly string[] = [
  * These scripts are incompatible with Safari 9 and we provide our own polyfills instead.
  */
 const INCOMPATIBLE_SCRIPT_PATTERNS: readonly RegExp[] = [
-  /custom-elements-es5-adapter/i,  // YouTube's adapter causes syntax errors
-  /webcomponents-bundle/i,         // Web components bundle may have incompatible syntax
-  /webcomponents-loader/i,         // Web components loader
-  /@webcomponents/i,               // @webcomponents packages
+  // /custom-elements-es5-adapter/i,  // YouTube's adapter causes syntax errors
+  // /webcomponents-bundle/i,         // Web components bundle may have incompatible syntax
+  // /webcomponents-loader/i,         // Web components loader
+  // /@webcomponents/i,               // @webcomponents packages
 ];
 
 // =============================================================================

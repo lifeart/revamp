@@ -193,6 +193,22 @@ function prepareProxyHeaders(
     delete headers[header];
   }
 
+  // Strip cache validation headers for JS/CSS files to ensure we always get
+  // the full response body for transformation. Without this, the server may
+  // return 304 Not Modified and the browser uses its cached (untransformed) version.
+  const pathLower = targetUrl.pathname.toLowerCase();
+  if (
+    pathLower.includes('/js/') ||
+    pathLower.includes('/_/js/') ||
+    pathLower.endsWith('.js') ||
+    pathLower.endsWith('.css') ||
+    pathLower.includes('/css/') ||
+    pathLower.includes('/_/css/')
+  ) {
+    delete headers['if-none-match'];
+    delete headers['if-modified-since'];
+  }
+
   return headers;
 }
 
@@ -354,10 +370,18 @@ async function transformResponseBody(
     targetUrl
   );
 
+  // Debug: Log content type detection for JS files
+  const isJsPath = targetUrl.includes('/js/') || targetUrl.includes('.js');
+  if (isJsPath) {
+    console.log(`🔍 Transform Debug: detectedType=${detectedType} contentType=${contentType} url=${targetUrl.substring(0, 80)}...`);
+  }
+
   if (detectedType !== 'other') {
     const transformed = await transformContent(body, detectedType, targetUrl, charset, config, clientIp);
     recordTransform(detectedType);
     return Buffer.from(transformed);
+  } else if (isJsPath) {
+    console.log(`⚠️ JS not detected: contentType header=${proxyHeaders['content-type']}`);
   }
 
   return body;
@@ -563,6 +587,12 @@ async function proxyRequest(
             const rawContentType = proxyRes.headers['content-type'] || '';
             const contentType = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
 
+            // Debug: Log transformation decision for JS files
+            const isJsPath = targetUrl.includes('/js/') || targetUrl.includes('.js') || targetUrl.includes('javascript');
+            if (isJsPath) {
+              console.log(`🔍 JS Debug: URL=${targetUrl.substring(0, 100)}... status=${statusCode} bodyLen=${body.length} contentType=${contentType}`);
+            }
+
             if (!isRedirectStatus(statusCode) && body.length > 0) {
               body = await transformResponseBody(
                 body,
@@ -572,6 +602,8 @@ async function proxyRequest(
                 effectiveClientIp,
                 proxyRes.headers
               );
+            } else if (isJsPath) {
+              console.log(`⚠️ JS Skipped: isRedirect=${isRedirectStatus(statusCode)} bodyLength=${body.length}`);
             }
 
             // Prepare response headers

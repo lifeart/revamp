@@ -143,6 +143,34 @@ function createRequestHandler() {
         } else {
           res.end(JSON.stringify({ received: null }));
         }
+      } else if (url === '/js/bundle.js' || url === '/_/js/app.js' || url === '/script.js') {
+        // Endpoint to test cache validation header stripping for JS files
+        // Returns the received headers so tests can verify if-none-match/if-modified-since were stripped
+        res.writeHead(200, { 'Content-Type': 'application/javascript' });
+        res.end(JSON.stringify({
+          receivedHeaders: {
+            'if-none-match': req.headers['if-none-match'] || null,
+            'if-modified-since': req.headers['if-modified-since'] || null,
+          },
+        }));
+      } else if (url === '/css/styles.css' || url === '/_/css/main.css' || url === '/style.css') {
+        // Endpoint to test cache validation header stripping for CSS files
+        res.writeHead(200, { 'Content-Type': 'text/css' });
+        res.end(JSON.stringify({
+          receivedHeaders: {
+            'if-none-match': req.headers['if-none-match'] || null,
+            'if-modified-since': req.headers['if-modified-since'] || null,
+          },
+        }));
+      } else if (url === '/api/data') {
+        // Non-JS/CSS endpoint - should NOT strip cache validation headers
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          receivedHeaders: {
+            'if-none-match': req.headers['if-none-match'] || null,
+            'if-modified-since': req.headers['if-modified-since'] || null,
+          },
+        }));
       } else {
         res.writeHead(404);
         res.end('Not Found');
@@ -510,6 +538,123 @@ describe('HTTP Client Integration Tests', () => {
 
       // Should also have response data
       expect(logData.data).toBeDefined();
+    });
+  });
+
+  describe('Cache Validation Header Stripping', () => {
+    it('should strip if-none-match and if-modified-since for JS files with /js/ path', async () => {
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/js/bundle.js',
+        {
+          'if-none-match': '"abc123"',
+          'if-modified-since': 'Wed, 21 Oct 2024 07:28:00 GMT',
+        },
+        Buffer.alloc(0)
+      );
+
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body.toString());
+      expect(data.receivedHeaders['if-none-match']).toBeNull();
+      expect(data.receivedHeaders['if-modified-since']).toBeNull();
+    });
+
+    it('should strip cache headers for JS files with /_/js/ path (YouTube-style)', async () => {
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/_/js/app.js',
+        {
+          'if-none-match': '"xyz789"',
+          'if-modified-since': 'Thu, 22 Oct 2024 08:30:00 GMT',
+        },
+        Buffer.alloc(0)
+      );
+
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body.toString());
+      expect(data.receivedHeaders['if-none-match']).toBeNull();
+      expect(data.receivedHeaders['if-modified-since']).toBeNull();
+    });
+
+    it('should strip cache headers for .js file extension', async () => {
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/script.js',
+        {
+          'if-none-match': '"etag123"',
+          'if-modified-since': 'Fri, 23 Oct 2024 09:00:00 GMT',
+        },
+        Buffer.alloc(0)
+      );
+
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body.toString());
+      expect(data.receivedHeaders['if-none-match']).toBeNull();
+      expect(data.receivedHeaders['if-modified-since']).toBeNull();
+    });
+
+    it('should strip cache headers for CSS files with /css/ path', async () => {
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/css/styles.css',
+        {
+          'if-none-match': '"css-etag"',
+          'if-modified-since': 'Sat, 24 Oct 2024 10:00:00 GMT',
+        },
+        Buffer.alloc(0)
+      );
+
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body.toString());
+      expect(data.receivedHeaders['if-none-match']).toBeNull();
+      expect(data.receivedHeaders['if-modified-since']).toBeNull();
+    });
+
+    it('should strip cache headers for .css file extension', async () => {
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/style.css',
+        {
+          'if-none-match': '"style-etag"',
+          'if-modified-since': 'Sun, 25 Oct 2024 11:00:00 GMT',
+        },
+        Buffer.alloc(0)
+      );
+
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body.toString());
+      expect(data.receivedHeaders['if-none-match']).toBeNull();
+      expect(data.receivedHeaders['if-modified-since']).toBeNull();
+    });
+
+    it('should NOT strip cache headers for non-JS/CSS files', async () => {
+      const response = await makeHttpRequest(
+        'GET',
+        '127.0.0.1',
+        httpPort,
+        '/api/data',
+        {
+          'if-none-match': '"api-etag"',
+          'if-modified-since': 'Mon, 26 Oct 2024 12:00:00 GMT',
+        },
+        Buffer.alloc(0)
+      );
+
+      expect(response.statusCode).toBe(200);
+      const data = JSON.parse(response.body.toString());
+      // These should NOT be stripped for non-JS/CSS requests
+      expect(data.receivedHeaders['if-none-match']).toBe('"api-etag"');
+      expect(data.receivedHeaders['if-modified-since']).toBe('Mon, 26 Oct 2024 12:00:00 GMT');
     });
   });
 });
