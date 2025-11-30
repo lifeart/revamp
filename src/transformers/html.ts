@@ -17,7 +17,8 @@ import type { Element } from 'domhandler';
 import { getConfig } from '../config/index.js';
 import { transformJs } from './js.js';
 import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
-import { bundleEsModule, bundleInlineModule, getModuleShimScript, isModuleScript } from './esm-bundler.js';
+import { bundleEsModule, bundleInlineModule, getModuleShimScript, isModuleScript, parseImportMap } from './esm-bundler.js';
+import type { ImportMap } from './esm-bundler.js';
 
 // =============================================================================
 // Types
@@ -399,6 +400,33 @@ function collectModuleScripts($: CheerioAPI): ModuleScript[] {
 }
 
 /**
+ * Extract import map from the HTML document if present.
+ */
+function extractImportMap($: CheerioAPI): ImportMap | undefined {
+  let importMap: ImportMap | undefined;
+
+  $('script[type="importmap"]').each((_, elem) => {
+    const content = $(elem).html();
+    if (content) {
+      const parsed = parseImportMap(content);
+      if (parsed) {
+        // Merge multiple import maps (later ones override)
+        if (importMap) {
+          importMap = {
+            imports: { ...importMap.imports, ...parsed.imports },
+            scopes: { ...importMap.scopes, ...parsed.scopes },
+          };
+        } else {
+          importMap = parsed;
+        }
+      }
+    }
+  });
+
+  return importMap;
+}
+
+/**
  * Transform ES module scripts by bundling them for legacy browsers.
  * Converts module scripts to regular scripts with bundled code.
  */
@@ -419,6 +447,12 @@ async function transformModuleScripts(
     return 0;
   }
 
+  // Extract import map before processing modules
+  const importMap = extractImportMap($);
+  if (importMap) {
+    console.log(`📦 Found import map with ${Object.keys(importMap.imports || {}).length} imports`);
+  }
+
   console.log(`📦 Found ${moduleScripts.length} ES module script(s) to bundle`);
 
   // Inject module shim before any module processing
@@ -437,12 +471,12 @@ async function transformModuleScripts(
         // External module - resolve URL and bundle
         const moduleUrl = new URL(src, url || 'http://localhost').href;
         console.log(`📦 Bundling external module: ${moduleUrl}`);
-        bundleResult = await bundleEsModule(moduleUrl);
+        bundleResult = await bundleEsModule(moduleUrl, undefined, importMap);
       } else if (content) {
         // Inline module - bundle with base URL for resolving imports
         const baseUrl = url || 'http://localhost/inline-module.js';
         console.log(`📦 Bundling inline module from: ${baseUrl}`);
-        bundleResult = await bundleInlineModule(content, baseUrl);
+        bundleResult = await bundleInlineModule(content, baseUrl, importMap);
       } else {
         // Empty module script - remove it
         $script.remove();

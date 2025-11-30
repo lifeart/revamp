@@ -276,4 +276,50 @@ test.describe('ES Module Bundling', () => {
       logSuccess('All modules logged their execution');
     });
   });
+
+  test.describe('Import Maps', () => {
+    test('should resolve bare specifiers using import map', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/esm-importmap-test');
+      await page.waitForTimeout(2000);
+
+      // Check that the module executed
+      const hasImportMapLog = consoleLogs.some((log) =>
+        log.includes('[Import Map Test]')
+      );
+      logInfo(`Import map logs: ${consoleLogs.filter(l => l.includes('Import Map')).length}`);
+
+      // Check results in the DOM
+      const greetingResult = await page.locator('#greeting-result').textContent();
+      const mathResult = await page.locator('#math-result').textContent();
+
+      logInfo(`Greeting result: ${greetingResult}`);
+      logInfo(`Math result: ${mathResult}`);
+
+      // Check the data attribute
+      const greetingLoaded = await page.locator('#greeting-result').getAttribute('data-loaded');
+      const mathLoaded = await page.locator('#math-result').getAttribute('data-loaded');
+
+      // Verify the module executed and used import map
+      expect(hasImportMapLog).toBe(true);
+      expect(greetingLoaded).toBe('true');
+      expect(mathLoaded).toBe('true');
+      expect(greetingResult).toContain('Hello');
+      expect(mathResult).toContain('Sum=300');
+      expect(mathResult).toContain('Product=200');
+
+      // Check window data
+      const testData = await page.evaluate(() => (window as any).__importMapTestData);
+      expect(testData).toBeDefined();
+      expect(testData.loaded).toBe(true);
+      expect(testData.sum).toBe(300);
+      expect(testData.product).toBe(200);
+
+      logSuccess('Import map resolved bare specifiers correctly');
+    });
+  });
 });

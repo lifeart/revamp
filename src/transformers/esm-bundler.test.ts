@@ -9,6 +9,8 @@ import {
   clearModuleCache,
   isModuleScript,
   getModuleShimScript,
+  parseImportMap,
+  getModuleCacheSize,
 } from './esm-bundler.js';
 import { updateConfig, resetConfig } from '../config/index.js';
 
@@ -111,6 +113,106 @@ describe('ES Module Bundler', () => {
   describe('clearModuleCache', () => {
     it('should clear the module cache without errors', () => {
       expect(() => clearModuleCache()).not.toThrow();
+    });
+  });
+
+  describe('getModuleCacheSize', () => {
+    it('should return 0 after clearing cache', () => {
+      clearModuleCache();
+      expect(getModuleCacheSize()).toBe(0);
+    });
+  });
+
+  describe('parseImportMap', () => {
+    it('should parse a valid import map with imports', () => {
+      const json = JSON.stringify({
+        imports: {
+          'lodash': 'https://cdn.example.com/lodash.js',
+          'lodash/': 'https://cdn.example.com/lodash/',
+        },
+      });
+
+      const result = parseImportMap(json);
+      expect(result).toBeDefined();
+      expect(result?.imports?.lodash).toBe('https://cdn.example.com/lodash.js');
+      expect(result?.imports?.['lodash/']).toBe('https://cdn.example.com/lodash/');
+    });
+
+    it('should parse a valid import map with scopes', () => {
+      const json = JSON.stringify({
+        imports: {
+          'moment': 'https://cdn.example.com/moment@2.0.0/moment.js',
+        },
+        scopes: {
+          '/legacy/': {
+            'moment': 'https://cdn.example.com/moment@1.0.0/moment.js',
+          },
+        },
+      });
+
+      const result = parseImportMap(json);
+      expect(result).toBeDefined();
+      expect(result?.imports?.moment).toBe('https://cdn.example.com/moment@2.0.0/moment.js');
+      expect(result?.scopes?.['/legacy/']?.moment).toBe('https://cdn.example.com/moment@1.0.0/moment.js');
+    });
+
+    it('should return undefined for invalid JSON', () => {
+      const result = parseImportMap('not valid json');
+      expect(result).toBeUndefined();
+    });
+
+    it('should return undefined for non-object JSON', () => {
+      const result = parseImportMap('"string"');
+      expect(result).toBeUndefined();
+    });
+
+    it('should ignore non-string values in imports', () => {
+      const json = JSON.stringify({
+        imports: {
+          'valid': 'https://example.com/module.js',
+          'invalid': 123,
+          'alsoInvalid': null,
+        },
+      });
+
+      const result = parseImportMap(json);
+      expect(result).toBeDefined();
+      expect(result?.imports?.valid).toBe('https://example.com/module.js');
+      expect(result?.imports?.invalid).toBeUndefined();
+      expect(result?.imports?.alsoInvalid).toBeUndefined();
+    });
+
+    it('should handle empty import map', () => {
+      const result = parseImportMap('{}');
+      expect(result).toBeDefined();
+      expect(result?.imports).toBeUndefined();
+      expect(result?.scopes).toBeUndefined();
+    });
+  });
+
+  describe('bundleEsModule with import map', () => {
+    it('should use import map for bare specifier resolution', async () => {
+      updateConfig({ transformJs: true });
+
+      const inlineCode = `
+        import { helper } from 'my-helpers';
+        console.log(helper);
+      `;
+
+      // Without import map - should fail to resolve
+      const resultWithout = await bundleEsModule('http://example.com/test.js', inlineCode);
+      // The bare specifier will be marked as external, so bundling may succeed but won't include the import
+
+      // With import map - would resolve (but we can't fully test without a real server)
+      // This at least tests that the import map is accepted
+      const importMap = {
+        imports: {
+          'my-helpers': 'http://example.com/helpers.js',
+        },
+      };
+
+      const resultWith = await bundleEsModule('http://example.com/test.js', inlineCode, importMap);
+      expect(resultWith).toBeDefined();
     });
   });
 });

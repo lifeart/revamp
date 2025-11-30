@@ -50,12 +50,21 @@ interface ModuleCache {
   url: string;
 }
 
+/** Import map structure (subset of the full spec) */
+export interface ImportMap {
+  imports?: Record<string, string>;
+  scopes?: Record<string, Record<string, string>>;
+}
+
 // =============================================================================
 // Constants
 // =============================================================================
 
 /** Cache for fetched modules during bundling */
 const moduleCache = new Map<string, ModuleCache>();
+
+/** Cache size limit - clear cache when exceeded */
+const MAX_CACHE_SIZE = 500;
 
 /** Maximum number of modules to bundle (prevent infinite loops) */
 const MAX_MODULES = 100;
@@ -160,9 +169,60 @@ async function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
 }
 
 /**
+ * Resolve a specifier using an import map
+ */
+function resolveWithImportMap(specifier: string, baseUrl: string, importMap?: ImportMap): string | null {
+  if (!importMap) return null;
+
+  // Check scopes first (more specific)
+  if (importMap.scopes) {
+    for (const [scope, mappings] of Object.entries(importMap.scopes)) {
+      if (baseUrl.startsWith(scope)) {
+        // Check for exact match
+        if (mappings[specifier]) {
+          return mappings[specifier];
+        }
+        // Check for prefix match (e.g., "lodash/" -> "https://cdn/lodash/")
+        for (const [prefix, replacement] of Object.entries(mappings)) {
+          if (prefix.endsWith('/') && specifier.startsWith(prefix)) {
+            return replacement + specifier.slice(prefix.length);
+          }
+        }
+      }
+    }
+  }
+
+  // Check top-level imports
+  if (importMap.imports) {
+    // Exact match
+    if (importMap.imports[specifier]) {
+      return importMap.imports[specifier];
+    }
+    // Prefix match
+    for (const [prefix, replacement] of Object.entries(importMap.imports)) {
+      if (prefix.endsWith('/') && specifier.startsWith(prefix)) {
+        return replacement + specifier.slice(prefix.length);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Resolve a module specifier to an absolute URL
  */
-function resolveModuleUrl(specifier: string, baseUrl: string): string | null {
+function resolveModuleUrl(specifier: string, baseUrl: string, importMap?: ImportMap): string | null {
+  // Try import map first for bare specifiers
+  const importMapResolved = resolveWithImportMap(specifier, baseUrl, importMap);
+  if (importMapResolved) {
+    try {
+      return new URL(importMapResolved, baseUrl).href;
+    } catch {
+      // Invalid resolved URL
+    }
+  }
+
   // Handle bare specifiers (npm packages) - these can't be resolved without import maps
   if (!specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('http')) {
     // Check for common CDN patterns that look like bare specifiers but have URLs
@@ -192,7 +252,7 @@ function resolveModuleUrl(specifier: string, baseUrl: string): string | null {
 /**
  * Create an esbuild plugin that resolves ES module imports via HTTP(S)
  */
-function createHttpResolverPlugin(baseUrl: string, bundledModules: string[]): esbuild.Plugin {
+function createHttpResolverPlugin(baseUrl: string, bundledModules: string[], importMap?: ImportMap): esbuild.Plugin {
   return {
     name: 'http-resolver',
     setup(build) {
@@ -213,7 +273,7 @@ function createHttpResolverPlugin(baseUrl: string, bundledModules: string[]): es
           ? args.importer
           : baseUrl;
 
-        const resolvedUrl = resolveModuleUrl(args.path, resolveBase);
+        const resolvedUrl = resolveModuleUrl(args.path, resolveBase, importMap);
 
         if (!resolvedUrl) {
           // Can't resolve - mark as external and let runtime handle it
@@ -268,9 +328,10 @@ function createHttpResolverPlugin(baseUrl: string, bundledModules: string[]): es
  *
  * @param moduleUrl - URL of the entry module
  * @param inlineCode - Optional inline code to bundle (if module is inline)
+ * @param importMap - Optional import map for resolving bare specifiers
  * @returns Bundle result with code and metadata
  */
-export async function bundleEsModule(moduleUrl: string, inlineCode?: string): Promise<BundleResult> {
+export async function bundleEsModule(moduleUrl: string, inlineCode?: string, importMap?: ImportMap): Promise<BundleResult> {
   const bundledModules: string[] = [];
 
   try {
@@ -335,7 +396,7 @@ export async function bundleEsModule(moduleUrl: string, inlineCode?: string): Pr
       platform: 'browser',
       minify: false, // Don't minify - we want readable code for further transform
       sourcemap: false,
-      plugins: [createHttpResolverPlugin(moduleUrl, bundledModules)],
+      plugins: [createHttpResolverPlugin(moduleUrl, bundledModules, importMap)],
       logLevel: 'silent',
       // Handle dynamic imports by converting to require
       splitting: false,
@@ -391,10 +452,11 @@ export async function bundleEsModule(moduleUrl: string, inlineCode?: string): Pr
  *
  * @param code - Inline module code
  * @param baseUrl - Base URL for resolving relative imports
+ * @param importMap - Optional import map for resolving bare specifiers
  * @returns Bundle result
  */
-export async function bundleInlineModule(code: string, baseUrl: string): Promise<BundleResult> {
-  return bundleEsModule(baseUrl, code);
+export async function bundleInlineModule(code: string, baseUrl: string, importMap?: ImportMap): Promise<BundleResult> {
+  return bundleEsModule(baseUrl, code, importMap);
 }
 
 /**
@@ -405,10 +467,87 @@ export function clearModuleCache(): void {
 }
 
 /**
+ * Get the current cache size
+ */
+export function getModuleCacheSize(): number {
+  return moduleCache.size;
+}
+
+/**
+ * Prune the module cache if it exceeds the size limit
+ * Uses LRU-like approach by clearing entire cache when limit exceeded
+ */
+export function pruneModuleCacheIfNeeded(): void {
+  if (moduleCache.size > MAX_CACHE_SIZE) {
+    console.log(`[ESM Bundler] Cache size exceeded ${MAX_CACHE_SIZE}, clearing cache`);
+    moduleCache.clear();
+  }
+}
+
+/**
  * Check if a script tag represents an ES module
  */
 export function isModuleScript(type: string | undefined): boolean {
   return type === 'module';
+}
+
+/**
+ * Parse an import map from JSON string
+ *
+ * @param json - Import map JSON string
+ * @returns Parsed import map or undefined if invalid
+ */
+export function parseImportMap(json: string): ImportMap | undefined {
+  try {
+    const map = JSON.parse(json);
+
+    // Validate basic structure
+    if (typeof map !== 'object' || map === null) {
+      console.warn('[ESM Bundler] Invalid import map: must be an object');
+      return undefined;
+    }
+
+    const result: ImportMap = {};
+
+    // Validate imports
+    if (map.imports) {
+      if (typeof map.imports !== 'object' || map.imports === null) {
+        console.warn('[ESM Bundler] Invalid import map: imports must be an object');
+        return undefined;
+      }
+      result.imports = {};
+      for (const [key, value] of Object.entries(map.imports)) {
+        if (typeof value === 'string') {
+          result.imports[key] = value;
+        }
+      }
+    }
+
+    // Validate scopes
+    if (map.scopes) {
+      if (typeof map.scopes !== 'object' || map.scopes === null) {
+        console.warn('[ESM Bundler] Invalid import map: scopes must be an object');
+        return undefined;
+      }
+      result.scopes = {};
+      for (const [scope, mappings] of Object.entries(map.scopes)) {
+        if (typeof mappings === 'object' && mappings !== null) {
+          result.scopes[scope] = {};
+          for (const [key, value] of Object.entries(mappings)) {
+            if (typeof value === 'string') {
+              result.scopes[scope][key] = value;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[ESM Bundler] Parsed import map with ${Object.keys(result.imports || {}).length} imports, ${Object.keys(result.scopes || {}).length} scopes`);
+    return result;
+  } catch (e) {
+    console.warn('[ESM Bundler] Failed to parse import map:', e instanceof Error ? e.message : e);
+    return undefined;
+  }
 }
 
 /**

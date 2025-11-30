@@ -407,6 +407,52 @@ export function uppercase(str) {
 
 console.log('[ESM Test] String helpers module loaded');
 `,
+
+  // Page with import map for testing bare specifier resolution
+  '/esm-importmap-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Import Map Test</title>
+
+  <!-- Import Map to resolve bare specifiers -->
+  <script type="importmap">
+  {
+    "imports": {
+      "my-greeting": "/modules/utils/greeting.js",
+      "my-math": "/modules/utils/math.js",
+      "utils/": "/modules/utils/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>Import Map Test</h1>
+  <div id="greeting-result">Greeting: Loading...</div>
+  <div id="math-result">Math: Loading...</div>
+
+  <script type="module">
+    // Use bare specifiers that should be resolved via import map
+    import { greet } from 'my-greeting';
+    import { add, multiply } from 'my-math';
+
+    console.log('[Import Map Test] Module loaded with bare specifiers');
+
+    const greeting = greet('Import Map');
+    const sum = add(100, 200);
+    const product = multiply(10, 20);
+
+    document.getElementById('greeting-result').textContent = 'Greeting: ' + greeting;
+    document.getElementById('greeting-result').dataset.loaded = 'true';
+
+    document.getElementById('math-result').textContent = 'Math: Sum=' + sum + ', Product=' + product;
+    document.getElementById('math-result').dataset.loaded = 'true';
+
+    window.__importMapTestData = { greeting, sum, product, loaded: true };
+    console.log('[Import Map Test] Results:', { greeting, sum, product });
+  </script>
+</body>
+</html>`,
 };
 
 // Generate a simple PNG image (1x1 transparent pixel for testing)
