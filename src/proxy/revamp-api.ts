@@ -8,11 +8,13 @@
  * - /__revamp__/pac/socks5 - SOCKS5 PAC file
  * - /__revamp__/pac/http - HTTP PAC file
  * - /__revamp__/pac/combined - Combined PAC file
+ * - /__revamp__/sw/bundle - Service Worker bundling endpoint
  */
 
 import { handleConfigRequest, CONFIG_ENDPOINT, type ConfigEndpointResult } from './config-endpoint.js';
 import { generateDashboardHtml, generateMetricsJson } from '../metrics/dashboard.js';
 import { generateSocks5Pac, generateHttpPac, generateCombinedPac } from '../pac/generator.js';
+import { bundleServiceWorker } from '../transformers/sw-bundler.js';
 
 /** Base path for all Revamp API endpoints */
 export const REVAMP_API_BASE = '/__revamp__';
@@ -26,6 +28,7 @@ export const ENDPOINTS = {
   pacSocks5: `${REVAMP_API_BASE}/pac/socks5`,
   pacHttp: `${REVAMP_API_BASE}/pac/http`,
   pacCombined: `${REVAMP_API_BASE}/pac/combined`,
+  swBundle: `${REVAMP_API_BASE}/sw/bundle`,
 } as const;
 
 /**
@@ -58,7 +61,7 @@ export function isRevampEndpoint(path: string): boolean {
  * @param body - Request body
  * @param clientIp - Optional client IP for per-client config
  */
-export function handleRevampRequest(path: string, method: string, body: string = '', clientIp?: string): ApiResult {
+export async function handleRevampRequest(path: string, method: string, body: string = '', clientIp?: string): Promise<ApiResult> {
   // Handle CORS preflight for all endpoints
   if (method === 'OPTIONS') {
     return {
@@ -69,6 +72,11 @@ export function handleRevampRequest(path: string, method: string, body: string =
       },
       body: '',
     };
+  }
+
+  // Service Worker bundle endpoint
+  if (path.startsWith(ENDPOINTS.swBundle)) {
+    return handleSwBundleRequest(path, method);
   }
 
   // Config endpoint
@@ -162,9 +170,118 @@ export function handleRevampRequest(path: string, method: string, body: string =
           http: ENDPOINTS.pacHttp,
           combined: ENDPOINTS.pacCombined,
         },
+        sw: {
+          bundle: ENDPOINTS.swBundle,
+        },
       },
     }, null, 2),
   };
+}
+
+/**
+ * Handle Service Worker bundle requests
+ * URL format: /__revamp__/sw/bundle?url=<encoded-sw-url>&scope=<encoded-scope>
+ */
+async function handleSwBundleRequest(path: string, method: string): Promise<ApiResult> {
+  if (method !== 'GET') {
+    return {
+      statusCode: 405,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+        'Allow': 'GET',
+      },
+      body: JSON.stringify({ error: 'Method not allowed. Use GET.' }),
+    };
+  }
+
+  // Parse query parameters from path
+  const queryStart = path.indexOf('?');
+  if (queryStart === -1) {
+    return {
+      statusCode: 400,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Missing required parameter: url',
+        usage: `${ENDPOINTS.swBundle}?url=<encoded-sw-url>&scope=<encoded-scope>`,
+      }),
+    };
+  }
+
+  const queryString = path.slice(queryStart + 1);
+  const params = new URLSearchParams(queryString);
+  const swUrl = params.get('url');
+  const scope = params.get('scope') || '/';
+
+  if (!swUrl) {
+    return {
+      statusCode: 400,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Missing required parameter: url',
+        usage: `${ENDPOINTS.swBundle}?url=<encoded-sw-url>&scope=<encoded-scope>`,
+      }),
+    };
+  }
+
+  console.log(`📦 SW Bundle request: ${swUrl} (scope: ${scope})`);
+
+  try {
+    const result = await bundleServiceWorker(swUrl, scope);
+
+    if (result.success) {
+      return {
+        statusCode: 200,
+        headers: {
+          ...CORS_HEADERS,
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Cache-Control': 'public, max-age=3600',
+          'X-Revamp-SW-Original': swUrl,
+          'X-Revamp-SW-Scope': scope,
+          // Service Worker specific header
+          'Service-Worker-Allowed': scope,
+        },
+        body: result.code,
+      };
+    } else {
+      console.warn(`⚠️ SW bundling failed for ${swUrl}: ${result.error}`);
+      // Still return the fallback code with 200 to allow SW registration
+      return {
+        statusCode: 200,
+        headers: {
+          ...CORS_HEADERS,
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'X-Revamp-SW-Original': swUrl,
+          'X-Revamp-SW-Error': result.error || 'Unknown error',
+          'Service-Worker-Allowed': scope,
+        },
+        body: result.code,
+      };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`❌ SW bundle error: ${message}`);
+
+    return {
+      statusCode: 500,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Service Worker bundling failed',
+        details: message,
+        originalUrl: swUrl,
+      }),
+    };
+  }
 }
 
 /**

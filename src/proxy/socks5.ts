@@ -120,18 +120,18 @@ function normalizeIpAddress(ip: string): string {
  * @param clientIp - Client IP for per-client config
  * @returns Raw HTTP response string or null if not a Revamp endpoint
  */
-function handleRevampApiSocks5(
+async function handleRevampApiSocks5(
   method: string,
   path: string,
   body: string,
   clientIp: string
-): string | null {
+): Promise<string | null> {
   if (!isRevampEndpoint(path)) {
     return null;
   }
 
   console.log(`🔧 Revamp API: ${method} ${path} (client: ${clientIp})`);
-  const result = handleRevampRequest(path, method, body, clientIp);
+  const result = await handleRevampRequest(path, method, body, clientIp);
   return buildRawApiResponse(result);
 }
 
@@ -368,7 +368,7 @@ async function handleHttpRequestSocks5(
   recordRequest();
 
   // Check for Revamp API endpoints
-  const apiResponse = handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
+  const apiResponse = await handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
   if (apiResponse) {
     socket.write(apiResponse);
     if (socket instanceof TLSSocket) {

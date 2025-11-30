@@ -72,14 +72,14 @@ describe('handleRevampRequest', () => {
   });
 
   describe('OPTIONS requests (CORS preflight)', () => {
-    it('should return 204 for OPTIONS on any endpoint', () => {
-      const result = handleRevampRequest('/__revamp__/config', 'OPTIONS');
+    it('should return 204 for OPTIONS on any endpoint', async () => {
+      const result = await handleRevampRequest('/__revamp__/config', 'OPTIONS');
       expect(result.statusCode).toBe(204);
       expect(result.body).toBe('');
     });
 
-    it('should include CORS headers', () => {
-      const result = handleRevampRequest('/__revamp__/config', 'OPTIONS');
+    it('should include CORS headers', async () => {
+      const result = await handleRevampRequest('/__revamp__/config', 'OPTIONS');
       expect(result.headers['Access-Control-Allow-Origin']).toBe('*');
       expect(result.headers['Access-Control-Allow-Methods']).toBeDefined();
       expect(result.headers['Access-Control-Allow-Headers']).toBeDefined();
@@ -87,8 +87,8 @@ describe('handleRevampRequest', () => {
   });
 
   describe('config endpoint', () => {
-    it('should handle GET request', () => {
-      const result = handleRevampRequest('/__revamp__/config', 'GET');
+    it('should handle GET request', async () => {
+      const result = await handleRevampRequest('/__revamp__/config', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toContain('application/json');
       const parsed = JSON.parse(result.body);
@@ -97,20 +97,20 @@ describe('handleRevampRequest', () => {
       expect(parsed.config).toHaveProperty('transformJs');
     });
 
-    it('should handle POST request with valid JSON', () => {
-      const result = handleRevampRequest('/__revamp__/config', 'POST', '{"transformJs": false}');
+    it('should handle POST request with valid JSON', async () => {
+      const result = await handleRevampRequest('/__revamp__/config', 'POST', '{"transformJs": false}');
       expect(result.statusCode).toBe(200);
     });
 
-    it('should handle DELETE request', () => {
-      const result = handleRevampRequest('/__revamp__/config', 'DELETE');
+    it('should handle DELETE request', async () => {
+      const result = await handleRevampRequest('/__revamp__/config', 'DELETE');
       expect(result.statusCode).toBe(200);
     });
   });
 
   describe('metrics JSON endpoint', () => {
-    it('should return JSON metrics at /metrics/json', () => {
-      const result = handleRevampRequest('/__revamp__/metrics/json', 'GET');
+    it('should return JSON metrics at /metrics/json', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics/json', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toBe('application/json');
       const parsed = JSON.parse(result.body);
@@ -118,89 +118,89 @@ describe('handleRevampRequest', () => {
       expect(parsed).toHaveProperty('requests');
     });
 
-    it('should return JSON metrics with trailing slash', () => {
-      const result = handleRevampRequest('/__revamp__/metrics/json/', 'GET');
+    it('should return JSON metrics with trailing slash', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics/json/', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toBe('application/json');
     });
 
-    it('should include no-store cache header', () => {
-      const result = handleRevampRequest('/__revamp__/metrics/json', 'GET');
+    it('should include no-store cache header', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics/json', 'GET');
       expect(result.headers['Cache-Control']).toBe('no-store');
     });
   });
 
   describe('metrics dashboard endpoint', () => {
-    it('should return HTML at /metrics', () => {
-      const result = handleRevampRequest('/__revamp__/metrics', 'GET');
+    it('should return HTML at /metrics', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toContain('text/html');
       expect(result.body).toContain('<!DOCTYPE html>');
     });
 
-    it('should return HTML with trailing slash', () => {
-      const result = handleRevampRequest('/__revamp__/metrics/', 'GET');
+    it('should return HTML with trailing slash', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics/', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toContain('text/html');
     });
 
-    it('should return HTML at /metrics/dashboard', () => {
-      const result = handleRevampRequest('/__revamp__/metrics/dashboard', 'GET');
+    it('should return HTML at /metrics/dashboard', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics/dashboard', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toContain('text/html');
     });
 
-    it('should return HTML at /metrics/dashboard/', () => {
-      const result = handleRevampRequest('/__revamp__/metrics/dashboard/', 'GET');
+    it('should return HTML at /metrics/dashboard/', async () => {
+      const result = await handleRevampRequest('/__revamp__/metrics/dashboard/', 'GET');
       expect(result.statusCode).toBe(200);
     });
   });
 
   describe('PAC file endpoints', () => {
-    it('should return SOCKS5 PAC file', () => {
-      const result = handleRevampRequest('/__revamp__/pac/socks5', 'GET');
+    it('should return SOCKS5 PAC file', async () => {
+      const result = await handleRevampRequest('/__revamp__/pac/socks5', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toBe('application/x-ns-proxy-autoconfig');
       expect(result.headers['Content-Disposition']).toContain('revamp-socks5.pac');
       expect(result.body).toContain('FindProxyForURL');
     });
 
-    it('should return SOCKS5 PAC file with trailing slash', () => {
-      const result = handleRevampRequest('/__revamp__/pac/socks5/', 'GET');
+    it('should return SOCKS5 PAC file with trailing slash', async () => {
+      const result = await handleRevampRequest('/__revamp__/pac/socks5/', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.body).toContain('FindProxyForURL');
     });
 
-    it('should return HTTP PAC file', () => {
-      const result = handleRevampRequest('/__revamp__/pac/http', 'GET');
+    it('should return HTTP PAC file', async () => {
+      const result = await handleRevampRequest('/__revamp__/pac/http', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toBe('application/x-ns-proxy-autoconfig');
       expect(result.headers['Content-Disposition']).toContain('revamp-http.pac');
       expect(result.body).toContain('FindProxyForURL');
     });
 
-    it('should return HTTP PAC file with trailing slash', () => {
-      const result = handleRevampRequest('/__revamp__/pac/http/', 'GET');
+    it('should return HTTP PAC file with trailing slash', async () => {
+      const result = await handleRevampRequest('/__revamp__/pac/http/', 'GET');
       expect(result.statusCode).toBe(200);
     });
 
-    it('should return combined PAC file', () => {
-      const result = handleRevampRequest('/__revamp__/pac/combined', 'GET');
+    it('should return combined PAC file', async () => {
+      const result = await handleRevampRequest('/__revamp__/pac/combined', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toBe('application/x-ns-proxy-autoconfig');
       expect(result.headers['Content-Disposition']).toContain('revamp-combined.pac');
       expect(result.body).toContain('FindProxyForURL');
     });
 
-    it('should return combined PAC file with trailing slash', () => {
-      const result = handleRevampRequest('/__revamp__/pac/combined/', 'GET');
+    it('should return combined PAC file with trailing slash', async () => {
+      const result = await handleRevampRequest('/__revamp__/pac/combined/', 'GET');
       expect(result.statusCode).toBe(200);
     });
   });
 
   describe('unknown endpoint', () => {
-    it('should return API info for unknown paths', () => {
-      const result = handleRevampRequest('/__revamp__/unknown', 'GET');
+    it('should return API info for unknown paths', async () => {
+      const result = await handleRevampRequest('/__revamp__/unknown', 'GET');
       expect(result.statusCode).toBe(200);
       expect(result.headers['Content-Type']).toBe('application/json');
       const parsed = JSON.parse(result.body);
@@ -208,12 +208,66 @@ describe('handleRevampRequest', () => {
       expect(parsed.endpoints).toBeDefined();
     });
 
-    it('should list available endpoints in response', () => {
-      const result = handleRevampRequest('/__revamp__/', 'GET');
+    it('should list available endpoints in response', async () => {
+      const result = await handleRevampRequest('/__revamp__/', 'GET');
       const parsed = JSON.parse(result.body);
       expect(parsed.endpoints.config).toBeDefined();
       expect(parsed.endpoints.metrics).toBeDefined();
       expect(parsed.endpoints.pac).toBeDefined();
+    });
+  });
+
+  describe('Service Worker bundle endpoint', () => {
+    it('should return 400 when url parameter is missing', async () => {
+      const result = await handleRevampRequest('/__revamp__/sw/bundle', 'GET');
+      expect(result.statusCode).toBe(400);
+      expect(result.headers['Content-Type']).toBe('application/json');
+      const parsed = JSON.parse(result.body);
+      expect(parsed.error).toContain('Missing required parameter');
+    });
+
+    it('should return 400 when url query string is empty', async () => {
+      const result = await handleRevampRequest('/__revamp__/sw/bundle?', 'GET');
+      expect(result.statusCode).toBe(400);
+    });
+
+    it('should return 405 for non-GET methods', async () => {
+      const result = await handleRevampRequest('/__revamp__/sw/bundle?url=https://localhost:99999/sw.js', 'POST');
+      expect(result.statusCode).toBe(405);
+      expect(result.headers['Allow']).toBe('GET');
+    });
+
+    it('should accept url parameter and return JavaScript content', async () => {
+      // Use an invalid URL that will fail fast
+      const result = await handleRevampRequest('/__revamp__/sw/bundle?url=invalid-url-scheme', 'GET');
+      // For invalid URLs, it should return a 200 with fallback JS code
+      expect(result.statusCode).toBe(200);
+      expect(result.headers['Content-Type']).toContain('application/javascript');
+      expect(result.body).toBeDefined();
+      expect(result.body).toContain('[Revamp]');
+    });
+
+    it('should include Service-Worker-Allowed header with custom scope', async () => {
+      const result = await handleRevampRequest('/__revamp__/sw/bundle?url=invalid-url&scope=/app/', 'GET');
+      expect(result.headers['Service-Worker-Allowed']).toBe('/app/');
+    });
+
+    it('should use default scope when not provided', async () => {
+      const result = await handleRevampRequest('/__revamp__/sw/bundle?url=invalid-url', 'GET');
+      expect(result.headers['Service-Worker-Allowed']).toBe('/');
+    });
+
+    it('should include original URL in response headers', async () => {
+      const testUrl = 'invalid-test-url';
+      const result = await handleRevampRequest(`/__revamp__/sw/bundle?url=${encodeURIComponent(testUrl)}`, 'GET');
+      expect(result.headers['X-Revamp-SW-Original']).toBe(testUrl);
+    });
+
+    it('should include sw endpoint in API listing', async () => {
+      const result = await handleRevampRequest('/__revamp__/', 'GET');
+      const parsed = JSON.parse(result.body);
+      expect(parsed.endpoints.sw).toBeDefined();
+      expect(parsed.endpoints.sw.bundle).toBe('/__revamp__/sw/bundle');
     });
   });
 });

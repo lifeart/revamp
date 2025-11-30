@@ -36,7 +36,7 @@ export { readableStreamPolyfill } from './readable-stream.js';
 export { mutationObserverPolyfill } from './mutation-observer.js';
 export { weakCollectionsPolyfill } from './weak-collections.js';
 export { intlPolyfill } from './intl.js';
-export { serviceWorkerBypassPolyfill } from './service-worker-bypass.js';
+export { serviceWorkerBypassPolyfill, serviceWorkerBridgePolyfill } from './service-worker-bridge.js';
 export { webComponentsPolyfill } from './web-components.js';
 export { lazyLoadPolyfill } from './lazy-load.js';
 
@@ -70,7 +70,7 @@ import { readableStreamPolyfill } from './readable-stream.js';
 import { mutationObserverPolyfill } from './mutation-observer.js';
 import { weakCollectionsPolyfill } from './weak-collections.js';
 import { intlPolyfill } from './intl.js';
-import { serviceWorkerBypassPolyfill } from './service-worker-bypass.js';
+import { serviceWorkerBypassPolyfill, serviceWorkerBridgePolyfill } from './service-worker-bridge.js';
 import { webComponentsPolyfill } from './web-components.js';
 import { lazyLoadPolyfill } from './lazy-load.js';
 import { errorOverlayScript } from './error-overlay.js';
@@ -116,7 +116,10 @@ export function buildPolyfillScript(): string {
     readableStreamPolyfill,
 
     // Modern API compatibility
-    serviceWorkerBypassPolyfill,
+    // Service Worker: use bridge (enables SW support) or bypass (blocks SW)
+    // The bridge is used by default - it intercepts SW.register() and routes
+    // the SW script through our proxy for bundling and transformation
+    serviceWorkerBridgePolyfill,
     webComponentsPolyfill,
     lazyLoadPolyfill,
   ];
@@ -178,6 +181,7 @@ export type PolyfillName =
   | 'weakCollections'
   | 'intl'
   | 'serviceWorkerBypass'
+  | 'serviceWorkerBridge'
   | 'webComponents'
   | 'lazyLoad';
 
@@ -209,6 +213,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   weakCollections: weakCollectionsPolyfill,
   intl: intlPolyfill,
   serviceWorkerBypass: serviceWorkerBypassPolyfill,
+  serviceWorkerBridge: serviceWorkerBridgePolyfill,
   webComponents: webComponentsPolyfill,
   lazyLoad: lazyLoadPolyfill,
 };

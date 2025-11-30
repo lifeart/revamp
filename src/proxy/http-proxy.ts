@@ -280,7 +280,7 @@ async function handleRevampApiRequest(
   console.log(`🔧 Revamp API: ${req.method} ${url} (client: ${clientIp})`);
 
   const body = req.method === 'POST' ? await readRequestBody(req) : '';
-  const result = handleRevampRequest(url, req.method || 'GET', body, clientIp);
+  const result = await handleRevampRequest(url, req.method || 'GET', body, clientIp);
 
   for (const [key, value] of Object.entries(result.headers)) {
     res.setHeader(key, value);

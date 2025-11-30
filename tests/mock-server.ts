@@ -610,6 +610,251 @@ export default {
   </script>
 </body>
 </html>`,
+
+  // =============================================================================
+  // Service Worker Test Pages
+  // =============================================================================
+
+  // Basic SW registration test page
+  '/sw-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Service Worker Test</title>
+</head>
+<body>
+  <h1>Service Worker Test</h1>
+  <div id="result">Registering Service Worker...</div>
+  <div id="status">Status: pending</div>
+
+  <script>
+    // Test basic SW registration
+    window.__swTestData = {
+      registered: false,
+      scope: null,
+      error: null
+    };
+
+    async function testSwRegistration() {
+      var resultEl = document.getElementById('result');
+      var statusEl = document.getElementById('status');
+
+      try {
+        console.log('[SW Test] Attempting to register service worker...');
+
+        var registration = await navigator.serviceWorker.register('/sw/simple-sw.js', {
+          scope: '/'
+        });
+
+        console.log('[SW Test] Registration successful:', registration);
+
+        window.__swTestData.registered = true;
+        window.__swTestData.scope = registration.scope;
+
+        resultEl.textContent = 'Service Worker registered! Scope: ' + registration.scope;
+        resultEl.dataset.swRegistered = 'true';
+        statusEl.textContent = 'Status: registered';
+
+      } catch (error) {
+        console.log('[SW Test] Registration failed:', error.message);
+
+        window.__swTestData.error = error.message;
+        window.__swTestData.registered = false;
+
+        resultEl.textContent = 'Registration result: ' + error.message;
+        resultEl.dataset.swRegistered = 'false';
+        statusEl.textContent = 'Status: ' + error.name;
+      }
+    }
+
+    testSwRegistration();
+  </script>
+</body>
+</html>`,
+
+  // SW test page with imports
+  '/sw-imports-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Service Worker with Imports Test</title>
+</head>
+<body>
+  <h1>Service Worker with Imports</h1>
+  <div id="result">Loading...</div>
+
+  <script>
+    window.__swImportsTestData = {
+      registered: false,
+      scope: null,
+      error: null
+    };
+
+    async function testSwWithImports() {
+      var resultEl = document.getElementById('result');
+
+      try {
+        console.log('[SW Imports Test] Registering SW with imports...');
+
+        var registration = await navigator.serviceWorker.register('/sw/sw-with-imports.js', {
+          scope: '/app/'
+        });
+
+        console.log('[SW Imports Test] Registration successful');
+
+        window.__swImportsTestData.registered = true;
+        window.__swImportsTestData.scope = registration.scope;
+
+        resultEl.textContent = 'SW with imports registered! Scope: ' + registration.scope;
+        resultEl.dataset.loaded = 'true';
+
+      } catch (error) {
+        console.log('[SW Imports Test] Registration failed:', error.message);
+        window.__swImportsTestData.error = error.message;
+        resultEl.textContent = 'Error: ' + error.message;
+        resultEl.dataset.loaded = 'false';
+      }
+    }
+
+    testSwWithImports();
+  </script>
+</body>
+</html>`,
+
+  // Test with invalid SW URL
+  '/sw-invalid-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Invalid Service Worker Test</title>
+</head>
+<body>
+  <h1>Invalid Service Worker URL Test</h1>
+  <div id="result">Testing...</div>
+
+  <script>
+    window.__swInvalidTestData = {
+      registered: false,
+      error: null
+    };
+
+    async function testInvalidSw() {
+      var resultEl = document.getElementById('result');
+
+      try {
+        // Try to register a non-existent SW
+        var registration = await navigator.serviceWorker.register('/sw/non-existent-sw.js');
+
+        window.__swInvalidTestData.registered = true;
+        resultEl.textContent = 'Unexpectedly registered: ' + registration.scope;
+
+      } catch (error) {
+        window.__swInvalidTestData.error = error.message;
+        resultEl.textContent = 'Expected error: ' + error.message;
+      }
+    }
+
+    testInvalidSw();
+  </script>
+</body>
+</html>`,
+
+  // Simple Service Worker script
+  '/sw/simple-sw.js': `// Simple Service Worker for testing
+console.log('[Simple SW] Service Worker loaded');
+
+self.addEventListener('install', function(event) {
+  console.log('[Simple SW] Installing...');
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', function(event) {
+  console.log('[Simple SW] Activated');
+  event.waitUntil(clients.claim());
+});
+
+self.addEventListener('fetch', function(event) {
+  console.log('[Simple SW] Fetch:', event.request.url);
+  // Pass through - don't intercept
+});
+
+console.log('[Simple SW] Script evaluated');
+`,
+
+  // Service Worker with imports
+  '/sw/sw-with-imports.js': `// Service Worker with module imports
+import { cacheFirst, networkFirst } from './sw-strategies.js';
+import { CACHE_NAME, STATIC_ASSETS } from './sw-config.js';
+
+console.log('[SW with Imports] Loading with cache name:', CACHE_NAME);
+
+self.addEventListener('install', function(event) {
+  console.log('[SW with Imports] Installing, caching assets:', STATIC_ASSETS);
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', function(event) {
+  console.log('[SW with Imports] Activated');
+  event.waitUntil(clients.claim());
+});
+
+self.addEventListener('fetch', function(event) {
+  var url = new URL(event.request.url);
+
+  if (STATIC_ASSETS.includes(url.pathname)) {
+    event.respondWith(cacheFirst(event.request));
+  } else {
+    event.respondWith(networkFirst(event.request));
+  }
+});
+`,
+
+  // SW strategies module
+  '/sw/sw-strategies.js': `// Caching strategies for Service Worker
+export function cacheFirst(request) {
+  return caches.match(request).then(function(cached) {
+    if (cached) {
+      console.log('[SW Strategies] Cache hit:', request.url);
+      return cached;
+    }
+    return fetch(request);
+  });
+}
+
+export function networkFirst(request) {
+  return fetch(request).catch(function() {
+    return caches.match(request);
+  });
+}
+
+export function staleWhileRevalidate(request) {
+  return caches.match(request).then(function(cached) {
+    var fetchPromise = fetch(request).then(function(response) {
+      return caches.open('dynamic').then(function(cache) {
+        cache.put(request, response.clone());
+        return response;
+      });
+    });
+    return cached || fetchPromise;
+  });
+}
+`,
+
+  // SW config module
+  '/sw/sw-config.js': `// Configuration for Service Worker
+export const CACHE_NAME = 'revamp-test-v1';
+export const CACHE_VERSION = 1;
+
+export const STATIC_ASSETS = [
+  '/',
+  '/styles.css',
+  '/app.js',
+  '/test-image.png'
+];
+
+export const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
+`,
 };
 
 // Generate a simple PNG image (1x1 transparent pixel for testing)

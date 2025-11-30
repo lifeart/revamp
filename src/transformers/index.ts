@@ -22,3 +22,11 @@ export {
   wrapTopLevelAwait,
 } from './esm-bundler.js';
 export type { BundleResult, ImportMap } from './esm-bundler.js';
+
+// Service Worker bundler
+export {
+  bundleServiceWorker,
+  clearSwModuleCache,
+  getSwModuleCacheSize,
+} from './sw-bundler.js';
+export type { SwBundleResult } from './sw-bundler.js';
