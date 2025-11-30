@@ -22,7 +22,8 @@ export const serviceWorkerBridgePolyfill = `
 
     var REVAMP_SW_ENDPOINT = '/__revamp__/sw/bundle';
     var REVAMP_SW_INLINE_ENDPOINT = '/__revamp__/sw/inline';
-    var DEBUG = false;
+    // Debug mode can be enabled via window.__REVAMP_DEBUG__ or window.__REVAMP_SW_DEBUG__
+    var DEBUG = window.__REVAMP_DEBUG__ || window.__REVAMP_SW_DEBUG__ || false;
 
     function log() {
       if (DEBUG) {

@@ -78,9 +78,27 @@ import { configOverlayScript } from './config-overlay.js';
 import { blockedScriptsStubs } from './blocked-scripts-stubs.js';
 
 /**
- * Build the complete polyfill script from all atomic polyfills
+ * Options for building polyfill script
  */
-export function buildPolyfillScript(): string {
+export interface BuildPolyfillOptions {
+  /** Whether to emulate Service Workers (true) or block them (false). Default: true */
+  emulateServiceWorkers?: boolean;
+  /** Enable debug logging in polyfills. Default: false */
+  debug?: boolean;
+}
+
+/**
+ * Build the complete polyfill script from all atomic polyfills
+ * @param options - Configuration options for polyfill behavior
+ */
+export function buildPolyfillScript(options: BuildPolyfillOptions = {}): string {
+  const { emulateServiceWorkers = true, debug = false } = options;
+
+  // Choose SW polyfill based on config
+  const swPolyfill = emulateServiceWorkers
+    ? serviceWorkerBridgePolyfill
+    : serviceWorkerBypassPolyfill;
+
   const polyfills = [
     // Blocked scripts stubs (must be first to prevent errors from blocked ad scripts)
     blockedScriptsStubs,
@@ -117,18 +135,26 @@ export function buildPolyfillScript(): string {
 
     // Modern API compatibility
     // Service Worker: use bridge (enables SW support) or bypass (blocks SW)
-    // The bridge is used by default - it intercepts SW.register() and routes
-    // the SW script through our proxy for bundling and transformation
-    serviceWorkerBridgePolyfill,
+    // based on emulateServiceWorkers config option
+    swPolyfill,
     webComponentsPolyfill,
     lazyLoadPolyfill,
   ];
+
+  // Debug mode configuration
+  const debugConfig = debug
+    ? `window.__REVAMP_DEBUG__ = true;`
+    : '';
+
+  const swMode = emulateServiceWorkers ? 'bridge (enabled)' : 'bypass (blocked)';
 
   return `
 <!-- Revamp Polyfills for iOS 9+ (iPad 2) and iOS 11+ -->
 <script>
 (function() {
+  ${debugConfig}
   // === Safari 9 (iOS 9 / iPad 2) Polyfills ===
+  // Service Worker mode: ${swMode}
 ${polyfills.join('\n')}
   console.log('[Revamp] Polyfills loaded for iOS 9+ (iPad 2) compatibility');
 })();

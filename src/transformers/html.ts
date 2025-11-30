@@ -606,12 +606,16 @@ ${userAgentPolyfill}
 function injectRevampScripts(
   $: CheerioAPI,
   injectPolyfills: boolean,
-  spoofUserAgentInJs: boolean
+  spoofUserAgentInJs: boolean,
+  emulateServiceWorkers: boolean = true
 ): void {
   if (injectPolyfills) {
     // CRITICAL: Polyfills MUST be injected before ANY other script in the document
     // This ensures Object.fromEntries, Array.from, etc. are available
-    injectBeforeAllScripts($, buildPolyfillScript());
+    injectBeforeAllScripts($, buildPolyfillScript({
+      emulateServiceWorkers,
+      debug: false, // Could be made configurable in the future
+    }));
 
     // User-agent spoof right after polyfills
     if (spoofUserAgentInJs) {
@@ -689,7 +693,7 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     normalizeCharset($);
 
     // Inject Revamp scripts
-    injectRevampScripts($, config.injectPolyfills, config.spoofUserAgentInJs);
+    injectRevampScripts($, config.injectPolyfills, config.spoofUserAgentInJs, config.emulateServiceWorkers);
 
     // Add transformation statistics comment
     addTransformComment($, result);

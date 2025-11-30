@@ -26,6 +26,7 @@ export type { BundleResult, ImportMap } from './esm-bundler.js';
 // Service Worker bundler
 export {
   bundleServiceWorker,
+  transformInlineServiceWorker,
   clearSwModuleCache,
   getSwModuleCacheSize,
 } from './sw-bundler.js';

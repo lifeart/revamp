@@ -58,6 +58,13 @@ export const CLIENT_CONFIG_OPTIONS: readonly ConfigOptionMeta[] = [
     defaultValue: true,
     category: 'transformation',
   },
+  {
+    key: 'emulateServiceWorkers',
+    label: 'Emulate Service Workers',
+    description: 'Transform and bridge Service Workers for legacy browsers',
+    defaultValue: true,
+    category: 'compatibility',
+  },
 
   // Privacy options
   {

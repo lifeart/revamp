@@ -20,6 +20,7 @@ export interface RevampConfig {
   transformCss: boolean;
   transformHtml: boolean;
   bundleEsModules: boolean; // Bundle ES modules for legacy browsers using esbuild
+  emulateServiceWorkers: boolean; // Transform and bridge Service Workers (true) or block them (false)
   removeAds: boolean;
   removeTracking: boolean;
   injectPolyfills: boolean;
@@ -67,6 +68,7 @@ export const defaultConfig: RevampConfig = {
   transformCss: true,
   transformHtml: true,
   bundleEsModules: true, // Bundle ES modules by default for legacy browser support
+  emulateServiceWorkers: true, // Enable SW bridge by default to transform and run SWs
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
@@ -171,6 +173,7 @@ export interface ClientConfig {
   transformCss?: boolean;
   transformHtml?: boolean;
   bundleEsModules?: boolean;
+  emulateServiceWorkers?: boolean;
   removeAds?: boolean;
   removeTracking?: boolean;
   injectPolyfills?: boolean;
