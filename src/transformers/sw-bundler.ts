@@ -450,3 +450,93 @@ export function clearSwModuleCache(): void {
 export function getSwModuleCacheSize(): number {
   return moduleCache.size;
 }
+
+/**
+ * Transform inline Service Worker code
+ * Used for blob: and data: URL service workers
+ *
+ * @param code - Inline SW code to transform
+ * @param scope - Scope for the Service Worker
+ * @returns Transformed code
+ */
+export async function transformInlineServiceWorker(code: string, scope: string = '/'): Promise<SwBundleResult> {
+  try {
+    const config = getConfig();
+
+    console.log(`📦 Transforming inline Service Worker (${code.length} bytes)`);
+
+    let swCode = code;
+
+    // If JS transformation is disabled, just return the original code with wrapper
+    if (!config.transformJs) {
+      const wrapper = generateSwWrapper('inline-script', scope);
+      const finalCode = wrapper.prefix + swCode + wrapper.suffix;
+      return {
+        code: finalCode,
+        success: true,
+        originalUrl: 'inline-script',
+        scope,
+      };
+    }
+
+    // Check if the SW uses ES modules (import/export)
+    const usesModules = /\b(import|export)\b/.test(swCode);
+
+    if (usesModules) {
+      console.log(`📦 Inline SW uses ES modules, bundling with esbuild`);
+
+      // Bundle with esbuild - for inline scripts, we can only resolve relative imports
+      // that are already embedded in the code
+      const result = await esbuild.build({
+        stdin: {
+          contents: swCode,
+          loader: 'js',
+          resolveDir: '.',
+          sourcefile: 'inline-sw.js',
+        },
+        bundle: true,
+        write: false,
+        format: 'iife',
+        target: 'es2015',
+        platform: 'browser',
+        minify: false,
+        sourcemap: false,
+        logLevel: 'silent',
+        // Mark all imports as external since we can't resolve them from inline code
+        external: ['*'],
+      });
+
+      if (result.outputFiles && result.outputFiles.length > 0) {
+        swCode = result.outputFiles[0].text;
+      }
+    }
+
+    // Transform the code for legacy browsers using Babel
+    console.log(`🔧 Transforming inline SW code for legacy browsers`);
+    swCode = await transformJs(swCode, 'inline-sw.js');
+
+    // Add wrapper code
+    const wrapper = generateSwWrapper('inline-script', scope);
+    const finalCode = wrapper.prefix + swCode + wrapper.suffix;
+
+    return {
+      code: finalCode,
+      success: true,
+      originalUrl: 'inline-script',
+      scope,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`❌ Inline SW transformation failed: ${message}`);
+
+    // Return the original code with wrapper as fallback
+    const wrapper = generateSwWrapper('inline-script', scope);
+    return {
+      code: wrapper.prefix + code + wrapper.suffix,
+      success: false,
+      error: message,
+      originalUrl: 'inline-script',
+      scope,
+    };
+  }
+}

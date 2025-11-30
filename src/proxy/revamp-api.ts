@@ -8,13 +8,14 @@
  * - /__revamp__/pac/socks5 - SOCKS5 PAC file
  * - /__revamp__/pac/http - HTTP PAC file
  * - /__revamp__/pac/combined - Combined PAC file
- * - /__revamp__/sw/bundle - Service Worker bundling endpoint
+ * - /__revamp__/sw/bundle - Service Worker bundling endpoint (URL-based)
+ * - /__revamp__/sw/inline - Service Worker inline transformation (code-based)
  */
 
 import { handleConfigRequest, CONFIG_ENDPOINT, type ConfigEndpointResult } from './config-endpoint.js';
 import { generateDashboardHtml, generateMetricsJson } from '../metrics/dashboard.js';
 import { generateSocks5Pac, generateHttpPac, generateCombinedPac } from '../pac/generator.js';
-import { bundleServiceWorker } from '../transformers/sw-bundler.js';
+import { bundleServiceWorker, transformInlineServiceWorker } from '../transformers/sw-bundler.js';
 
 /** Base path for all Revamp API endpoints */
 export const REVAMP_API_BASE = '/__revamp__';
@@ -29,6 +30,7 @@ export const ENDPOINTS = {
   pacHttp: `${REVAMP_API_BASE}/pac/http`,
   pacCombined: `${REVAMP_API_BASE}/pac/combined`,
   swBundle: `${REVAMP_API_BASE}/sw/bundle`,
+  swInline: `${REVAMP_API_BASE}/sw/inline`,
 } as const;
 
 /**
@@ -72,6 +74,11 @@ export async function handleRevampRequest(path: string, method: string, body: st
       },
       body: '',
     };
+  }
+
+  // Service Worker inline transformation endpoint (POST)
+  if (path.startsWith(ENDPOINTS.swInline)) {
+    return handleSwInlineRequest(method, body);
   }
 
   // Service Worker bundle endpoint
@@ -172,6 +179,7 @@ export async function handleRevampRequest(path: string, method: string, body: st
         },
         sw: {
           bundle: ENDPOINTS.swBundle,
+          inline: ENDPOINTS.swInline,
         },
       },
     }, null, 2),
@@ -312,4 +320,105 @@ export function buildRawApiResponse(result: ApiResult): string {
   response += result.body;
 
   return response;
+}
+
+/**
+ * Handle inline Service Worker transformation requests
+ * POST body format: { code: string, scope?: string }
+ */
+async function handleSwInlineRequest(method: string, body: string): Promise<ApiResult> {
+  if (method !== 'POST') {
+    return {
+      statusCode: 405,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+        'Allow': 'POST',
+      },
+      body: JSON.stringify({ error: 'Method not allowed. Use POST.' }),
+    };
+  }
+
+  if (!body || body.trim() === '') {
+    return {
+      statusCode: 400,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Missing request body',
+        usage: 'POST with JSON body: { "code": "<sw-code>", "scope": "/" }',
+      }),
+    };
+  }
+
+  let code: string;
+  let scope: string = '/';
+
+  try {
+    const parsed = JSON.parse(body);
+    code = parsed.code;
+    scope = parsed.scope || '/';
+
+    if (!code || typeof code !== 'string') {
+      return {
+        statusCode: 400,
+        headers: {
+          ...CORS_HEADERS,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          error: 'Missing or invalid "code" field',
+          usage: 'POST with JSON body: { "code": "<sw-code>", "scope": "/" }',
+        }),
+      };
+    }
+  } catch {
+    return {
+      statusCode: 400,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Invalid JSON body',
+        usage: 'POST with JSON body: { "code": "<sw-code>", "scope": "/" }',
+      }),
+    };
+  }
+
+  console.log(`📦 SW Inline transform request: ${code.length} bytes (scope: ${scope})`);
+
+  try {
+    const result = await transformInlineServiceWorker(code, scope);
+
+    return {
+      statusCode: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Revamp-SW-Type': 'inline',
+        'X-Revamp-SW-Scope': scope,
+        'Service-Worker-Allowed': scope,
+      },
+      body: result.code,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`❌ SW inline transform error: ${message}`);
+
+    return {
+      statusCode: 500,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Service Worker transformation failed',
+        details: message,
+      }),
+    };
+  }
 }

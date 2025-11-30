@@ -7,6 +7,7 @@ import {
   bundleServiceWorker,
   clearSwModuleCache,
   getSwModuleCacheSize,
+  transformInlineServiceWorker,
 } from './sw-bundler.js';
 import { resetConfig, updateConfig } from '../config/index.js';
 
@@ -41,19 +42,20 @@ describe('SW Bundler', () => {
     });
 
     it('should include Revamp wrapper in bundled code', async () => {
-      // We can't easily mock the fetch, but we can check the error fallback structure
-      const result = await bundleServiceWorker('https://example.com/sw.js', '/app/');
+      // Use localhost:0 which fails immediately (connection refused)
+      const result = await bundleServiceWorker('http://localhost:0/sw.js', '/app/');
 
       // Even on failure, it should have the proper structure
-      expect(result.originalUrl).toBe('https://example.com/sw.js');
+      expect(result.originalUrl).toBe('http://localhost:0/sw.js');
       expect(result.scope).toBe('/app/');
       expect(result.code).toBeDefined();
       expect(result.code.length).toBeGreaterThan(0);
     });
 
     it('should handle different scopes', async () => {
-      const result1 = await bundleServiceWorker('https://example.com/sw.js', '/');
-      const result2 = await bundleServiceWorker('https://example.com/sw.js', '/app/');
+      // Use fast-failing URLs
+      const result1 = await bundleServiceWorker('http://localhost:0/sw.js', '/');
+      const result2 = await bundleServiceWorker('http://localhost:0/sw.js', '/app/');
 
       expect(result1.scope).toBe('/');
       expect(result2.scope).toBe('/app/');
@@ -74,6 +76,68 @@ describe('SW Bundler', () => {
       const size = getSwModuleCacheSize();
       expect(typeof size).toBe('number');
       expect(size).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('transformInlineServiceWorker', () => {
+    it('should transform inline SW code', async () => {
+      const code = `
+        self.addEventListener('install', function(event) {
+          console.log('Installing');
+        });
+      `;
+
+      const result = await transformInlineServiceWorker(code, '/');
+
+      expect(result.success).toBe(true);
+      expect(result.originalUrl).toBe('inline-script');
+      expect(result.scope).toBe('/');
+      expect(result.code).toContain('[Revamp]');
+      expect(result.code).toContain('Service Worker');
+    });
+
+    it('should include scope in wrapper', async () => {
+      const code = `console.log('test');`;
+      const result = await transformInlineServiceWorker(code, '/app/');
+
+      expect(result.scope).toBe('/app/');
+      expect(result.code).toContain('/app/');
+    });
+
+    it('should handle modern JS syntax', async () => {
+      const code = `
+        const log = (...args) => console.log('[SW]', ...args);
+        self.addEventListener('install', async (event) => {
+          await self.skipWaiting();
+        });
+      `;
+
+      const result = await transformInlineServiceWorker(code, '/');
+
+      expect(result.success).toBe(true);
+      expect(result.code.length).toBeGreaterThan(0);
+    });
+
+    it('should handle empty code', async () => {
+      const result = await transformInlineServiceWorker('', '/');
+
+      expect(result.success).toBe(true);
+      expect(result.code).toContain('[Revamp]');
+    });
+
+    it('should preserve code functionality in wrapper', async () => {
+      const code = `
+        self.addEventListener('fetch', function(event) {
+          event.respondWith(fetch(event.request));
+        });
+      `;
+
+      const result = await transformInlineServiceWorker(code, '/');
+
+      expect(result.success).toBe(true);
+      // The wrapper should still include fetch-related code
+      expect(result.code).toContain('fetch');
+      expect(result.code).toContain('respondWith');
     });
   });
 });

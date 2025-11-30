@@ -855,6 +855,243 @@ export const STATIC_ASSETS = [
 
 export const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
 `,
+
+  // Test page for inline SW (blob URL)
+  '/sw-inline-blob-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Inline Service Worker (Blob) Test</title>
+</head>
+<body>
+  <h1>Inline Service Worker - Blob URL</h1>
+  <div id="result">Loading...</div>
+
+  <script>
+    window.__swInlineBlobTestData = {
+      registered: false,
+      scope: null,
+      error: null
+    };
+
+    async function testInlineBlobSw() {
+      var resultEl = document.getElementById('result');
+
+      // Create SW code as a blob
+      var swCode = \`
+        // Inline Service Worker (Blob)
+        console.log('[Inline Blob SW] Service Worker loaded');
+
+        self.addEventListener('install', function(event) {
+          console.log('[Inline Blob SW] Installing...');
+          self.skipWaiting();
+        });
+
+        self.addEventListener('activate', function(event) {
+          console.log('[Inline Blob SW] Activated');
+          event.waitUntil(self.clients.claim());
+        });
+
+        self.addEventListener('fetch', function(event) {
+          console.log('[Inline Blob SW] Fetch:', event.request.url);
+        });
+
+        console.log('[Inline Blob SW] Script evaluated');
+      \`;
+
+      try {
+        console.log('[SW Inline Blob Test] Creating blob URL...');
+
+        var blob = new Blob([swCode], { type: 'application/javascript' });
+        var blobUrl = URL.createObjectURL(blob);
+
+        console.log('[SW Inline Blob Test] Registering blob SW:', blobUrl.substring(0, 50) + '...');
+
+        var registration = await navigator.serviceWorker.register(blobUrl, {
+          scope: '/inline-blob/'
+        });
+
+        console.log('[SW Inline Blob Test] Registration successful');
+
+        window.__swInlineBlobTestData.registered = true;
+        window.__swInlineBlobTestData.scope = registration.scope;
+
+        resultEl.textContent = 'Blob SW registered! Scope: ' + registration.scope;
+        resultEl.dataset.swRegistered = 'true';
+
+        // Clean up blob URL
+        URL.revokeObjectURL(blobUrl);
+
+      } catch (error) {
+        console.log('[SW Inline Blob Test] Registration failed:', error.message);
+        window.__swInlineBlobTestData.error = error.message;
+        resultEl.textContent = 'Error: ' + error.message;
+        resultEl.dataset.swRegistered = 'false';
+      }
+    }
+
+    testInlineBlobSw();
+  </script>
+</body>
+</html>`,
+
+  // Test page for inline SW (data URL)
+  '/sw-inline-data-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Inline Service Worker (Data URL) Test</title>
+</head>
+<body>
+  <h1>Inline Service Worker - Data URL</h1>
+  <div id="result">Loading...</div>
+
+  <script>
+    window.__swInlineDataTestData = {
+      registered: false,
+      scope: null,
+      error: null
+    };
+
+    async function testInlineDataSw() {
+      var resultEl = document.getElementById('result');
+
+      // Create SW code as a data URL
+      var swCode = \`
+        // Inline Service Worker (Data URL)
+        console.log('[Inline Data SW] Service Worker loaded');
+
+        self.addEventListener('install', function(event) {
+          console.log('[Inline Data SW] Installing...');
+          self.skipWaiting();
+        });
+
+        self.addEventListener('activate', function(event) {
+          console.log('[Inline Data SW] Activated');
+          event.waitUntil(self.clients.claim());
+        });
+
+        self.addEventListener('fetch', function(event) {
+          console.log('[Inline Data SW] Fetch:', event.request.url);
+        });
+
+        console.log('[Inline Data SW] Script evaluated');
+      \`;
+
+      try {
+        console.log('[SW Inline Data Test] Creating data URL...');
+
+        // Encode as data URL
+        var dataUrl = 'data:application/javascript;charset=utf-8,' + encodeURIComponent(swCode);
+
+        console.log('[SW Inline Data Test] Registering data URL SW');
+
+        var registration = await navigator.serviceWorker.register(dataUrl, {
+          scope: '/inline-data/'
+        });
+
+        console.log('[SW Inline Data Test] Registration successful');
+
+        window.__swInlineDataTestData.registered = true;
+        window.__swInlineDataTestData.scope = registration.scope;
+
+        resultEl.textContent = 'Data URL SW registered! Scope: ' + registration.scope;
+        resultEl.dataset.swRegistered = 'true';
+
+      } catch (error) {
+        console.log('[SW Inline Data Test] Registration failed:', error.message);
+        window.__swInlineDataTestData.error = error.message;
+        resultEl.textContent = 'Error: ' + error.message;
+        resultEl.dataset.swRegistered = 'false';
+      }
+    }
+
+    testInlineDataSw();
+  </script>
+</body>
+</html>`,
+
+  // Test page for inline SW with modern syntax
+  '/sw-inline-modern-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Inline Service Worker (Modern Syntax) Test</title>
+</head>
+<body>
+  <h1>Inline Service Worker - Modern Syntax</h1>
+  <div id="result">Loading...</div>
+
+  <script>
+    window.__swInlineModernTestData = {
+      registered: false,
+      scope: null,
+      error: null
+    };
+
+    async function testInlineModernSw() {
+      var resultEl = document.getElementById('result');
+
+      // Create SW code with modern syntax (arrow functions, async/await, etc.)
+      var swCode = \`
+        // Inline Service Worker with modern syntax
+        const SW_VERSION = '1.0.0';
+        const CACHE_NAME = \\\`inline-cache-\\\${SW_VERSION}\\\`;
+
+        const log = (...args) => console.log('[Inline Modern SW]', ...args);
+
+        self.addEventListener('install', event => {
+          log('Installing, version:', SW_VERSION);
+          event.waitUntil(self.skipWaiting());
+        });
+
+        self.addEventListener('activate', async event => {
+          log('Activated');
+          await self.clients.claim();
+        });
+
+        self.addEventListener('fetch', event => {
+          const { request } = event;
+          log('Fetch:', request.url);
+        });
+
+        log('Script evaluated with modern syntax');
+      \`;
+
+      try {
+        console.log('[SW Inline Modern Test] Creating blob URL...');
+
+        var blob = new Blob([swCode], { type: 'application/javascript' });
+        var blobUrl = URL.createObjectURL(blob);
+
+        console.log('[SW Inline Modern Test] Registering SW with modern syntax');
+
+        var registration = await navigator.serviceWorker.register(blobUrl, {
+          scope: '/inline-modern/'
+        });
+
+        console.log('[SW Inline Modern Test] Registration successful');
+
+        window.__swInlineModernTestData.registered = true;
+        window.__swInlineModernTestData.scope = registration.scope;
+
+        resultEl.textContent = 'Modern syntax SW registered! Scope: ' + registration.scope;
+        resultEl.dataset.swRegistered = 'true';
+
+        URL.revokeObjectURL(blobUrl);
+
+      } catch (error) {
+        console.log('[SW Inline Modern Test] Registration failed:', error.message);
+        window.__swInlineModernTestData.error = error.message;
+        resultEl.textContent = 'Error: ' + error.message;
+        resultEl.dataset.swRegistered = 'false';
+      }
+    }
+
+    testInlineModernSw();
+  </script>
+</body>
+</html>`,
 };
 
 // Generate a simple PNG image (1x1 transparent pixel for testing)

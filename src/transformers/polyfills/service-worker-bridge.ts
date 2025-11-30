@@ -21,6 +21,7 @@ export const serviceWorkerBridgePolyfill = `
     'use strict';
 
     var REVAMP_SW_ENDPOINT = '/__revamp__/sw/bundle';
+    var REVAMP_SW_INLINE_ENDPOINT = '/__revamp__/sw/inline';
     var DEBUG = false;
 
     function log() {
@@ -28,6 +29,53 @@ export const serviceWorkerBridgePolyfill = `
         var args = ['[Revamp SW Bridge]'].concat(Array.prototype.slice.call(arguments));
         console.log.apply(console, args);
       }
+    }
+
+    // Check if URL is a blob or data URL (inline script)
+    function isInlineScript(url) {
+      return url && (url.indexOf('blob:') === 0 || url.indexOf('data:') === 0);
+    }
+
+    // Extract code from a data URL
+    function extractDataUrlContent(dataUrl) {
+      try {
+        // Format: data:[<mediatype>][;base64],<data>
+        var commaIndex = dataUrl.indexOf(',');
+        if (commaIndex === -1) return null;
+
+        var header = dataUrl.substring(5, commaIndex); // Skip 'data:'
+        var data = dataUrl.substring(commaIndex + 1);
+
+        if (header.indexOf('base64') !== -1) {
+          // Base64 encoded
+          return atob(data);
+        } else {
+          // URL encoded
+          return decodeURIComponent(data);
+        }
+      } catch (e) {
+        log('Failed to extract data URL content:', e);
+        return null;
+      }
+    }
+
+    // Fetch blob URL content
+    function fetchBlobContent(blobUrl) {
+      return new Promise(function(resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', blobUrl, true);
+        xhr.onload = function() {
+          if (xhr.status === 200) {
+            resolve(xhr.responseText);
+          } else {
+            reject(new Error('Failed to fetch blob: ' + xhr.status));
+          }
+        };
+        xhr.onerror = function() {
+          reject(new Error('Network error fetching blob'));
+        };
+        xhr.send();
+      });
     }
 
     // Helper to create DOMException-like errors
@@ -136,6 +184,26 @@ export const serviceWorkerBridgePolyfill = `
       };
     }
 
+    // Send inline SW code to proxy for transformation
+    function transformInlineScript(code, scope) {
+      return new Promise(function(resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', REVAMP_SW_INLINE_ENDPOINT, true);
+        xhr.setRequestHeader('Content-Type', 'application/javascript');
+        xhr.onload = function() {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(xhr.responseText);
+          } else {
+            reject(new Error('Transform failed: ' + xhr.status));
+          }
+        };
+        xhr.onerror = function() {
+          reject(new Error('Network error'));
+        };
+        xhr.send(JSON.stringify({ code: code, scope: scope }));
+      });
+    }
+
     // The bridged register function
     function bridgedRegister(scriptURL, options) {
       options = options || {};
@@ -148,6 +216,12 @@ export const serviceWorkerBridgePolyfill = `
       if (registrationPromises[scope]) {
         log('Returning existing registration promise for scope:', scope);
         return registrationPromises[scope];
+      }
+
+      // Check for inline scripts (blob: or data: URLs)
+      if (isInlineScript(scriptURL)) {
+        log('Detected inline SW script:', scriptURL.substring(0, 50) + '...');
+        return handleInlineScript(scriptURL, scope, options);
       }
 
       // Generate the proxied URL for the SW script
@@ -229,6 +303,114 @@ export const serviceWorkerBridgePolyfill = `
 
       registrationPromises[scope] = registrationPromise;
       return registrationPromise;
+    }
+
+    // Handle inline SW scripts (blob: or data: URLs)
+    function handleInlineScript(scriptURL, scope, options) {
+      var registrationPromise;
+
+      if (scriptURL.indexOf('data:') === 0) {
+        // Data URL - extract content synchronously
+        var code = extractDataUrlContent(scriptURL);
+        if (!code) {
+          log('Failed to extract data URL content');
+          registrationPromise = Promise.reject(new Error('Invalid data URL'));
+          registrationPromises[scope] = registrationPromise;
+          return registrationPromise;
+        }
+
+        registrationPromise = registerInlineCode(code, scope, options);
+      } else if (scriptURL.indexOf('blob:') === 0) {
+        // Blob URL - need to fetch content first
+        registrationPromise = fetchBlobContent(scriptURL)
+          .then(function(code) {
+            return registerInlineCode(code, scope, options);
+          })
+          .catch(function(error) {
+            log('Failed to fetch blob content:', error);
+            // Return mock registration on error
+            var mockReg = createMockRegistration(scriptURL, scope);
+            mockReg.active = createMockServiceWorker(scriptURL, 'activated');
+            registrations[scope] = mockReg;
+            return mockReg;
+          });
+      } else {
+        registrationPromise = Promise.reject(new Error('Unknown inline script type'));
+      }
+
+      registrationPromises[scope] = registrationPromise;
+      return registrationPromise;
+    }
+
+    // Register SW from inline code
+    function registerInlineCode(code, scope, options) {
+      log('Registering inline SW code, length:', code.length);
+
+      // Send to proxy for transformation
+      return transformInlineScript(code, scope)
+        .then(function(transformedCode) {
+          log('Got transformed code, length:', transformedCode.length);
+
+          // Create a new blob URL with transformed code
+          var blob = new Blob([transformedCode], { type: 'application/javascript' });
+          var transformedBlobUrl = URL.createObjectURL(blob);
+
+          // If native SW is available, register with transformed blob
+          if (originalRegister && window.__REVAMP_USE_NATIVE_SW !== false) {
+            return originalRegister(transformedBlobUrl, {
+              scope: scope,
+              type: options.type || 'classic',
+              updateViaCache: options.updateViaCache || 'imports'
+            }).then(function(registration) {
+              log('Inline SW registered successfully');
+              registrations[scope] = registration;
+              // Clean up blob URL after a delay
+              setTimeout(function() { URL.revokeObjectURL(transformedBlobUrl); }, 5000);
+              return registration;
+            }).catch(function(error) {
+              log('Inline SW registration failed:', error.message);
+              URL.revokeObjectURL(transformedBlobUrl);
+              // Fall back to mock
+              var mockReg = createMockRegistration('inline-script', scope);
+              mockReg.active = createMockServiceWorker('inline-script', 'activated');
+              registrations[scope] = mockReg;
+              return mockReg;
+            });
+          }
+
+          // No native SW - use mock registration
+          var mockReg = createMockRegistration('inline-script', scope);
+          mockReg.active = createMockServiceWorker('inline-script', 'activated');
+          registrations[scope] = mockReg;
+          URL.revokeObjectURL(transformedBlobUrl);
+          return mockReg;
+        })
+        .catch(function(error) {
+          log('Failed to transform inline SW:', error);
+          // Register with original code as fallback
+          if (originalRegister && window.__REVAMP_USE_NATIVE_SW !== false) {
+            var blob = new Blob([code], { type: 'application/javascript' });
+            var blobUrl = URL.createObjectURL(blob);
+            return originalRegister(blobUrl, {
+              scope: scope,
+              type: options.type || 'classic'
+            }).then(function(registration) {
+              registrations[scope] = registration;
+              setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 5000);
+              return registration;
+            }).catch(function() {
+              URL.revokeObjectURL(blobUrl);
+              var mockReg = createMockRegistration('inline-script', scope);
+              mockReg.active = createMockServiceWorker('inline-script', 'activated');
+              registrations[scope] = mockReg;
+              return mockReg;
+            });
+          }
+          var mockReg = createMockRegistration('inline-script', scope);
+          mockReg.active = createMockServiceWorker('inline-script', 'activated');
+          registrations[scope] = mockReg;
+          return mockReg;
+        });
     }
 
     // Bridge getRegistration

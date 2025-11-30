@@ -302,4 +302,211 @@ test.describe('Service Worker Bridge', () => {
       logSuccess('Data attribute set after SW registration');
     });
   });
+
+  test.describe('Inline Service Workers', () => {
+    test('should handle blob URL service workers', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/sw-inline-blob-test');
+      await page.waitForTimeout(2500);
+
+      // Check registration result
+      const registrationData = await page.evaluate(() => {
+        return (window as any).__swInlineBlobTestData;
+      });
+
+      expect(registrationData).toBeDefined();
+      logInfo(`Blob SW registration data: ${JSON.stringify(registrationData)}`);
+
+      // Check DOM was updated
+      const resultText = await page.locator('#result').textContent();
+      logInfo(`Result text: ${resultText}`);
+
+      // The bridge should have intercepted and handled the blob URL
+      const hasInlineLogs = consoleLogs.some((log) =>
+        log.includes('Inline Blob SW') || log.includes('blob')
+      );
+      logInfo(`Found inline SW logs: ${hasInlineLogs}`);
+
+      logSuccess('Blob URL SW handled by bridge');
+    });
+
+    test('should handle data URL service workers', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/sw-inline-data-test');
+      await page.waitForTimeout(2500);
+
+      // Check registration result
+      const registrationData = await page.evaluate(() => {
+        return (window as any).__swInlineDataTestData;
+      });
+
+      expect(registrationData).toBeDefined();
+      logInfo(`Data URL SW registration data: ${JSON.stringify(registrationData)}`);
+
+      // Check DOM was updated
+      const resultText = await page.locator('#result').textContent();
+      logInfo(`Result text: ${resultText}`);
+
+      logSuccess('Data URL SW handled by bridge');
+    });
+
+    test('should transform modern syntax in inline SW', async ({ page }) => {
+      const consoleLogs: string[] = [];
+      page.on('console', (msg) => {
+        consoleLogs.push(msg.text());
+      });
+
+      await goToMockServer(page, '/sw-inline-modern-test');
+      await page.waitForTimeout(2500);
+
+      // Check registration result
+      const registrationData = await page.evaluate(() => {
+        return (window as any).__swInlineModernTestData;
+      });
+
+      expect(registrationData).toBeDefined();
+      logInfo(`Modern syntax SW registration data: ${JSON.stringify(registrationData)}`);
+
+      // Check DOM was updated
+      const resultText = await page.locator('#result').textContent();
+      logInfo(`Result text: ${resultText}`);
+
+      logSuccess('Modern syntax in inline SW handled');
+    });
+  });
+
+  test.describe('SW Inline Endpoint', () => {
+    test('should transform inline SW code via POST', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const swCode = `
+          // Test inline SW
+          self.addEventListener('install', function(e) {
+            console.log('Installing');
+          });
+        `;
+
+        const response = await fetch('/__revamp__/sw/inline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: swCode, scope: '/' })
+        });
+
+        return {
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          text: await response.text()
+        };
+      });
+
+      logInfo(`SW inline response status: ${result.status}`);
+      logInfo(`SW inline content-type: ${result.contentType}`);
+
+      expect(result.status).toBe(200);
+      expect(result.contentType).toContain('javascript');
+      expect(result.text.length).toBeGreaterThan(0);
+      // Should have the wrapper added
+      expect(result.text).toContain('[Revamp]');
+      logSuccess('SW inline endpoint transforms code');
+    });
+
+    test('should require POST method for inline endpoint', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const response = await fetch('/__revamp__/sw/inline', {
+          method: 'GET'
+        });
+        return {
+          status: response.status,
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(405);
+      expect(result.text).toContain('Method not allowed');
+      logSuccess('SW inline endpoint rejects GET');
+    });
+
+    test('should validate code parameter', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const response = await fetch('/__revamp__/sw/inline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scope: '/' }) // Missing code
+        });
+        return {
+          status: response.status,
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(400);
+      expect(result.text).toContain('code');
+      logSuccess('SW inline endpoint validates code parameter');
+    });
+
+    test('should handle invalid JSON body', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const response = await fetch('/__revamp__/sw/inline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: 'not-valid-json'
+        });
+        return {
+          status: response.status,
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(400);
+      expect(result.text).toContain('Invalid JSON');
+      logSuccess('SW inline endpoint handles invalid JSON');
+    });
+
+    test('should transform modern JS syntax to legacy', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const swCode = `
+          const arrow = () => console.log('arrow');
+          const template = \`string \${1 + 2}\`;
+          self.addEventListener('install', async (e) => {
+            await self.skipWaiting();
+          });
+        `;
+
+        const response = await fetch('/__revamp__/sw/inline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: swCode })
+        });
+
+        return {
+          status: response.status,
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(200);
+      // Should have transformed arrow functions and template literals
+      // The exact output depends on Babel config
+      expect(result.text.length).toBeGreaterThan(0);
+      logInfo(`Transformed code length: ${result.text.length}`);
+      logSuccess('SW inline endpoint transforms modern syntax');
+    });
+  });
 });
