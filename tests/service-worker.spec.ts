@@ -513,27 +513,27 @@ test.describe('Service Worker Bridge', () => {
   test.describe('emulateServiceWorkers Config Option', () => {
     test('should use bridge polyfill when emulateServiceWorkers is true (default)', async ({ page }) => {
       const { getConfig, updateConfig, resetConfig } = await import('./helpers/test-utils');
-      
+
       // First reset to defaults to ensure clean state
       await goToMockServer(page, '/');
       await resetConfig(page);
-      
+
       // Reload to apply default config (emulateServiceWorkers: true)
       await page.reload({ waitUntil: 'domcontentloaded' });
-      
+
       // Check that bridge mode is active - it logs a ready message
       const result = await page.evaluate(async () => {
         // Try to register a SW and see what happens
         try {
           // In bridge mode, the register function should exist and not immediately reject
-          const hasRegister = 'serviceWorker' in navigator && 
+          const hasRegister = 'serviceWorker' in navigator &&
             typeof navigator.serviceWorker.register === 'function';
-          
+
           // Check page source for bridge indicator
           const pageSource = document.documentElement.outerHTML;
-          const hasBridgeIndicator = pageSource.includes('bridge (enabled)') || 
+          const hasBridgeIndicator = pageSource.includes('bridge (enabled)') ||
             pageSource.includes('RevampServiceWorkerBridge');
-          
+
           return {
             hasRegister,
             hasBridgeIndicator,
@@ -542,67 +542,67 @@ test.describe('Service Worker Bridge', () => {
           return { error: String(e) };
         }
       });
-      
+
       expect(result).toHaveProperty('hasRegister', true);
       logSuccess('Bridge mode is active when emulateServiceWorkers=true');
     });
 
     test('should toggle emulateServiceWorkers config option', async ({ page }) => {
       const { getConfig, updateConfig, resetConfig } = await import('./helpers/test-utils');
-      
+
       await goToMockServer(page, '/');
-      
+
       // Get current config
       const { config: originalConfig } = await getConfig(page);
       const originalValue = (originalConfig as { emulateServiceWorkers?: boolean }).emulateServiceWorkers;
-      
+
       logInfo(`Original emulateServiceWorkers: ${originalValue}`);
       expect(originalValue).toBe(true); // Default should be true
-      
+
       // Set to false
       await updateConfig(page, { emulateServiceWorkers: false } as never);
-      
+
       // Verify it changed
       const { config: updatedConfig } = await getConfig(page);
       expect((updatedConfig as { emulateServiceWorkers?: boolean }).emulateServiceWorkers).toBe(false);
       logInfo('Config updated to false');
-      
+
       // Set back to true
       await updateConfig(page, { emulateServiceWorkers: true } as never);
-      
+
       // Verify it changed back
       const { config: restoredConfig } = await getConfig(page);
       expect((restoredConfig as { emulateServiceWorkers?: boolean }).emulateServiceWorkers).toBe(true);
       logInfo('Config restored to true');
-      
+
       // Reset to defaults
       await resetConfig(page);
-      
+
       logSuccess('emulateServiceWorkers config can be toggled');
     });
 
     test('should persist emulateServiceWorkers setting', async ({ page }) => {
       const { getConfig, updateConfig, resetConfig } = await import('./helpers/test-utils');
-      
+
       await goToMockServer(page, '/');
-      
+
       // Get current config
       const { config: originalConfig } = await getConfig(page);
-      
+
       // Update setting
       await updateConfig(page, { emulateServiceWorkers: false } as never);
-      
+
       // Verify it persisted
       const { config: updatedConfig } = await getConfig(page);
       expect((updatedConfig as { emulateServiceWorkers?: boolean }).emulateServiceWorkers).toBe(false);
-      
+
       // Reset
       await resetConfig(page);
-      
+
       // Verify reset
       const { config: resetConfigValues } = await getConfig(page);
       expect((resetConfigValues as { emulateServiceWorkers?: boolean }).emulateServiceWorkers).toBe(true);
-      
+
       logSuccess('emulateServiceWorkers config persists and resets correctly');
     });
   });

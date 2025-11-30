@@ -189,6 +189,22 @@ describe('transformHtml', () => {
     expect(result).toContain('style.css');
   });
 
+  it('should remove CSP meta tags', async () => {
+    const html = `
+      <html><head>
+        <meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+        <meta http-equiv="X-Content-Security-Policy" content="script-src 'self'">
+        <meta http-equiv="X-WebKit-CSP" content="script-src 'self'">
+        <meta charset="utf-8">
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('Content-Security-Policy');
+    expect(result).not.toContain('X-Content-Security-Policy');
+    expect(result).not.toContain('X-WebKit-CSP');
+    expect(result).toContain('charset='); // Other meta tags preserved
+  });
+
   it('should normalize charset to UTF-8', async () => {
     const html = `
       <html><head>

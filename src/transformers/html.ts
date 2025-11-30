@@ -277,6 +277,24 @@ function removeIntegrityAttributes($: CheerioAPI): void {
 }
 
 /**
+ * Remove Content-Security-Policy meta tags.
+ * Required because we inject inline scripts/polyfills that would be blocked by CSP.
+ */
+function removeCspMetaTags($: CheerioAPI): void {
+  // Remove CSP meta tags (case-insensitive check for http-equiv)
+  $('meta').each((_, elem) => {
+    const httpEquiv = $(elem).attr('http-equiv')?.toLowerCase();
+    if (
+      httpEquiv === 'content-security-policy' ||
+      httpEquiv === 'x-content-security-policy' ||
+      httpEquiv === 'x-webkit-csp'
+    ) {
+      $(elem).remove();
+    }
+  });
+}
+
+/**
  * Process and optionally remove ad/tracking scripts.
  * Returns count of removed scripts.
  */
@@ -665,6 +683,9 @@ export async function transformHtml(html: string, url?: string): Promise<string>
 
     // Remove integrity attributes (required for transformed content)
     removeIntegrityAttributes($);
+
+    // Remove CSP meta tags (required for injected inline scripts)
+    removeCspMetaTags($);
 
     // Process and remove ad/tracking scripts
     const result = processScripts($, config.removeAds, config.removeTracking);
