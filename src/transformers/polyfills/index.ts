@@ -3,6 +3,9 @@
  * Combines all polyfills for iOS 9+ (iPad 2) and iOS 11+ compatibility
  */
 
+// Blocked scripts stubs (must be first to prevent errors from blocked ad scripts)
+export { blockedScriptsStubs } from './blocked-scripts-stubs.js';
+
 // Core polyfills
 export { symbolPolyfill } from './symbol.js';
 export { arrayPolyfill } from './array.js';
@@ -72,12 +75,16 @@ import { webComponentsPolyfill } from './web-components.js';
 import { lazyLoadPolyfill } from './lazy-load.js';
 import { errorOverlayScript } from './error-overlay.js';
 import { configOverlayScript } from './config-overlay.js';
+import { blockedScriptsStubs } from './blocked-scripts-stubs.js';
 
 /**
  * Build the complete polyfill script from all atomic polyfills
  */
 export function buildPolyfillScript(): string {
   const polyfills = [
+    // Blocked scripts stubs (must be first to prevent errors from blocked ad scripts)
+    blockedScriptsStubs,
+
     // ES Modules compatibility (run first to handle nomodule scripts)
     esModulesPolyfill,
 
@@ -144,6 +151,7 @@ export function getConfigOverlayScript(): string {
  * Types for custom polyfill loading
  */
 export type PolyfillName =
+  | 'blockedScriptsStubs'
   | 'symbol'
   | 'array'
   | 'string'
@@ -174,6 +182,7 @@ export type PolyfillName =
   | 'lazyLoad';
 
 const polyfillMap: Record<PolyfillName, string> = {
+  blockedScriptsStubs: blockedScriptsStubs,
   symbol: symbolPolyfill,
   array: arrayPolyfill,
   string: stringPolyfill,

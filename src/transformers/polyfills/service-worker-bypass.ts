@@ -7,6 +7,25 @@ export const serviceWorkerBypassPolyfill = `
   (function() {
     'use strict';
 
+    // Helper to create DOMException-like errors (DOMException is not constructable in older browsers)
+    function createDOMException(message, name) {
+      var canConstruct = false;
+      try {
+        new DOMException('test', 'TestError');
+        canConstruct = true;
+      } catch (e) {}
+
+      if (canConstruct) {
+        return new DOMException(message, name);
+      }
+
+      // Fallback: create an Error that mimics DOMException
+      var error = new Error(message);
+      error.name = name || 'Error';
+      error.code = 0;
+      return error;
+    }
+
     // Disable Service Worker registration
     if ('serviceWorker' in navigator) {
       // Override the register function to prevent SW registration
@@ -16,7 +35,7 @@ export const serviceWorkerBypassPolyfill = `
         console.log('[Revamp] Service Worker registration blocked:', scriptURL);
 
         // Return a rejected promise with a meaningful message
-        return Promise.reject(new DOMException(
+        return Promise.reject(createDOMException(
           'Service Worker registration is disabled by Revamp proxy for legacy browser compatibility',
           'NotSupportedError'
         ));
@@ -58,7 +77,7 @@ export const serviceWorkerBypassPolyfill = `
       Object.defineProperty(navigator, 'serviceWorker', {
         value: {
           register: function() {
-            return Promise.reject(new DOMException('Service Workers not supported', 'NotSupportedError'));
+            return Promise.reject(createDOMException('Service Workers not supported', 'NotSupportedError'));
           },
           ready: Promise.resolve({
             active: null,
