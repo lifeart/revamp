@@ -394,14 +394,46 @@ describe('ES Module Bundler', () => {
       expect(detectTopLevelAwait('export const data = await fetchData();')).toBe(true);
     });
 
+    it('should NOT detect await inside async function', () => {
+      const code = `
+        async function fetchData() {
+          const result = await fetch('/api');
+          return result;
+        }
+      `;
+      expect(detectTopLevelAwait(code)).toBe(false);
+    });
+
+    it('should NOT detect await inside async arrow function', () => {
+      const code = `
+        const fetchData = async () => {
+          const result = await fetch('/api');
+          return result;
+        };
+      `;
+      expect(detectTopLevelAwait(code)).toBe(false);
+    });
+
+    it('should NOT detect await inside async method', () => {
+      const code = `
+        const obj = {
+          async getData() {
+            return await fetch('/api');
+          }
+        };
+      `;
+      expect(detectTopLevelAwait(code)).toBe(false);
+    });
+
     it('should NOT detect await in string literals', () => {
       expect(detectTopLevelAwait('const str = "await is not async";')).toBe(false);
       expect(detectTopLevelAwait("const str = 'await this';")).toBe(false);
+      expect(detectTopLevelAwait('const str = `await template`;')).toBe(false);
     });
 
     it('should NOT detect await in comments', () => {
-      expect(detectTopLevelAwait('// await fetch("/api")')).toBe(false);
-      expect(detectTopLevelAwait('/* await Promise.resolve() */')).toBe(false);
+      expect(detectTopLevelAwait('// await fetch("/api")\nconst x = 1;')).toBe(false);
+      expect(detectTopLevelAwait('/* await Promise.resolve() */\nconst x = 1;')).toBe(false);
     });
 
     it('should handle code without await', () => {
@@ -409,18 +441,26 @@ describe('ES Module Bundler', () => {
       expect(detectTopLevelAwait('function sync() { return 1; }')).toBe(false);
     });
 
-    it('should be conservative with nested async functions', () => {
-      // The detection is heuristic-based and may have false positives
-      // This is acceptable because wrapping in async IIFE is safe
+    it('should detect TLA even with nested async functions', () => {
       const code = `
-        async function fetchData() {
-          const result = await fetch('/api');
-          return result;
+        async function helper() {
+          return await fetch('/helper');
+        }
+        const data = await helper();
+      `;
+      expect(detectTopLevelAwait(code)).toBe(true);
+    });
+
+    it('should handle nested functions correctly', () => {
+      const code = `
+        function outer() {
+          async function inner() {
+            await fetch('/api');
+          }
+          inner();
         }
       `;
-      // May return true due to heuristic - this is okay
-      const result = detectTopLevelAwait(code);
-      expect(typeof result).toBe('boolean');
+      expect(detectTopLevelAwait(code)).toBe(false);
     });
   });
 

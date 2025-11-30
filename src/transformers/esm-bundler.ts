@@ -319,60 +319,56 @@ function resolveModuleUrl(specifier: string, baseUrl: string, importMap?: Import
 // Top-Level Await Handling
 // =============================================================================
 
+// Import Babel for AST-based top-level await detection
+import * as babel from '@babel/core';
+
 /**
- * Detect if code contains top-level await
- * This is a simple heuristic - looks for await outside of async functions
+ * Detect if code contains top-level await using Babel AST parsing
+ * This is accurate and handles all edge cases (strings, comments, nested functions)
  */
 export function detectTopLevelAwait(code: string): boolean {
-  // Remove string literals and comments to avoid false positives
-  const stripped = code
-    .replace(/\/\/[^\n]*/g, '') // Remove single-line comments
-    .replace(/\/\*[\s\S]*?\*\//g, '') // Remove multi-line comments
-    .replace(/'(?:[^'\\]|\\.)*'/g, '""') // Remove single-quoted strings
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""') // Remove double-quoted strings
-    .replace(/`(?:[^`\\]|\\.)*`/g, '""'); // Remove template literals
+  try {
+    let hasTopLevelAwait = false;
 
-  // Look for await that's not inside an async function
-  // This is a simplified check - we look for 'await' at the top level
-  // by checking if it appears outside of function/arrow function bodies
+    babel.transformSync(code, {
+      sourceType: 'module',
+      plugins: [
+        {
+          visitor: {
+            // Only detect await at the Program level (top-level)
+            AwaitExpression(path) {
+              // Check if this await is at the top level (not inside a function)
+              let parent = path.parentPath;
+              while (parent !== null) {
+                if (
+                  parent.isFunction() ||
+                  parent.isArrowFunctionExpression() ||
+                  parent.isFunctionDeclaration() ||
+                  parent.isFunctionExpression() ||
+                  parent.isObjectMethod() ||
+                  parent.isClassMethod()
+                ) {
+                  // await is inside a function, not top-level
+                  return;
+                }
+                parent = parent.parentPath;
+              }
+              // await is at top level
+              hasTopLevelAwait = true;
+            },
+          },
+        },
+      ],
+      // Don't generate output, just parse and visit
+      code: false,
+    });
 
-  // Count nested function depth
-  let depth = 0;
-  let inAsyncFunction = false;
-  const tokens = stripped.split(/\b/);
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i].trim();
-
-    if (token === 'async') {
-      // Check if next meaningful token is 'function' or arrow
-      const rest = tokens.slice(i + 1).join('');
-      if (/^\s*(function|\()/.test(rest)) {
-        inAsyncFunction = true;
-      }
-    }
-
-    if (token === 'function' || token === '=>') {
-      depth++;
-      if (!inAsyncFunction) {
-        inAsyncFunction = false;
-      }
-    }
-
-    if (token === '{') {
-      // Could be function body or object literal - hard to tell without proper parsing
-    }
-
-    if (token === 'await' && depth === 0) {
-      // Found await at top level
-      return true;
-    }
+    return hasTopLevelAwait;
+  } catch {
+    // If parsing fails, fall back to simple check
+    // This handles cases where the code might have syntax errors
+    return /\bawait\b/.test(code);
   }
-
-  // Fallback: simple regex check for common patterns
-  // Look for await followed by something that looks like a call or identifier
-  const topLevelAwaitPattern = /(?:^|;|\{|\})\s*(?:const|let|var|export)?\s*(?:\w+\s*=\s*)?await\s+/m;
-  return topLevelAwaitPattern.test(stripped);
 }
 
 /**
