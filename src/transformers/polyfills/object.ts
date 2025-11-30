@@ -20,7 +20,7 @@ export const objectPolyfill = `
       return to;
     };
   }
-  
+
   // Object.entries polyfill
   if (!Object.entries) {
     Object.entries = function(obj) {
@@ -33,20 +33,22 @@ export const objectPolyfill = `
       return entries;
     };
   }
-  
+
   // Object.values polyfill
-  if (!Object.values) {
+  if (typeof Object.values !== 'function') {
     Object.values = function(obj) {
+      if (obj == null) throw new TypeError('Cannot convert undefined or null to object');
+      var o = Object(obj);
       var values = [];
-      for (var key in obj) {
-        if (Object.prototype.hasOwnProperty.call(obj, key)) {
-          values.push(obj[key]);
+      for (var key in o) {
+        if (Object.prototype.hasOwnProperty.call(o, key)) {
+          values.push(o[key]);
         }
       }
       return values;
     };
   }
-  
+
   // Object.getOwnPropertyDescriptors polyfill
   if (!Object.getOwnPropertyDescriptors) {
     Object.getOwnPropertyDescriptors = function(obj) {
@@ -58,7 +60,7 @@ export const objectPolyfill = `
       return descriptors;
     };
   }
-  
+
   // Object.fromEntries polyfill
   if (!Object.fromEntries) {
     Object.fromEntries = function(iterable) {

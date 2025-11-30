@@ -467,7 +467,16 @@ function handleProxyError(
   res: ServerResponse,
   context: string
 ): void {
-  const message = err instanceof Error ? err.message : String(err);
+  let message: string;
+  if (err instanceof AggregateError) {
+    // AggregateError contains multiple errors (e.g., DNS resolution failures)
+    const errorMessages = err.errors.map((e: Error) => e.message || String(e)).join('; ');
+    message = `${err.message}: [${errorMessages}]`;
+  } else if (err instanceof Error) {
+    message = err.message;
+  } else {
+    message = String(err);
+  }
   console.error(`❌ ${context}: ${message}`);
   recordError();
   sendErrorResponse(res, 502, 'Bad Gateway');
@@ -688,7 +697,16 @@ function handleConnect(
       try {
         await proxyRequest(httpsReq, httpsRes, targetUrl, true);
       } catch (err) {
-        console.error(`❌ HTTPS proxy error: ${err}`);
+        let message: string;
+        if (err instanceof AggregateError) {
+          const errorMessages = err.errors.map((e: Error) => e.message || String(e)).join('; ');
+          message = `${err.message}: [${errorMessages}]`;
+        } else if (err instanceof Error) {
+          message = err.message;
+        } else {
+          message = String(err);
+        }
+        console.error(`❌ HTTPS proxy error: ${message}`);
       }
     }
   );

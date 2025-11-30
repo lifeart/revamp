@@ -74,6 +74,7 @@
     "@types/node-forge": "^1.3.14",
     "@types/sharp": "^0.32.0",
     "@vitest/coverage-v8": "^4.0.14",
+    "domhandler": "^5.0.3",
     "playwright": "^1.57.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",

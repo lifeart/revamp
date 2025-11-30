@@ -12,7 +12,8 @@
  */
 
 import * as cheerio from 'cheerio';
-import type { CheerioAPI, Cheerio, Element } from 'cheerio';
+import type { CheerioAPI, Cheerio } from 'cheerio';
+import type { Element } from 'domhandler';
 import { getConfig } from '../config/index.js';
 import { transformJs } from './js.js';
 import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
@@ -379,12 +380,20 @@ function normalizeCharset($: CheerioAPI): void {
  */
 function injectIntoHead($: CheerioAPI, content: string, prepend = true): void {
   const head = $('head');
-  const target = head.length > 0 ? head : $.root();
 
-  if (prepend) {
-    target.prepend(content);
+  if (head.length > 0) {
+    if (prepend) {
+      head.prepend(content);
+    } else {
+      head.append(content);
+    }
   } else {
-    target.append(content);
+    const root = $.root();
+    if (prepend) {
+      root.prepend(content);
+    } else {
+      root.append(content);
+    }
   }
 }
 
@@ -404,23 +413,29 @@ ${userAgentPolyfill}
 
 /**
  * Inject all Revamp scripts (config overlay, polyfills, error overlay).
+ * Order matters: polyfills must run first, then user-agent spoof, then overlays.
  */
 function injectRevampScripts(
   $: CheerioAPI,
   injectPolyfills: boolean,
   spoofUserAgentInJs: boolean
 ): void {
-  // Config overlay is always injected
+  // Inject in reverse order since we're prepending (last prepend = first in DOM)
+
+  // Config overlay comes last (prepend first = appears last)
   injectIntoHead($, getConfigOverlayScript());
 
   if (injectPolyfills) {
+    // Error overlay after polyfills
     injectIntoHead($, getErrorOverlayScript());
-    injectIntoHead($, buildPolyfillScript());
 
+    // User-agent spoof after polyfills but before error overlay
     if (spoofUserAgentInJs) {
-      // User-agent spoof should run first
       injectIntoHead($, buildUserAgentSpoofScript());
     }
+
+    // Polyfills run first (prepend last = appears first in DOM)
+    injectIntoHead($, buildPolyfillScript());
   }
 }
 
