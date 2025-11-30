@@ -351,6 +351,7 @@ export function detectTopLevelAwait(code: string): boolean {
                   // await is inside a function, not top-level
                   return;
                 }
+                if (!parent.parentPath) break;
                 parent = parent.parentPath;
               }
               // await is at top level
