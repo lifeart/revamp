@@ -81,6 +81,10 @@ const HOP_BY_HOP_HEADERS = [
   'proxy-authorization',
   'transfer-encoding',
   'upgrade',
+  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com)
+  // When proxying, the browser's Origin doesn't match what upstream servers expect
+  // The proxy adds its own permissive CORS headers to responses
+  'origin',
 ] as const;
 
 // =============================================================================

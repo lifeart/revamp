@@ -65,6 +65,11 @@ export async function makeHttpsRequest(
     delete requestHeaders['if-modified-since'];
   }
 
+  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com)
+  // When proxying, the browser's Origin doesn't match what upstream servers expect
+  // The proxy adds its own permissive CORS headers to responses
+  delete requestHeaders['origin'];
+
   return new Promise((resolve, reject) => {
     const options = {
       hostname,
@@ -141,6 +146,11 @@ export async function makeHttpRequest(
     delete requestHeaders['if-none-match'];
     delete requestHeaders['if-modified-since'];
   }
+
+  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com)
+  // When proxying, the browser's Origin doesn't match what upstream servers expect
+  // The proxy adds its own permissive CORS headers to responses
+  delete requestHeaders['origin'];
 
   return new Promise((resolve, reject) => {
     const options = {
