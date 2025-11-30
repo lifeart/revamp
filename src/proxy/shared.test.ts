@@ -191,6 +191,19 @@ describe('getContentType', () => {
     expect(getContentType({}, 'http://example.com/')).toBe('html');
   });
 
+  it('should detect JS from URL path patterns (YouTube-style URLs)', () => {
+    // YouTube uses paths like /s/_/ytmainappweb/_/js/k=... without .js extension
+    expect(getContentType({}, 'https://www.youtube.com/s/_/ytmainappweb/_/js/k=ytmainappweb.kevlar_base.en_US.1saR0AquSG0.es5.O/am=AAAQAACA/d=0/rs=AGKMywHL8rJUqMPTxtQ898M2WV31BC8nOQ')).toBe('js');
+    expect(getContentType({}, 'https://example.com/_/js/bundle')).toBe('js');
+    expect(getContentType({}, 'https://example.com/assets/js/app')).toBe('js');
+    expect(getContentType({ 'content-type': 'text/plain' }, 'https://www.youtube.com/s/_/ytmainappweb/_/js/k=test')).toBe('js');
+  });
+
+  it('should detect CSS from URL path patterns', () => {
+    expect(getContentType({}, 'https://example.com/_/css/styles')).toBe('css');
+    expect(getContentType({}, 'https://example.com/assets/css/app')).toBe('css');
+  });
+
   it('should return other for unknown types', () => {
     expect(getContentType({ 'content-type': 'application/x-custom' }, 'http://example.com/file')).toBe('other');
     expect(getContentType({}, 'http://example.com/file.unknown')).toBe('other');

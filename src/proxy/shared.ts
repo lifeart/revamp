@@ -211,8 +211,10 @@ export function getContentType(headers: Record<string, string | string[] | undef
   }
 
   // Fallback to URL-based detection only if no content-type was provided
-  if (!contentType) {
-    const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
+  // or if content-type is generic text/plain
+  const pathname = new URL(url, 'http://localhost').pathname.toLowerCase();
+
+  if (!contentType || contentType.includes('text/plain')) {
     if (pathname.endsWith('.js') || pathname.endsWith('.mjs')) {
       return 'js';
     }
@@ -221,6 +223,17 @@ export function getContentType(headers: Record<string, string | string[] | undef
     }
     if (pathname.endsWith('.html') || pathname.endsWith('.htm') || pathname === '/') {
       return 'html';
+    }
+  }
+
+  // Special URL pattern detection for CDN/dynamic JS URLs without extension
+  // YouTube uses paths like /s/_/ytmainappweb/_/js/...
+  if (!contentType || contentType.includes('text/plain')) {
+    if (pathname.includes('/js/') || pathname.includes('/_/js/') || pathname.includes('.js.')) {
+      return 'js';
+    }
+    if (pathname.includes('/css/') || pathname.includes('/_/css/')) {
+      return 'css';
     }
   }
 

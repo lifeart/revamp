@@ -66,7 +66,8 @@ describe('needsJsTransform', () => {
   it('should return false for simple code', () => {
     expect(needsJsTransform('var x = 1;')).toBe(false);
     expect(needsJsTransform('function foo() { return 42; }')).toBe(false);
-    expect(needsJsTransform('const arr = [1, 2, 3];')).toBe(false);
+    // Note: const needs transformation for Safari 9
+    expect(needsJsTransform('var arr = [1, 2, 3];')).toBe(false);
   });
 
   it('should handle spread operator detection', () => {
@@ -128,6 +129,22 @@ describe('transformJs', () => {
     `;
     const result = await transformJs(code);
     expect(result).not.toContain('??');
+  });
+
+  it('should transform template literals for Safari 9 compatibility', async () => {
+    // Template literals need to be transformed to string concatenation for Safari 9
+    const code = `
+      // This is a test file with template literals
+      const name = 'World';
+      const greeting = \`Hello, \${name}!\`;
+      const multiline = \`Line 1
+      Line 2\`;
+      console.log(greeting);
+    `;
+    const result = await transformJs(code);
+    // Template literals should be transformed to string concatenation
+    expect(result).not.toContain('`');
+    expect(result).toContain('concat');
   });
 
   it('should handle syntax errors gracefully', async () => {

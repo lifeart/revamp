@@ -21,6 +21,11 @@ export interface JsWorkerOutput {
 
 /**
  * Build Babel configuration for the given targets
+ *
+ * Note: bugfixes: false is intentional - with bugfixes: true, Babel doesn't
+ * transform template literals for Safari 9, causing syntax errors.
+ * Safari 9 has partial support for various ES6 features that bugfixes mode
+ * incorrectly assumes are fully supported.
  */
 function getBabelConfig(targets: string[]): TransformOptions {
   return {
@@ -31,7 +36,9 @@ function getBabelConfig(targets: string[]): TransformOptions {
           targets: targets.join(', '),
           useBuiltIns: false,
           modules: false,
-          bugfixes: true,
+          // bugfixes: false is required for Safari 9 compatibility
+          // With bugfixes: true, template literals are not transformed
+          bugfixes: false,
         },
       ],
     ],
@@ -79,10 +86,13 @@ export default async function transformJsWorker(input: JsWorkerInput): Promise<J
       return { code: result.code };
     }
 
+    console.warn(`⚠️ Babel returned no code for: ${filename || 'unknown'}`);
     return { code };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isIgnorable = isIgnorableError(errorMessage);
+
+    console.error(`❌ Babel error for ${filename || 'unknown'}: ${errorMessage}`);
 
     return {
       code,

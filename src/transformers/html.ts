@@ -144,6 +144,17 @@ const TRACKING_PIXEL_SELECTORS: readonly string[] = [
   'noscript img',
 ];
 
+/**
+ * Patterns for scripts that cause syntax errors on old Safari and should be removed.
+ * These scripts are incompatible with Safari 9 and we provide our own polyfills instead.
+ */
+const INCOMPATIBLE_SCRIPT_PATTERNS: readonly RegExp[] = [
+  /custom-elements-es5-adapter/i,  // YouTube's adapter causes syntax errors
+  /webcomponents-bundle/i,         // Web components bundle may have incompatible syntax
+  /webcomponents-loader/i,         // Web components loader
+  /@webcomponents/i,               // @webcomponents packages
+];
+
 // =============================================================================
 // Script Type Detection
 // =============================================================================
@@ -187,6 +198,14 @@ function isAdScript(src: string | undefined, content: string): boolean {
  */
 function isTrackingScript(src: string | undefined, content: string): boolean {
   return matchesAnyPattern(src, content, TRACKING_SCRIPT_PATTERNS);
+}
+
+/**
+ * Check if a script is incompatible with old Safari and should be removed.
+ * These scripts cause syntax errors and we provide our own polyfills instead.
+ */
+function isIncompatibleScript(src: string | undefined, content: string): boolean {
+  return matchesAnyPattern(src, content, INCOMPATIBLE_SCRIPT_PATTERNS);
 }
 
 /**
@@ -281,6 +300,14 @@ function processScripts(
     if (removeTracking && isTrackingScript(src, content)) {
       $script.remove();
       removedTracking++;
+      return;
+    }
+
+    // Remove scripts that cause syntax errors on old Safari
+    // We provide our own polyfills for these features
+    if (isIncompatibleScript(src, content)) {
+      console.log(`[Revamp] Removed incompatible script: ${src || '(inline)'}`);
+      $script.remove();
       return;
     }
   });

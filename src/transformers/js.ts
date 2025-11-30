@@ -120,9 +120,13 @@ export async function transformJs(code: string, filename?: string): Promise<stri
     return code;
   }
 
+  // For large files (> 10KB), always transform - the heuristic might miss things
+  // and the cost of a syntax error is higher than the transform cost
+  const isLargeFile = code.length > 10000;
+
   // Quick heuristic check - skip if no modern JS features detected
   // This avoids expensive Babel parsing for already-compatible code
-  if (!needsJsTransform(code)) {
+  if (!isLargeFile && !needsJsTransform(code)) {
     return code;
   }
 
@@ -161,11 +165,18 @@ export async function transformJs(code: string, filename?: string): Promise<stri
  * Quick heuristic to avoid unnecessary processing
  */
 export function needsJsTransform(code: string): boolean {
-  // Check for modern JS features that iOS 11 doesn't support
+  // Check for modern JS features that Safari 9/iOS 9 doesn't support
   const modernPatterns = [
+    /\blet\s+\w/,        // let declarations (Safari 9 has issues in strict mode)
+    /\bconst\s+\w/,      // const declarations
+    /\bclass\s+\w/,      // class declarations
+    /=>/,                // Arrow functions
+    /`[^`]*`/,           // Template literals
     /\?\./,              // Optional chaining
     /\?\?/,              // Nullish coalescing
     /\.\.\.(?=\w)/,      // Spread in object literals (rough check)
+    /async\s+function/,  // Async functions
+    /\bawait\s+/,        // Await keyword
     /async\s+function\*/, // Async generators
     /for\s+await/,       // For-await-of
     /\#\w+/,             // Private class fields
