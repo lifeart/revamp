@@ -208,6 +208,22 @@ describe('getContentType', () => {
     expect(getContentType({ 'content-type': 'application/x-custom' }, 'http://example.com/file')).toBe('other');
     expect(getContentType({}, 'http://example.com/file.unknown')).toBe('other');
   });
+
+  it('should return other for React Server Component payloads', () => {
+    expect(getContentType({ 'content-type': 'text/x-component' }, 'http://example.com/_rsc')).toBe('other');
+    expect(getContentType({ 'content-type': 'text/x-component; charset=utf-8' }, 'http://example.com/_rsc')).toBe('other');
+    expect(getContentType({ 'content-type': 'application/rsc' }, 'http://example.com/_rsc')).toBe('other');
+  });
+
+  it('should return other for Next.js RSC URL patterns', () => {
+    // RSC query parameter
+    expect(getContentType({ 'content-type': 'text/plain' }, 'http://example.com/page?_rsc=abc123')).toBe('other');
+    expect(getContentType({}, 'http://example.com/page?foo=bar&_rsc=xyz')).toBe('other');
+    // _next/data paths
+    expect(getContentType({ 'content-type': 'text/plain' }, 'http://example.com/_next/data/build123/page.json')).toBe('other');
+    // __nextjs paths
+    expect(getContentType({}, 'http://example.com/__nextjs_original-stack-frame')).toBe('other');
+  });
 });
 
 describe('decompressBody', () => {

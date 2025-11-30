@@ -262,3 +262,65 @@ describe('shutdownWorkerPool', () => {
     await shutdownWorkerPool();
   });
 });
+
+describe('RSC payload detection', () => {
+  beforeEach(() => {
+    resetConfig();
+    updateConfig({ transformJs: true });
+  });
+
+  afterEach(async () => {
+    await shutdownWorkerPool();
+    resetConfig();
+  });
+
+  it('should skip Next.js RSC payload with self.__next_f.push', async () => {
+    const code = 'self.__next_f.push([1,"1a:[\\"$\\",\\"html\\",null]"])';
+    const result = await transformJs(code);
+    // Should return unchanged - no Babel transformation
+    expect(result).toBe(code);
+  });
+
+  it('should skip Next.js RSC payload with self.__next_f initialization', async () => {
+    const code = '(self.__next_f=self.__next_f||[]).push([0])';
+    const result = await transformJs(code);
+    expect(result).toBe(code);
+  });
+
+  it('should skip RSC wire format content', async () => {
+    const code = '0:["$","html",null,{"lang":"en"}]\n1:["$","head",null,{}]';
+    const result = await transformJs(code);
+    expect(result).toBe(code);
+  });
+
+  it('should still transform regular JS with arrow functions', async () => {
+    // Code must be > 100 bytes to trigger transformation
+    const code = `
+      const fn = () => console.log("hello");
+      const fn2 = (a, b) => a + b;
+      const obj = { method: () => this.value };
+    `;
+    const result = await transformJs(code);
+    // Arrow function should be transformed for legacy browsers
+    expect(result).toContain('function');
+    expect(result).not.toContain('=>');
+  });
+
+  it('should skip React component boundary markers ($RC, $RS, $RX)', async () => {
+    const code = '$RC("B:1","S:1")';
+    const result = await transformJs(code);
+    expect(result).toBe(code);
+  });
+
+  it('should skip $RS boundary marker', async () => {
+    const code = '$RS("B:2","S:2")';
+    const result = await transformJs(code);
+    expect(result).toBe(code);
+  });
+
+  it('should skip $RX error boundary marker', async () => {
+    const code = '$RX("B:3","error message")';
+    const result = await transformJs(code);
+    expect(result).toBe(code);
+  });
+});

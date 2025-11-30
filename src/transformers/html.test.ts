@@ -361,6 +361,35 @@ describe('transformHtml', () => {
     expect(result).toContain('Template content');
   });
 
+  it('should skip Next.js RSC payload scripts', async () => {
+    const html = `
+      <html><head></head><body>
+        <script>self.__next_f.push([1,"1a:[\\"$\\",\\"html\\",null]"])</script>
+        <script>(self.__next_f=self.__next_f||[]).push([0])</script>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    // RSC payload should not be transformed (arrow functions would be converted if transformed)
+    expect(result).toContain('self.__next_f.push');
+    // The content should remain unchanged - not have Babel transformations
+    expect(result).toContain('[\\"$\\",\\"html\\",null]');
+  });
+
+  it('should skip React component boundary marker scripts ($RC, $RS, $RX)', async () => {
+    const html = `
+      <html><head></head><body>
+        <script>$RC("B:1","S:1")</script>
+        <script>$RS("B:2","S:2")</script>
+        <script>$RX("B:3","error")</script>
+      </body></html>
+    `;
+    const result = await transformHtml(html);
+    // Component boundary markers should not be transformed
+    expect(result).toContain('$RC("B:1","S:1")');
+    expect(result).toContain('$RS("B:2","S:2")');
+    expect(result).toContain('$RX("B:3","error")');
+  });
+
   it('should handle errors gracefully', async () => {
     // Pass something that might cause issues
     const html = '<!DOCTYPE html><html><head></head><body>Normal content</body></html>';

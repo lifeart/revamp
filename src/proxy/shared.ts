@@ -195,6 +195,19 @@ export function getContentType(headers: Record<string, string | string[] | undef
     return 'other';
   }
 
+  // Skip React Server Component payloads - these contain JSON data, not executable JS
+  if (contentType.includes('text/x-component') ||
+      contentType.includes('application/rsc')) {
+    return 'other';
+  }
+
+  // Check for RSC URL patterns (Next.js RSC requests)
+  const urlLower = url.toLowerCase();
+  if (urlLower.includes('_rsc=') || urlLower.includes('?rsc=') || urlLower.includes('&rsc=') ||
+      urlLower.includes('_next/data/') || urlLower.includes('__nextjs_')) {
+    return 'other';
+  }
+
   if (contentType.includes('javascript') || contentType.includes('ecmascript')) {
     return 'js';
   }

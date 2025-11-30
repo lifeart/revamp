@@ -192,6 +192,17 @@ const HTML_TAG_PATTERN = /<[a-zA-Z][^>]*>/g;
 /** Regex to count JavaScript keywords */
 const JS_KEYWORD_PATTERN = /\b(function|var|let|const|if|else|for|while|return|this)\b/g;
 
+/** Patterns that indicate React Server Component (RSC) / Next.js data payloads */
+const RSC_PAYLOAD_PATTERNS: readonly RegExp[] = [
+  /self\.__next_f\.push/,           // Next.js RSC payload
+  /self\.__next_s\.push/,           // Next.js streaming
+  /self\.__next_c\.push/,           // Next.js chunks
+  /\(\s*self\s*\.\s*__next/,        // Variations with parentheses
+  /\["?\$"?,\s*"[^"]+"/,            // RSC wire format ["$","tag",...] at start
+  /^\s*\d+:["\[]/,                  // RSC line format like "1a:[" or '0:"'
+  /\$R[CSX]\s*\(/,                  // React component boundary markers $RC, $RS, $RX
+];
+
 // =============================================================================
 // Detection Functions
 // =============================================================================
@@ -261,6 +272,14 @@ function isHtmlTemplateContent(content: string): boolean {
   const jsKeywordCount = (content.match(JS_KEYWORD_PATTERN) || []).length;
 
   return htmlTagCount > 3 && htmlTagCount > jsKeywordCount;
+}
+
+/**
+ * Check if script content is a React Server Component (RSC) or Next.js data payload.
+ * These scripts contain JSON data strings that should not be transformed.
+ */
+function isRscPayload(content: string): boolean {
+  return RSC_PAYLOAD_PATTERNS.some(pattern => pattern.test(content));
 }
 
 // =============================================================================
@@ -384,6 +403,11 @@ async function transformInlineScripts(
 
     // Skip HTML template content
     if (isHtmlTemplateContent(content)) {
+      continue;
+    }
+
+    // Skip React Server Component (RSC) / Next.js data payloads
+    if (isRscPayload(content)) {
       continue;
     }
 

@@ -102,6 +102,19 @@ export async function prewarmWorkerPool(): Promise<void> {
 }
 
 /**
+ * Check if the code is a React Server Component (RSC) / Next.js data payload.
+ * These contain JSON data strings that should not be transformed by Babel.
+ */
+function isRscPayload(code: string): boolean {
+  // Next.js RSC patterns - these scripts contain embedded JSON that Babel can corrupt
+  return /self\s*\.\s*__next_[fsc]\s*\.?\s*push|self\s*\.\s*__next_[fsc]\s*=/.test(code) ||
+    // RSC wire format at start of content
+    /^\s*\d+:["\[]/.test(code) ||
+    // React component boundary markers ($RC, $RS, $RX)
+    /\$R[CSX]\s*\(/.test(code);
+}
+
+/**
  * Transform JavaScript code for legacy browser compatibility
  * Uses worker pool for parallel processing
  *
@@ -117,6 +130,12 @@ export async function transformJs(code: string, filename?: string): Promise<stri
 
   // Skip very small files (< 100 bytes) - likely not complex JS
   if (code.length < 100) {
+    return code;
+  }
+
+  // Skip RSC payloads - they contain JSON data that Babel can corrupt
+  if (isRscPayload(code)) {
+    console.log(`⏭️ Skipping RSC payload: ${filename || 'unknown'}`);
     return code;
   }
 
