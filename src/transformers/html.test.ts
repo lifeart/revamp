@@ -486,4 +486,101 @@ describe('transformHtml', () => {
     expect(result).not.toContain('Real Ad');
     expect(result).toContain('Real content');
   });
+
+  it('should inject polyfills BEFORE the first script in the document', async () => {
+    updateConfig({ injectPolyfills: true });
+    const html = `
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <script src="https://example.com/app.js"></script>
+          <script>var myInlineVar = 123;</script>
+        </head>
+        <body></body>
+      </html>
+    `;
+    const result = await transformHtml(html);
+
+    // Find positions of polyfill and first external script
+    const polyfillPos = result.indexOf('Revamp Polyfills');
+    const appJsPos = result.indexOf('app.js');
+    const inlineScriptPos = result.indexOf('myInlineVar');
+
+    // Polyfills must appear BEFORE any other script
+    expect(polyfillPos).toBeGreaterThan(-1);
+    expect(appJsPos).toBeGreaterThan(-1);
+    expect(polyfillPos).toBeLessThan(appJsPos);
+    expect(polyfillPos).toBeLessThan(inlineScriptPos);
+  });
+
+  it('should inject polyfills before scripts even when scripts are in body', async () => {
+    updateConfig({ injectPolyfills: true });
+    const html = `
+      <html>
+        <head>
+          <meta charset="utf-8">
+        </head>
+        <body>
+          <script src="https://example.com/body-script.js"></script>
+          <div>Content</div>
+        </body>
+      </html>
+    `;
+    const result = await transformHtml(html);
+
+    // Find positions
+    const polyfillPos = result.indexOf('Revamp Polyfills');
+    const bodyScriptPos = result.indexOf('body-script.js');
+
+    // Polyfills must appear BEFORE the script in body
+    expect(polyfillPos).toBeGreaterThan(-1);
+    expect(bodyScriptPos).toBeGreaterThan(-1);
+    expect(polyfillPos).toBeLessThan(bodyScriptPos);
+  });
+
+  it('should inject polyfills in head when no scripts exist', async () => {
+    updateConfig({ injectPolyfills: true });
+    const html = `
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>No Scripts Page</title>
+        </head>
+        <body>
+          <div>Content only</div>
+        </body>
+      </html>
+    `;
+    const result = await transformHtml(html);
+
+    // Polyfills should be in head
+    const headStart = result.indexOf('<head>');
+    const headEnd = result.indexOf('</head>');
+    const polyfillPos = result.indexOf('Revamp Polyfills');
+
+    expect(polyfillPos).toBeGreaterThan(headStart);
+    expect(polyfillPos).toBeLessThan(headEnd);
+  });
+
+  it('should ensure Object.fromEntries polyfill is available before any script', async () => {
+    updateConfig({ injectPolyfills: true });
+    const html = `
+      <html>
+        <head>
+          <script src="https://cdn.example.com/library.js"></script>
+        </head>
+        <body></body>
+      </html>
+    `;
+    const result = await transformHtml(html);
+
+    // Verify Object.fromEntries polyfill is included
+    expect(result).toContain('Object.fromEntries');
+
+    // Verify it comes before the external script
+    const fromEntriesPos = result.indexOf('Object.fromEntries');
+    const libraryPos = result.indexOf('library.js');
+
+    expect(fromEntriesPos).toBeLessThan(libraryPos);
+  });
 });

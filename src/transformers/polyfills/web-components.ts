@@ -12,7 +12,7 @@ export const webComponentsPolyfill = `
       var registry = {};
       var upgradeCandidates = [];
 
-      function upgradeElement(element) {
+      var upgradeElement = function(element) {
         var name = element.tagName.toLowerCase();
         var constructor = registry[name];
 
@@ -40,14 +40,14 @@ export const webComponentsPolyfill = `
             console.error('[Revamp] connectedCallback error:', e);
           }
         }
-      }
+      };
 
-      function processUpgradeCandidates() {
+      var processUpgradeCandidates = function() {
         for (var i = 0; i < upgradeCandidates.length; i++) {
           upgradeElement(upgradeCandidates[i]);
         }
         upgradeCandidates = [];
-      }
+      };
 
       window.customElements = {
         define: function(name, constructor, options) {

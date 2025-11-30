@@ -16,9 +16,9 @@ export const weakCollectionsPolyfill = `
 
     // WeakMap polyfill using hidden property
     if (typeof WeakMap === 'undefined') {
-      function WeakMapPolyfill() {
+      var WeakMapPolyfill = function() {
         this._id = '_wm_' + (counter++) + '_' + Math.random().toString(36).slice(2);
-      }
+      };
 
       WeakMapPolyfill.prototype.set = function(key, value) {
         if (key === null || (typeof key !== 'object' && typeof key !== 'function')) {
@@ -73,9 +73,9 @@ export const weakCollectionsPolyfill = `
 
     // WeakSet polyfill using WeakMap
     if (typeof WeakSet === 'undefined') {
-      function WeakSetPolyfill() {
+      var WeakSetPolyfill = function() {
         this._map = new WeakMap();
-      }
+      };
 
       WeakSetPolyfill.prototype.add = function(value) {
         if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {

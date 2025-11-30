@@ -404,6 +404,7 @@ function normalizeCharset($: CheerioAPI): void {
 
 /**
  * Inject script content into the document head (or root if no head).
+ * For critical scripts like polyfills, use injectBeforeAllScripts instead.
  */
 function injectIntoHead($: CheerioAPI, content: string, prepend = true): void {
   const head = $('head');
@@ -420,6 +421,28 @@ function injectIntoHead($: CheerioAPI, content: string, prepend = true): void {
       root.prepend(content);
     } else {
       root.append(content);
+    }
+  }
+}
+
+/**
+ * Inject polyfills before the very first script in the document.
+ * This ensures polyfills are available before ANY script executes.
+ */
+function injectBeforeAllScripts($: CheerioAPI, content: string): void {
+  // Find the very first script tag in the entire document
+  const firstScript = $('script').first();
+
+  if (firstScript.length > 0) {
+    // Insert before the first script tag anywhere in the document
+    firstScript.before(content);
+  } else {
+    // No scripts found, prepend to head or root
+    const head = $('head');
+    if (head.length > 0) {
+      head.prepend(content);
+    } else {
+      $.root().prepend(content);
     }
   }
 }
@@ -447,23 +470,22 @@ function injectRevampScripts(
   injectPolyfills: boolean,
   spoofUserAgentInJs: boolean
 ): void {
-  // Inject in reverse order since we're prepending (last prepend = first in DOM)
-
-  // Config overlay comes last (prepend first = appears last)
-  injectIntoHead($, getConfigOverlayScript());
-
   if (injectPolyfills) {
-    // Error overlay after polyfills
-    injectIntoHead($, getErrorOverlayScript());
+    // CRITICAL: Polyfills MUST be injected before ANY other script in the document
+    // This ensures Object.fromEntries, Array.from, etc. are available
+    injectBeforeAllScripts($, buildPolyfillScript());
 
-    // User-agent spoof after polyfills but before error overlay
+    // User-agent spoof right after polyfills
     if (spoofUserAgentInJs) {
       injectIntoHead($, buildUserAgentSpoofScript());
     }
 
-    // Polyfills run first (prepend last = appears first in DOM)
-    injectIntoHead($, buildPolyfillScript());
+    // Error overlay after polyfills
+    injectIntoHead($, getErrorOverlayScript());
   }
+
+  // Config overlay comes last (append to head)
+  injectIntoHead($, getConfigOverlayScript(), false);
 }
 
 /**
