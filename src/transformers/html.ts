@@ -711,6 +711,14 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
   }
 
   try {
+    // Validate HTML structure - detect malformed documents with multiple <html> tags
+    // Must check raw string before cheerio parsing (cheerio merges them)
+    const htmlTagMatches = html.match(/<html[\s>]/gi);
+    if (htmlTagMatches && htmlTagMatches.length > 1) {
+      console.warn(`⚠️ Malformed HTML detected: found ${htmlTagMatches.length} <html> tags${url ? ` in ${url}` : ''}`);
+      return html;
+    }
+
     const $ = cheerio.load(html, { xml: false });
 
     // Remove integrity attributes (required for transformed content)
