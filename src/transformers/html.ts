@@ -711,11 +711,17 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
   }
 
   try {
-    // Validate HTML structure - detect malformed documents with multiple <html> tags
+    // Validate HTML structure - detect malformed documents with multiple <html> or <body> tags
     // Must check raw string before cheerio parsing (cheerio merges them)
     const htmlTagMatches = html.match(/<html[\s>]/gi);
     if (htmlTagMatches && htmlTagMatches.length > 1) {
       console.warn(`⚠️ Malformed HTML detected: found ${htmlTagMatches.length} <html> tags${url ? ` in ${url}` : ''}`);
+      return html;
+    }
+
+    const bodyTagMatches = html.match(/<body[\s>]/gi);
+    if (bodyTagMatches && bodyTagMatches.length > 1) {
+      console.warn(`⚠️ Malformed HTML detected: found ${bodyTagMatches.length} <body> tags${url ? ` in ${url}` : ''}`);
       return html;
     }
 

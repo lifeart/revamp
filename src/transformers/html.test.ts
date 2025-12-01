@@ -301,6 +301,13 @@ describe('transformHtml', () => {
     expect(result).toBe(html);
   });
 
+  it('should return original HTML when multiple body tags are detected', async () => {
+    const html = `<html><head></head><body>First</body><body>Second</body></html>`;
+    const result = await transformHtml(html);
+    // Should return original HTML without transformation
+    expect(result).toBe(html);
+  });
+
   it('should skip transformation of module scripts when bundleEsModules is disabled', async () => {
     updateConfig({ transformJs: true, bundleEsModules: false });
     const html = `
