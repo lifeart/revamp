@@ -469,6 +469,24 @@ function extractImportMap($: CheerioAPI): ImportMap | undefined {
 }
 
 /**
+ * Wrap bundled module code in a DOMContentLoaded callback.
+ * ES modules are deferred by default, so they execute after DOM is ready.
+ * When we bundle them into regular scripts, we need to preserve this behavior.
+ */
+function wrapInDomReady(code: string): string {
+  return `(function(){
+  function __revampExec(){
+${code}
+  }
+  if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded",__revampExec);
+  }else{
+    __revampExec();
+  }
+})();`;
+}
+
+/**
  * Transform ES module scripts by bundling them for legacy browsers.
  * Converts module scripts to regular scripts with bundled code.
  */
@@ -524,10 +542,11 @@ async function transformModuleScripts(
         continue;
       }
 
-      // Replace module script with bundled IIFE
+      // Replace module script with bundled code wrapped in DOMContentLoaded
+      // ES modules are deferred by default, so we need to preserve that behavior
       $script.removeAttr('type');
       $script.removeAttr('src');
-      $script.html(bundleResult.code);
+      $script.html(wrapInDomReady(bundleResult.code));
 
       if (bundleResult.success) {
         bundledCount++;
@@ -696,6 +715,44 @@ function addTransformComment($: CheerioAPI, result: TransformResult): void {
 // =============================================================================
 
 /**
+ * Extract content that appears after the </html> closing tag.
+ * Some pages have scripts/content after </html> which Cheerio moves inside the document.
+ * We need to preserve this content and re-append it after transformation.
+ */
+function extractContentAfterHtml(html: string): { mainHtml: string; trailingContent: string } {
+  // Find the last </html> tag (case-insensitive)
+  const closingHtmlMatch = html.match(/<\/html\s*>/gi);
+
+  if (!closingHtmlMatch || closingHtmlMatch.length === 0) {
+    return { mainHtml: html, trailingContent: '' };
+  }
+
+  // Find the position of the last </html> tag
+  const lastClosingTag = closingHtmlMatch[closingHtmlMatch.length - 1];
+  const lastIndex = html.lastIndexOf(lastClosingTag);
+
+  if (lastIndex === -1) {
+    return { mainHtml: html, trailingContent: '' };
+  }
+
+  const endOfClosingTag = lastIndex + lastClosingTag.length;
+  const trailingContent = html.slice(endOfClosingTag);
+
+  // Only extract if there's meaningful content after </html>
+  // (not just whitespace)
+  if (trailingContent.trim().length === 0) {
+    return { mainHtml: html, trailingContent: '' };
+  }
+
+  console.log(`⚠️ Found content after </html> tag (${trailingContent.trim().length} chars) - preserving it`);
+
+  return {
+    mainHtml: html.slice(0, endOfClosingTag),
+    trailingContent: trailingContent
+  };
+}
+
+/**
  * Transform HTML content for legacy browser compatibility.
  *
  * @param html - The HTML content to transform
@@ -711,21 +768,24 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
   }
 
   try {
+    // Extract content after </html> to preserve it (Cheerio would move it inside the document)
+    const { mainHtml, trailingContent } = extractContentAfterHtml(html);
+
     // Validate HTML structure - detect malformed documents with multiple <html> or <body> tags
     // Must check raw string before cheerio parsing (cheerio merges them)
-    const htmlTagMatches = html.match(/<html[\s>]/gi);
+    const htmlTagMatches = mainHtml.match(/<html[\s>]/gi);
     if (htmlTagMatches && htmlTagMatches.length > 1) {
       console.warn(`⚠️ Malformed HTML detected: found ${htmlTagMatches.length} <html> tags${url ? ` in ${url}` : ''}`);
       return html;
     }
 
-    const bodyTagMatches = html.match(/<body[\s>]/gi);
+    const bodyTagMatches = mainHtml.match(/<body[\s>]/gi);
     if (bodyTagMatches && bodyTagMatches.length > 1) {
       console.warn(`⚠️ Malformed HTML detected: found ${bodyTagMatches.length} <body> tags${url ? ` in ${url}` : ''}`);
       return html;
     }
 
-    const $ = cheerio.load(html, { xml: false });
+    const $ = cheerio.load(mainHtml, { xml: false });
 
     // Remove integrity attributes (required for transformed content)
     removeIntegrityAttributes($);
@@ -768,7 +828,9 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     // Add transformation statistics comment
     addTransformComment($, result);
 
-    return $.html();
+    // Re-append any content that was after </html> (preserved from Cheerio modification)
+    const transformedHtml = $.html();
+    return trailingContent ? transformedHtml + trailingContent : transformedHtml;
   } catch (error) {
     console.error('❌ HTML transform error:', error instanceof Error ? error.message : error);
     return html;

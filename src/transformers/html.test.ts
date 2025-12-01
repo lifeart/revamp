@@ -905,4 +905,57 @@ describe('transformHtml with config parameter', () => {
     expect(result).toContain('Revamp Polyfills'); // injectPolyfills: true
     expect(result).toContain('type="module"'); // bundleEsModules: false
   });
+
+  it('should preserve content (like scripts) after </html> tag', async () => {
+    // Some pages have scripts after the closing </html> tag
+    // Cheerio would normally move these inside the document, breaking the DOM
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body><p>Content</p></body>
+</html>
+<script>window.__AFTER_HTML__ = true;</script>
+<script src="https://example.com/after-html.js"></script>`;
+
+    const result = await transformHtml(html);
+
+    // The content after </html> should be preserved at the end
+    expect(result).toContain('Content');
+    expect(result).toContain('window.__AFTER_HTML__');
+    expect(result).toContain('after-html.js');
+
+    // The trailing content should come AFTER the transformed </html>
+    const htmlEndPos = result.lastIndexOf('</html>');
+    const afterHtmlScriptPos = result.indexOf('window.__AFTER_HTML__');
+    expect(afterHtmlScriptPos).toBeGreaterThan(htmlEndPos);
+  });
+
+  it('should handle content after </html> with only whitespace as no trailing content', async () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body><p>Content</p></body>
+</html>
+
+`;
+
+    const result = await transformHtml(html);
+
+    // Should transform normally without issues
+    expect(result).toContain('Content');
+    expect(result).toContain('Revamp');
+  });
+
+  it('should handle HTML with no </html> closing tag', async () => {
+    const html = `<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body><p>Content</p></body>`;
+
+    const result = await transformHtml(html);
+
+    // Should transform normally
+    expect(result).toContain('Content');
+    expect(result).toContain('Revamp');
+  });
 });
