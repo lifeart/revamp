@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { cpus } from 'os';
 import { existsSync } from 'fs';
-import { getConfig } from '../config/index.js';
+import { getConfig, type RevampConfig } from '../config/index.js';
 import type { JsWorkerInput, JsWorkerOutput } from './js-worker.js';
 
 // Get the directory of this file for resolving the worker
@@ -121,10 +121,10 @@ function isRscPayload(code: string): boolean {
  * Optimization: Skip transformation for small files or files that don't
  * contain modern JS syntax that needs transpiling.
  */
-export async function transformJs(code: string, filename?: string): Promise<string> {
-  const config = getConfig();
+export async function transformJs(code: string, filename?: string, config?: RevampConfig): Promise<string> {
+  const effectiveConfig = config || getConfig();
 
-  if (!config.transformJs) {
+  if (!effectiveConfig.transformJs) {
     return code;
   }
 
@@ -155,7 +155,7 @@ export async function transformJs(code: string, filename?: string): Promise<stri
     const input: JsWorkerInput = {
       code,
       filename,
-      targets: config.targets,
+      targets: effectiveConfig.targets,
     };
 
     const result = await workerPool.run(input) as JsWorkerOutput;

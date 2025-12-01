@@ -324,3 +324,134 @@ describe('RSC payload detection', () => {
     expect(result).toBe(code);
   });
 });
+
+describe('transformJs with config parameter', () => {
+  beforeEach(() => {
+    resetConfig();
+  });
+
+  afterEach(async () => {
+    resetConfig();
+    await shutdownWorkerPool();
+  });
+
+  it('should use passed config instead of global config for transformJs', async () => {
+    // Set global config to enable JS transformation
+    updateConfig({ transformJs: true });
+
+    // Code with arrow functions that would normally be transformed
+    const code = `
+      const fn = () => console.log("hello");
+      const fn2 = (a, b) => a + b;
+      const obj = { method: () => this.value };
+    `;
+
+    // Pass config with JS transformation disabled
+    const configWithJsDisabled = {
+      transformHtml: true,
+      transformJs: false,
+      transformCss: true,
+      bundleEsModules: true,
+      emulateServiceWorkers: true,
+      removeAds: true,
+      removeTracking: true,
+      injectPolyfills: true,
+      spoofUserAgentInJs: true,
+      targets: ['safari 9', 'ios 9'],
+      socks5Port: 1080,
+      httpProxyPort: 8080,
+      captivePortalPort: 8888,
+      bindAddress: '0.0.0.0',
+      compressionLevel: 4,
+      cacheEnabled: false,
+      cacheTTL: 3600,
+      cacheDir: './.revamp-cache',
+      certDir: './.revamp-certs',
+      caKeyFile: 'ca.key',
+      caCertFile: 'ca.crt',
+      whitelist: [],
+      blacklist: [],
+      adDomains: [],
+      trackingDomains: [],
+      trackingUrls: [],
+      spoofUserAgent: false,
+      logJsonRequests: false,
+      jsonLogDir: './.revamp-json-logs',
+    };
+
+    const result = await transformJs(code, 'test.js', configWithJsDisabled);
+
+    // Code should be returned unchanged when transformJs is disabled via passed config
+    expect(result).toBe(code);
+    // Arrow functions should NOT be transformed
+    expect(result).toContain('=>');
+  });
+
+  it('should transform code when transformJs is enabled via passed config', async () => {
+    // Set global config to disable JS transformation
+    updateConfig({ transformJs: false });
+
+    // Code with arrow functions
+    const code = `
+      const fn = () => console.log("hello");
+      const fn2 = (a, b) => a + b;
+      const obj = { method: () => this.value };
+    `;
+
+    // Pass config with JS transformation enabled
+    const configWithJsEnabled = {
+      transformHtml: true,
+      transformJs: true,
+      transformCss: true,
+      bundleEsModules: true,
+      emulateServiceWorkers: true,
+      removeAds: true,
+      removeTracking: true,
+      injectPolyfills: true,
+      spoofUserAgentInJs: true,
+      targets: ['safari 9', 'ios 9'],
+      socks5Port: 1080,
+      httpProxyPort: 8080,
+      captivePortalPort: 8888,
+      bindAddress: '0.0.0.0',
+      compressionLevel: 4,
+      cacheEnabled: false,
+      cacheTTL: 3600,
+      cacheDir: './.revamp-cache',
+      certDir: './.revamp-certs',
+      caKeyFile: 'ca.key',
+      caCertFile: 'ca.crt',
+      whitelist: [],
+      blacklist: [],
+      adDomains: [],
+      trackingDomains: [],
+      trackingUrls: [],
+      spoofUserAgent: false,
+      logJsonRequests: false,
+      jsonLogDir: './.revamp-json-logs',
+    };
+
+    const result = await transformJs(code, 'test.js', configWithJsEnabled);
+
+    // Arrow functions should be transformed for legacy browsers
+    expect(result).toContain('function');
+    expect(result).not.toContain('=>');
+  });
+
+  it('should fall back to global config when no config parameter is passed', async () => {
+    // Set global config to disable JS transformation
+    updateConfig({ transformJs: false });
+
+    const code = `
+      const fn = () => console.log("hello");
+      const fn2 = (a, b) => a + b;
+    `;
+
+    // Call without config parameter - should use global config
+    const result = await transformJs(code, 'test.js');
+
+    // Code should be returned unchanged (global config has transformJs: false)
+    expect(result).toBe(code);
+    expect(result).toContain('=>');
+  });
+});

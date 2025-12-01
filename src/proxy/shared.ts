@@ -380,7 +380,7 @@ export async function transformContent(
     case 'js':
       if (effectiveConfig.transformJs) {
         console.log(`🔧 Transforming JS: ${url}`);
-        transformed = await transformJs(text, url);
+        transformed = await transformJs(text, url, effectiveConfig);
       } else {
         transformed = text;
       }
@@ -388,7 +388,7 @@ export async function transformContent(
     case 'css':
       if (effectiveConfig.transformCss) {
         console.log(`🎨 Transforming CSS: ${url}`);
-        transformed = await transformCss(text, url);
+        transformed = await transformCss(text, url, effectiveConfig);
       } else {
         transformed = text;
       }
@@ -396,7 +396,7 @@ export async function transformContent(
     case 'html':
       if (effectiveConfig.transformHtml && isHtmlDocument(text)) {
         console.log(`📄 Transforming HTML: ${url}`);
-        transformed = await transformHtml(text, url);
+        transformed = await transformHtml(text, url, effectiveConfig);
       } else {
         transformed = text;
       }

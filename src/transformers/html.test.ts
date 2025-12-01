@@ -648,3 +648,230 @@ describe('transformHtml', () => {
     expect(fromEntriesPos).toBeLessThan(libraryPos);
   });
 });
+
+describe('transformHtml with config parameter', () => {
+  beforeEach(() => {
+    resetConfig();
+  });
+
+  afterEach(async () => {
+    resetConfig();
+    await shutdownWorkerPool();
+  });
+
+  it('should use passed config instead of global config for bundleEsModules', async () => {
+    // Set global config to enable bundling
+    updateConfig({ transformHtml: true, bundleEsModules: true });
+
+    const html = `
+      <html><head>
+        <script type="module">
+          const x = 1;
+          console.log(x);
+        </script>
+      </head><body></body></html>
+    `;
+
+    // Pass config with bundling disabled - should override global config
+    const configWithBundlingDisabled = {
+      transformHtml: true,
+      transformJs: true,
+      transformCss: true,
+      bundleEsModules: false,
+      emulateServiceWorkers: true,
+      removeAds: false,
+      removeTracking: false,
+      injectPolyfills: true,
+      spoofUserAgentInJs: false,
+      targets: ['safari 9', 'ios 9'],
+      // Required server config fields
+      socks5Port: 1080,
+      httpProxyPort: 8080,
+      captivePortalPort: 8888,
+      bindAddress: '0.0.0.0',
+      compressionLevel: 4,
+      cacheEnabled: false,
+      cacheTTL: 3600,
+      cacheDir: './.revamp-cache',
+      certDir: './.revamp-certs',
+      caKeyFile: 'ca.key',
+      caCertFile: 'ca.crt',
+      whitelist: [],
+      blacklist: [],
+      adDomains: [],
+      trackingDomains: [],
+      trackingUrls: [],
+      spoofUserAgent: false,
+      logJsonRequests: false,
+      jsonLogDir: './.revamp-json-logs',
+    };
+
+    const result = await transformHtml(html, 'http://localhost/test.html', configWithBundlingDisabled);
+
+    // Module script should be preserved when bundling is disabled via passed config
+    expect(result).toContain('type="module"');
+    expect(result).toContain('import');
+  });
+
+  it('should use passed config instead of global config for transformHtml', async () => {
+    // Set global config to enable HTML transformation
+    updateConfig({ transformHtml: true });
+
+    const html = `<html><head></head><body><script>var x = 1;</script></body></html>`;
+
+    // Pass config with HTML transformation disabled
+    const configWithHtmlDisabled = {
+      transformHtml: false,
+      transformJs: true,
+      transformCss: true,
+      bundleEsModules: true,
+      emulateServiceWorkers: true,
+      removeAds: true,
+      removeTracking: true,
+      injectPolyfills: true,
+      spoofUserAgentInJs: true,
+      targets: ['safari 9', 'ios 9'],
+      socks5Port: 1080,
+      httpProxyPort: 8080,
+      captivePortalPort: 8888,
+      bindAddress: '0.0.0.0',
+      compressionLevel: 4,
+      cacheEnabled: false,
+      cacheTTL: 3600,
+      cacheDir: './.revamp-cache',
+      certDir: './.revamp-certs',
+      caKeyFile: 'ca.key',
+      caCertFile: 'ca.crt',
+      whitelist: [],
+      blacklist: [],
+      adDomains: [],
+      trackingDomains: [],
+      trackingUrls: [],
+      spoofUserAgent: false,
+      logJsonRequests: false,
+      jsonLogDir: './.revamp-json-logs',
+    };
+
+    const result = await transformHtml(html, 'http://localhost/test.html', configWithHtmlDisabled);
+
+    // HTML should be returned unchanged when transformHtml is disabled via passed config
+    expect(result).toBe(html);
+    // Should NOT contain Revamp injected content
+    expect(result).not.toContain('Revamp');
+  });
+
+  it('should use passed config for removeAds setting', async () => {
+    // Set global config to remove ads
+    updateConfig({ transformHtml: true, removeAds: true });
+
+    const html = `
+      <html><head>
+        <script src="https://googlesyndication.com/ads.js"></script>
+      </head><body></body></html>
+    `;
+
+    // Pass config with ad removal disabled
+    const configWithAdsAllowed = {
+      transformHtml: true,
+      transformJs: true,
+      transformCss: true,
+      bundleEsModules: false,
+      emulateServiceWorkers: true,
+      removeAds: false,
+      removeTracking: false,
+      injectPolyfills: false,
+      spoofUserAgentInJs: false,
+      targets: ['safari 9', 'ios 9'],
+      socks5Port: 1080,
+      httpProxyPort: 8080,
+      captivePortalPort: 8888,
+      bindAddress: '0.0.0.0',
+      compressionLevel: 4,
+      cacheEnabled: false,
+      cacheTTL: 3600,
+      cacheDir: './.revamp-cache',
+      certDir: './.revamp-certs',
+      caKeyFile: 'ca.key',
+      caCertFile: 'ca.crt',
+      whitelist: [],
+      blacklist: [],
+      adDomains: [],
+      trackingDomains: [],
+      trackingUrls: [],
+      spoofUserAgent: false,
+      logJsonRequests: false,
+      jsonLogDir: './.revamp-json-logs',
+    };
+
+    const result = await transformHtml(html, 'http://localhost/test.html', configWithAdsAllowed);
+
+    // Ad script should be preserved when removeAds is disabled via passed config
+    expect(result).toContain('googlesyndication.com');
+  });
+
+  it('should use passed config for injectPolyfills setting', async () => {
+    // Set global config to inject polyfills
+    updateConfig({ transformHtml: true, injectPolyfills: true });
+
+    const html = `<html><head></head><body></body></html>`;
+
+    // Pass config with polyfill injection disabled
+    const configWithPolyfillsDisabled = {
+      transformHtml: true,
+      transformJs: true,
+      transformCss: true,
+      bundleEsModules: false,
+      emulateServiceWorkers: true,
+      removeAds: false,
+      removeTracking: false,
+      injectPolyfills: false,
+      spoofUserAgentInJs: false,
+      targets: ['safari 9', 'ios 9'],
+      socks5Port: 1080,
+      httpProxyPort: 8080,
+      captivePortalPort: 8888,
+      bindAddress: '0.0.0.0',
+      compressionLevel: 4,
+      cacheEnabled: false,
+      cacheTTL: 3600,
+      cacheDir: './.revamp-cache',
+      certDir: './.revamp-certs',
+      caKeyFile: 'ca.key',
+      caCertFile: 'ca.crt',
+      whitelist: [],
+      blacklist: [],
+      adDomains: [],
+      trackingDomains: [],
+      trackingUrls: [],
+      spoofUserAgent: false,
+      logJsonRequests: false,
+      jsonLogDir: './.revamp-json-logs',
+    };
+
+    const result = await transformHtml(html, 'http://localhost/test.html', configWithPolyfillsDisabled);
+
+    // Polyfills should NOT be injected when disabled via passed config
+    expect(result).not.toContain('Revamp Polyfills');
+    expect(result).not.toContain('Object.fromEntries');
+  });
+
+  it('should fall back to global config when no config parameter is passed', async () => {
+    // Set global config
+    updateConfig({ transformHtml: true, injectPolyfills: true, bundleEsModules: false });
+
+    const html = `
+      <html><head>
+        <script type="module">
+          const x = 1;
+        </script>
+      </head><body></body></html>
+    `;
+
+    // Call without config parameter - should use global config
+    const result = await transformHtml(html, 'http://localhost/test.html');
+
+    // Should use global config settings
+    expect(result).toContain('Revamp Polyfills'); // injectPolyfills: true
+    expect(result).toContain('type="module"'); // bundleEsModules: false
+  });
+});

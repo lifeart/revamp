@@ -5,7 +5,7 @@
 
 import postcss, { type Plugin } from 'postcss';
 import postcssPresetEnv from 'postcss-preset-env';
-import { getConfig } from '../config/index.js';
+import { getConfig, type RevampConfig } from '../config/index.js';
 import { hasGridProperties, transformGridToFlexbox } from './css-grid-fallback.js';
 import { hasDarkModeQueries, stripAllDarkModeCSS } from './dark-mode-strip.js';
 
@@ -133,10 +133,10 @@ function getProcessor(): ReturnType<typeof postcss> {
  * Optimization: Skip transformation for small files or files that don't
  * contain modern CSS features that need transpiling.
  */
-export async function transformCss(code: string, filename?: string): Promise<string> {
-  const config = getConfig();
+export async function transformCss(code: string, filename?: string, config?: RevampConfig): Promise<string> {
+  const effectiveConfig = config || getConfig();
 
-  if (!config.transformCss) {
+  if (!effectiveConfig.transformCss) {
     return code;
   }
 

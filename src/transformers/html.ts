@@ -14,7 +14,7 @@
 import * as cheerio from 'cheerio';
 import type { CheerioAPI, Cheerio } from 'cheerio';
 import type { Element } from 'domhandler';
-import { getConfig } from '../config/index.js';
+import { getConfig, type RevampConfig } from '../config/index.js';
 import { transformJs } from './js.js';
 import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
 import { bundleEsModule, bundleInlineModule, getModuleShimScript, isModuleScript, parseImportMap } from './esm-bundler.js';
@@ -474,10 +474,9 @@ function extractImportMap($: CheerioAPI): ImportMap | undefined {
  */
 async function transformModuleScripts(
   $: CheerioAPI,
-  url: string | undefined
+  url: string | undefined,
+  config: RevampConfig
 ): Promise<number> {
-  const config = getConfig();
-
   // Check if ES module bundling is enabled
   if (!config.bundleEsModules) {
     return 0;
@@ -693,12 +692,13 @@ function addTransformComment($: CheerioAPI, result: TransformResult): void {
  *
  * @param html - The HTML content to transform
  * @param url - Optional URL for context (used in error messages)
+ * @param config - Optional config override (uses getConfig() if not provided)
  * @returns Transformed HTML string
  */
-export async function transformHtml(html: string, url?: string): Promise<string> {
-  const config = getConfig();
+export async function transformHtml(html: string, url?: string, config?: RevampConfig): Promise<string> {
+  const effectiveConfig = config || getConfig();
 
-  if (!config.transformHtml) {
+  if (!effectiveConfig.transformHtml) {
     return html;
   }
 
@@ -712,25 +712,25 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     removeCspMetaTags($);
 
     // Process and remove ad/tracking scripts
-    const result = processScripts($, config.removeAds, config.removeTracking);
+    const result = processScripts($, effectiveConfig.removeAds, effectiveConfig.removeTracking);
 
     // Transform inline scripts for legacy browsers
-    if (config.transformJs) {
+    if (effectiveConfig.transformJs) {
       await transformInlineScripts($, url);
     }
 
     // Bundle ES modules for legacy browsers
-    if (config.bundleEsModules) {
-      result.bundledModules = await transformModuleScripts($, url);
+    if (effectiveConfig.bundleEsModules) {
+      result.bundledModules = await transformModuleScripts($, url, effectiveConfig);
     }
 
     // Remove ad containers
-    if (config.removeAds) {
+    if (effectiveConfig.removeAds) {
       removeAdContainers($);
     }
 
     // Remove tracking pixels
-    if (config.removeTracking) {
+    if (effectiveConfig.removeTracking) {
       removeTrackingPixels($);
     }
 
@@ -738,7 +738,7 @@ export async function transformHtml(html: string, url?: string): Promise<string>
     normalizeCharset($);
 
     // Inject Revamp scripts
-    injectRevampScripts($, config.injectPolyfills, config.spoofUserAgentInJs, config.emulateServiceWorkers);
+    injectRevampScripts($, effectiveConfig.injectPolyfills, effectiveConfig.spoofUserAgentInJs, effectiveConfig.emulateServiceWorkers);
 
     // Add transformation statistics comment
     addTransformComment($, result);
