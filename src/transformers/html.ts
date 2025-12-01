@@ -574,6 +574,14 @@ function removeTrackingPixels($: CheerioAPI): void {
 }
 
 /**
+ * Remove preload link elements.
+ * Preload hints are not useful for legacy browsers and can cause unnecessary requests.
+ */
+function removePreloadLinks($: CheerioAPI): void {
+  $('link[rel="preload"]').remove();
+}
+
+/**
  * Normalize charset meta tags to UTF-8.
  */
 function normalizeCharset($: CheerioAPI): void {
@@ -733,6 +741,9 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     if (effectiveConfig.removeTracking) {
       removeTrackingPixels($);
     }
+
+    // Remove preload links (not useful for legacy browsers)
+    removePreloadLinks($);
 
     // Normalize charset to UTF-8
     normalizeCharset($);

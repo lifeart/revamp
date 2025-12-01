@@ -189,6 +189,23 @@ describe('transformHtml', () => {
     expect(result).toContain('style.css');
   });
 
+  it('should remove preload links', async () => {
+    const html = `
+      <html><head>
+        <link rel="preload" href="font.woff2" as="font" type="font/woff2" crossorigin>
+        <link rel="preload" href="style.css" as="style">
+        <link rel="preload" href="script.js" as="script">
+        <link rel="stylesheet" href="main.css">
+      </head><body></body></html>
+    `;
+    const result = await transformHtml(html);
+    expect(result).not.toContain('rel="preload"');
+    expect(result).not.toContain('font.woff2');
+    expect(result).not.toContain('as="font"');
+    expect(result).toContain('rel="stylesheet"');
+    expect(result).toContain('main.css');
+  });
+
   it('should remove CSP meta tags', async () => {
     const html = `
       <html><head>
