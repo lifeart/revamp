@@ -2,6 +2,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as fs from 'fs';
 import * as path from 'path';
+import nextScript from './mocks/next-scipt';
 
 /**
  * Mock HTTP/HTTPS server for e2e tests
@@ -1089,6 +1090,89 @@ export const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
     }
 
     testInlineModernSw();
+  </script>
+</body>
+</html>`,
+
+  // =============================================================================
+  // Next.js Script Test Page
+  // =============================================================================
+
+  // Test page with Next.js self.__next_f.push() pattern
+  '/nextjs-script-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Next.js Script Test</title>
+</head>
+<body>
+  <h1>Next.js Script Test</h1>
+  <div id="result">Loading...</div>
+  <div id="parsed-data">Parsed: Loading...</div>
+  <div id="error-output"></div>
+
+  <script>
+    // Initialize Next.js flight data array and test data
+    window.__next_f = [];
+    window.__nextjsTestData = {
+      pushCalled: false,
+      pushData: null,
+      parseSuccess: false,
+      parsedJson: null,
+      errors: []
+    };
+
+    // Track errors
+    window.onerror = function(msg, source, line, col, error) {
+      window.__nextjsTestData.errors.push({
+        message: msg,
+        source: source,
+        line: line,
+        col: col,
+        error: error ? error.toString() : null
+      });
+      document.getElementById('error-output').textContent = 'Error: ' + msg;
+      return false;
+    };
+
+    // Override push to capture data
+    var originalPush = Array.prototype.push;
+    window.__next_f.push = function() {
+      var args = Array.prototype.slice.call(arguments);
+      window.__nextjsTestData.pushCalled = true;
+      window.__nextjsTestData.pushData = args;
+
+      // Try to parse the second element (JSON string) from the first argument
+      if (args.length > 0 && Array.isArray(args[0]) && args[0].length > 1) {
+        var jsonString = args[0][1];
+        try {
+          // The JSON string has a prefix like "1a:" before the actual JSON
+          var colonIndex = jsonString.indexOf(':');
+          if (colonIndex !== -1) {
+            var actualJson = jsonString.substring(colonIndex + 1);
+            var parsed = JSON.parse(actualJson);
+            window.__nextjsTestData.parseSuccess = true;
+            window.__nextjsTestData.parsedJson = parsed;
+            document.getElementById('parsed-data').textContent = 'Parsed: Success - ' + (parsed[0] || 'data received');
+            document.getElementById('parsed-data').dataset.loaded = 'true';
+          }
+        } catch (e) {
+          window.__nextjsTestData.parseError = e.message;
+          document.getElementById('parsed-data').textContent = 'Parse Error: ' + e.message;
+        }
+      }
+
+      document.getElementById('result').textContent = 'Push called with ' + args.length + ' argument(s)';
+      document.getElementById('result').dataset.loaded = 'true';
+
+      return originalPush.apply(this, args);
+    };
+  </script>
+
+  <!-- Next.js flight data script - this is the pattern used by Next.js RSC -->
+  <script>
+    ${nextScript}
   </script>
 </body>
 </html>`,
