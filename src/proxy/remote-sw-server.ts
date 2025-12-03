@@ -48,7 +48,13 @@ interface PlaywrightPage {
 }
 
 interface PlaywrightRoute {
-  request(): { url(): string; method(): string; headers(): Record<string, string>; postData(): string | null };
+  request(): {
+    url(): string;
+    method(): string;
+    headers(): Record<string, string>;
+    postData(): string | null;
+    resourceType(): string;
+  };
   fulfill(options: { status: number; headers?: Record<string, string>; body?: string | Buffer }): Promise<void>;
   continue(): Promise<void>;
   abort(reason?: string): Promise<void>;
@@ -409,11 +415,15 @@ export class RemoteSwServer {
 
   private handleConnection(ws: unknown, request: IncomingMessage): void {
     console.log('[Remote SW Server] New connection from ' + request.socket.remoteAddress);
+    console.log('[Remote SW Server] WebSocket readyState:', wsReadyState(ws));
 
     wsOn(ws, 'message', (data: unknown) => {
+      console.log('[Remote SW Server] Raw message received:', String(data).substring(0, 200));
       try {
         const message: WSMessage = JSON.parse(String(data));
         const clientId = this.connectionsBySocket.get(ws as object);
+
+        console.log('[Remote SW Server] Parsed message type:', message.type, 'clientId:', clientId || 'not-yet-registered');
 
         if (message.type === 'client_init') {
           this.handleClientInit(ws, message);
@@ -446,7 +456,10 @@ export class RemoteSwServer {
     const origin = (message.origin as string) || 'unknown';
     const userAgent = (message.userAgent as string) || 'unknown';
 
+    console.log('[Remote SW Server] Received client_init from:', clientId, 'origin:', origin);
+
     if (this.clients.has(clientId)) {
+      console.log('[Remote SW Server] Cleaning up existing client:', clientId);
       this.cleanupClient(clientId);
     }
 
@@ -467,11 +480,27 @@ export class RemoteSwServer {
 
     console.log('[Remote SW Server] Client initialized: ' + clientId + ' from ' + origin);
 
-    this.sendToClient(clientId, {
+    // Send init_ack immediately
+    const ackMessage = {
       type: 'init_ack',
       clientId,
       serverTime: Date.now()
-    });
+    };
+    console.log('[Remote SW Server] Sending init_ack to:', clientId);
+
+    const sent = this.sendToClient(clientId, ackMessage);
+    if (!sent) {
+      console.error('[Remote SW Server] Failed to send init_ack to:', clientId);
+      // Try direct send as fallback
+      try {
+        wsSend(ws, JSON.stringify(ackMessage));
+        console.log('[Remote SW Server] init_ack sent directly to:', clientId);
+      } catch (e) {
+        console.error('[Remote SW Server] Direct send also failed:', e);
+      }
+    } else {
+      console.log('[Remote SW Server] init_ack sent successfully to:', clientId);
+    }
   }
 
   private handleClientMessage(clientId: string, message: WSMessage): void {
@@ -535,18 +564,97 @@ export class RemoteSwServer {
       });
 
       // Set up route interception to forward requests to the legacy device
+      // But skip the initial page loads to avoid circular dependencies
       await client.browserContext.route('**/*', async (route) => {
         const request = route.request();
         const url = request.url();
+        const resourceType = request.resourceType();
 
-        // Skip data/blob URLs
+        // Skip data/blob URLs - let them through
         if (url.startsWith('data:') || url.startsWith('blob:')) {
           await route.continue();
           return;
         }
 
+        // Skip about:blank
+        if (url === 'about:blank') {
+          await route.continue();
+          return;
+        }
+
+        // For document/navigation requests, serve a minimal HTML page
+        // This prevents circular dependencies during SW registration
+        if (resourceType === 'document') {
+          console.log('[Remote SW Server] Serving minimal page for:', url);
+          const minimalHtml = `<!DOCTYPE html>
+<html>
+<head><title>SW Host</title></head>
+<body>
+<script>
+// Minimal page for SW registration
+console.log('[Revamp SW Host] Page loaded for SW context');
+</script>
+</body>
+</html>`;
+          await route.fulfill({
+            status: 200,
+            headers: { 'Content-Type': 'text/html' },
+            body: minimalHtml
+          });
+          return;
+        }
+
+        // For service worker scripts, try to fetch from client
+        if (resourceType === 'serviceworker' || url.endsWith('.js') || url.endsWith('.mjs')) {
+          try {
+            console.log('[Remote SW Server] Fetching script from client:', url, 'resourceType:', resourceType);
+            const response = await this.requestFetchFromClient(
+              client.clientId,
+              '/',
+              {
+                url,
+                method: request.method(),
+                headers: request.headers(),
+                body: request.postData() || undefined
+              }
+            );
+
+            let body: Buffer;
+            if (response.bodyEncoding === 'base64') {
+              body = Buffer.from(response.body, 'base64');
+            } else {
+              body = Buffer.from(response.body, 'utf-8');
+            }
+
+            // Add Service-Worker-Allowed header to allow broader scope
+            // This is needed when SW script is in a subdirectory but controls root
+            // Always add for serviceworker type, or for .js files that look like SW scripts
+            const responseHeaders: Record<string, string> = { ...response.headers };
+            const isSWScript = resourceType === 'serviceworker' ||
+                               url.includes('/sw') ||
+                               url.includes('service-worker') ||
+                               url.includes('serviceworker');
+            if (isSWScript) {
+              responseHeaders['Service-Worker-Allowed'] = '/';
+              console.log('[Remote SW Server] Added Service-Worker-Allowed header for:', url);
+            }
+
+            await route.fulfill({
+              status: response.status,
+              headers: responseHeaders,
+              body
+            });
+            return;
+          } catch (error) {
+            console.error('[Remote SW Server] Failed to fetch script ' + url + ':', error);
+            await route.abort('failed');
+            return;
+          }
+        }
+
+        // For other resources (images, css, etc.), also fetch from client
+        // but with a shorter timeout to avoid blocking
         try {
-          // Request fetch from the legacy device
           const response = await this.requestFetchFromClient(
             client.clientId,
             '/',
@@ -558,7 +666,6 @@ export class RemoteSwServer {
             }
           );
 
-          // Decode response body
           let body: Buffer;
           if (response.bodyEncoding === 'base64') {
             body = Buffer.from(response.body, 'base64');

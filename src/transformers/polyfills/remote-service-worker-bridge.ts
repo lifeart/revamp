@@ -29,6 +29,7 @@ export const remoteServiceWorkerBridgePolyfill = `
     var RECONNECT_DELAY = 3000;
     var MAX_RECONNECT_ATTEMPTS = 5;
     var REQUEST_TIMEOUT = 30000; // 30 seconds
+    var WS_INIT_TIMEOUT = 15000; // 15 seconds for WebSocket initialization
 
     // Generate a unique client ID for this page
     var clientId = 'client_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -174,23 +175,36 @@ export const remoteServiceWorkerBridgePolyfill = `
 
         var initTimeout = setTimeout(function() {
           if (!isInitialized) {
-            warn('WebSocket initialization timeout');
+            warn('WebSocket initialization timeout - no init_ack received after ' + WS_INIT_TIMEOUT + 'ms');
+            warn('WebSocket state:', wsConnection ? wsConnection.readyState : 'null');
+            warn('wsConnected:', wsConnected);
+            if (wsConnection) {
+              wsConnection.close();
+            }
             reject(new Error('WebSocket initialization timeout'));
           }
-        }, 5000);
+        }, WS_INIT_TIMEOUT);
 
         wsConnection.onopen = function() {
-          log('WebSocket connected');
+          log('WebSocket connected, sending client_init');
           wsConnected = true;
           wsReconnectAttempts = 0;
 
           // Send client identification
-          sendMessage({
+          var initMsg = {
             type: 'client_init',
             clientId: clientId,
             origin: window.location.origin,
             userAgent: navigator.userAgent
-          });
+          };
+          log('Sending:', JSON.stringify(initMsg));
+
+          try {
+            wsConnection.send(JSON.stringify(initMsg));
+            log('client_init sent successfully');
+          } catch (e) {
+            warn('Failed to send client_init:', e);
+          }
         };
 
         wsConnection.onmessage = function(event) {
@@ -617,7 +631,7 @@ export const remoteServiceWorkerBridgePolyfill = `
           return Promise.reject(createDOMException('Invalid scriptURL', 'TypeError'));
         }
       }
-      
+
       if (!scriptURL) {
         return Promise.reject(createDOMException('scriptURL is required', 'TypeError'));
       }
