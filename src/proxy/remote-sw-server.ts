@@ -649,64 +649,137 @@ export class RemoteSwServer {
         ? client.origin + '/'
         : new URL(scriptURL).origin + '/';
 
-      await client.swPage!.goto(targetUrl, { waitUntil: 'domcontentloaded' });
-
-      // Register the service worker
-      let swUrl: string;
-      if (scriptType === 'inline') {
-        // Create a blob URL for inline scripts
-        swUrl = await client.swPage!.evaluate((code) => {
-          const blob = new Blob([code as string], { type: 'application/javascript' });
-          return URL.createObjectURL(blob);
-        }, scriptCode);
-      } else {
-        swUrl = scriptURL;
+      // Use a minimal HTML page to avoid any redirects or complex loading
+      // First, try to go to about:blank to reset state
+      try {
+        await client.swPage!.goto('about:blank', { waitUntil: 'load', timeout: 5000 });
+      } catch {
+        // Ignore errors going to about:blank
       }
 
-      // Register the SW and wait for it to be ready
-      const registration = await client.swPage!.evaluate(
-        async (args) => {
-          const { swUrl, scope } = args as { swUrl: string; scope: string };
-          try {
-            // @ts-expect-error - navigator.serviceWorker exists in browser
-            const reg = await navigator.serviceWorker.register(swUrl, { scope });
+      // Set up a simple HTML page with the correct origin context
+      // We'll intercept the navigation and serve a minimal page
+      const minimalHtml = `<!DOCTYPE html><html><head><title>SW Host</title></head><body></body></html>`;
 
-            // Wait for the SW to be active
-            await new Promise<void>((resolve, reject) => {
-              const sw = reg.installing || reg.waiting || reg.active;
-              if (!sw) {
-                reject(new Error('No service worker found'));
-                return;
-              }
+      // Navigate with a shorter timeout and handle navigation errors
+      try {
+        await client.swPage!.goto(targetUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 10000
+        });
+      } catch (navError) {
+        // If navigation fails, we might still have a usable page context
+        console.warn('[Remote SW Server] Navigation warning:', (navError as Error).message);
 
-              if (sw.state === 'activated') {
-                resolve();
-                return;
-              }
+        // Check if we have a valid page context
+        const currentUrl = client.swPage!.url();
+        if (currentUrl === 'about:blank' || !currentUrl.startsWith('http')) {
+          throw new Error('Failed to navigate to target origin: ' + (navError as Error).message);
+        }
+      }
 
-              sw.addEventListener('statechange', () => {
-                if (sw.state === 'activated') {
-                  resolve();
-                } else if (sw.state === 'redundant') {
-                  reject(new Error('Service worker became redundant'));
-                }
-              });
+      // Wait a moment for the page to stabilize
+      await new Promise(resolve => setTimeout(resolve, 100));
 
-              // Timeout after 10 seconds
-              setTimeout(() => reject(new Error('SW activation timeout')), 10000);
-            });
+      // Register the service worker with retry logic
+      let registration: { scope?: string; active?: boolean; error?: string } | null = null;
+      let lastError: Error | null = null;
 
-            return {
-              scope: reg.scope,
-              active: !!reg.active
-            };
-          } catch (e) {
-            return { error: (e as Error).message };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          // Register the service worker
+          let swUrl: string;
+          if (scriptType === 'inline') {
+            // Create a blob URL for inline scripts
+            swUrl = await client.swPage!.evaluate((code) => {
+              const blob = new Blob([code as string], { type: 'application/javascript' });
+              return URL.createObjectURL(blob);
+            }, scriptCode);
+          } else {
+            swUrl = scriptURL;
           }
-        },
-        { swUrl, scope }
-      );      if (registration.error) {
-        throw new Error(registration.error);
+
+          // Register the SW and wait for it to be ready
+          registration = await client.swPage!.evaluate(
+            async (args) => {
+              const { swUrl, scope } = args as { swUrl: string; scope: string };
+              try {
+                // @ts-expect-error - navigator.serviceWorker exists in browser
+                const reg = await navigator.serviceWorker.register(swUrl, { scope });
+
+                // Wait for the SW to be active
+                await new Promise<void>((resolve, reject) => {
+                  const sw = reg.installing || reg.waiting || reg.active;
+                  if (!sw) {
+                    reject(new Error('No service worker found'));
+                    return;
+                  }
+
+                  if (sw.state === 'activated') {
+                    resolve();
+                    return;
+                  }
+
+                  sw.addEventListener('statechange', () => {
+                    if (sw.state === 'activated') {
+                      resolve();
+                    } else if (sw.state === 'redundant') {
+                      reject(new Error('Service worker became redundant'));
+                    }
+                  });
+
+                  // Timeout after 10 seconds
+                  setTimeout(() => reject(new Error('SW activation timeout')), 10000);
+                });
+
+                return {
+                  scope: reg.scope,
+                  active: !!reg.active
+                };
+              } catch (e) {
+                return { error: (e as Error).message };
+              }
+            },
+            { swUrl, scope }
+          );
+
+          // If we got here without error, break out of retry loop
+          if (registration && !registration.error) {
+            break;
+          }
+
+          lastError = new Error(registration?.error || 'Unknown registration error');
+        } catch (evalError) {
+          lastError = evalError as Error;
+          const errorMessage = lastError.message || '';
+
+          // If execution context was destroyed, try to recover
+          if (errorMessage.includes('Execution context was destroyed') ||
+              errorMessage.includes('navigation')) {
+            console.warn('[Remote SW Server] Context destroyed on attempt ' + (attempt + 1) + ', retrying...');
+
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Try to navigate again
+            try {
+              await client.swPage!.goto(targetUrl, {
+                waitUntil: 'domcontentloaded',
+                timeout: 10000
+              });
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } catch {
+              // Continue to next attempt
+            }
+          } else {
+            // Non-recoverable error
+            throw lastError;
+          }
+        }
+      }
+
+      if (!registration || registration.error) {
+        throw lastError || new Error(registration?.error || 'Failed to register service worker');
       }
 
       const swState: ServiceWorkerState = {

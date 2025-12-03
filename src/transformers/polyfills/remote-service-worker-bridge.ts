@@ -66,6 +66,14 @@ export const remoteServiceWorkerBridgePolyfill = `
     // Resolve a relative URL to absolute
     function resolveUrl(url) {
       try {
+        // Handle non-string inputs
+        if (typeof url !== 'string') {
+          if (url && typeof url.toString === 'function') {
+            url = url.toString();
+          } else {
+            return '';
+          }
+        }
         return new URL(url, window.location.href).href;
       } catch (e) {
         return url;
@@ -74,7 +82,10 @@ export const remoteServiceWorkerBridgePolyfill = `
 
     // Check if URL is a blob or data URL (inline script)
     function isInlineScript(url) {
-      return url && (url.indexOf('blob:') === 0 || url.indexOf('data:') === 0);
+      if (typeof url !== 'string') {
+        return false;
+      }
+      return url.indexOf('blob:') === 0 || url.indexOf('data:') === 0;
     }
 
     // Extract code from a data URL
@@ -185,29 +196,29 @@ export const remoteServiceWorkerBridgePolyfill = `
         wsConnection.onmessage = function(event) {
           try {
             var message = JSON.parse(event.data);
-            
+
             // Mark as initialized when we receive init_ack
             if (message.type === 'init_ack') {
               clearTimeout(initTimeout);
               isInitialized = true;
               log('WebSocket initialized, processing queued messages');
-              
+
               // Process queued messages
               while (messageQueue.length > 0) {
                 var queuedMsg = messageQueue.shift();
                 sendMessage(queuedMsg);
               }
-              
+
               // Resolve waiting connection promises
               var callbacks = connectionReadyCallbacks.slice();
               connectionReadyCallbacks = [];
               callbacks.forEach(function(callback) {
                 callback(wsConnection);
               });
-              
+
               resolve(wsConnection);
             }
-            
+
             handleMessage(message);
           } catch (e) {
             warn('Failed to parse WebSocket message:', e);
@@ -349,20 +360,82 @@ export const remoteServiceWorkerBridgePolyfill = `
       }
     }
 
+    // Headers that are forbidden or typically cause CORS issues
+    var FORBIDDEN_HEADERS = [
+      'user-agent',
+      'host',
+      'connection',
+      'content-length',
+      'accept-encoding',
+      'accept-language',
+      'origin',
+      'referer',
+      'sec-fetch-dest',
+      'sec-fetch-mode',
+      'sec-fetch-site',
+      'sec-fetch-user',
+      'sec-ch-ua',
+      'sec-ch-ua-mobile',
+      'sec-ch-ua-platform',
+      'upgrade-insecure-requests'
+    ];
+
+    function filterHeaders(headers, targetUrl) {
+      if (!headers || typeof headers !== 'object') {
+        return {};
+      }
+
+      var filtered = {};
+      var isCrossOrigin = false;
+
+      try {
+        var targetOrigin = new URL(targetUrl).origin;
+        isCrossOrigin = targetOrigin !== window.location.origin;
+      } catch (e) {
+        isCrossOrigin = true;
+      }
+
+      for (var key in headers) {
+        if (headers.hasOwnProperty(key)) {
+          var lowerKey = key.toLowerCase();
+          // For cross-origin requests, filter out problematic headers
+          if (isCrossOrigin && FORBIDDEN_HEADERS.indexOf(lowerKey) !== -1) {
+            log('Filtering header for CORS:', key);
+            continue;
+          }
+          filtered[key] = headers[key];
+        }
+      }
+
+      return filtered;
+    }
+
     function handleFetchRequest(message) {
       // Remote SW is requesting a fetch - execute it locally and send back the result
       log('Handling fetch request from remote SW:', message.url);
 
+      var isCrossOrigin = false;
+      try {
+        var targetOrigin = new URL(message.url).origin;
+        isCrossOrigin = targetOrigin !== window.location.origin;
+      } catch (e) {
+        isCrossOrigin = true;
+      }
+
       var fetchOptions = {
         method: message.method || 'GET',
-        headers: message.headers || {},
-        mode: 'cors',
-        credentials: message.credentials || 'same-origin'
+        headers: filterHeaders(message.headers, message.url),
+        // Use 'cors' for cross-origin, 'same-origin' for same-origin
+        mode: isCrossOrigin ? 'cors' : 'same-origin',
+        // For cross-origin, use 'omit' to avoid sending credentials which can cause CORS issues
+        credentials: isCrossOrigin ? 'omit' : (message.credentials || 'same-origin')
       };
 
       if (message.body && message.method !== 'GET' && message.method !== 'HEAD') {
         fetchOptions.body = message.body;
       }
+
+      log('Fetch options:', JSON.stringify({ url: message.url, method: fetchOptions.method, mode: fetchOptions.mode, credentials: fetchOptions.credentials }));
 
       fetch(message.url, fetchOptions)
         .then(function(response) {
@@ -533,6 +606,22 @@ export const remoteServiceWorkerBridgePolyfill = `
 
     // The bridged register function for remote SWs
     function remoteRegister(scriptURL, options) {
+      // Validate and normalize scriptURL
+      if (scriptURL && typeof scriptURL !== 'string') {
+        // Handle URL objects or other types
+        if (typeof scriptURL.toString === 'function') {
+          scriptURL = scriptURL.toString();
+        } else if (scriptURL.href) {
+          scriptURL = scriptURL.href;
+        } else {
+          return Promise.reject(createDOMException('Invalid scriptURL', 'TypeError'));
+        }
+      }
+      
+      if (!scriptURL) {
+        return Promise.reject(createDOMException('scriptURL is required', 'TypeError'));
+      }
+
       options = options || {};
       var scope = options.scope || '/';
       var absoluteScriptUrl = resolveUrl(scriptURL);
