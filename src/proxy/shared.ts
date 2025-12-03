@@ -56,6 +56,7 @@ export const CORS_EXPOSE_HEADERS = 'Content-Type, Content-Length, Content-Dispos
  * - Hop-by-hop headers (connection, keep-alive, etc.)
  * - CORS headers (we replace with permissive ones)
  * - CSP headers (removed to allow injected scripts/polyfills)
+ * - Cross-Origin isolation headers (CORP/COEP/COOP) to prevent OpaqueResponseBlocking
  */
 export const SKIP_RESPONSE_HEADERS = new Set([
   'transfer-encoding',
@@ -81,6 +82,11 @@ export const SKIP_RESPONSE_HEADERS = new Set([
   'content-security-policy-report-only',
   'x-content-security-policy',
   'x-webkit-csp',
+  // Remove Cross-Origin isolation headers to prevent OpaqueResponseBlocking
+  // These headers can block resources when loaded cross-origin
+  'cross-origin-resource-policy',
+  'cross-origin-embedder-policy',
+  'cross-origin-opener-policy',
 ]);
 
 // =============================================================================
