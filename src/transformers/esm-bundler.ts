@@ -675,6 +675,8 @@ export async function bundleEsModule(moduleUrl: string, inlineCode?: string, imp
       platform: 'browser',
       minify: false, // Don't minify - we want readable code for further transform
       sourcemap: false,
+      keepNames: true,
+      treeShaking: false,
       plugins: [
         createHttpResolverPlugin(moduleUrl, bundledModules, importMap),
       ],
