@@ -628,16 +628,12 @@ console.log('[Revamp SW Host] Page loaded for SW context');
 
             // Add Service-Worker-Allowed header to allow broader scope
             // This is needed when SW script is in a subdirectory but controls root
-            // Always add for serviceworker type, or for .js files that look like SW scripts
+            // Always add this header for all JS files in the SW context since
+            // Playwright's resourceType detection may not always be reliable
+            // and the SW script URL pattern varies (e.g., /a/xxx.js for Telegram)
             const responseHeaders: Record<string, string> = { ...response.headers };
-            const isSWScript = resourceType === 'serviceworker' ||
-                               url.includes('/sw') ||
-                               url.includes('service-worker') ||
-                               url.includes('serviceworker');
-            if (isSWScript) {
-              responseHeaders['Service-Worker-Allowed'] = '/';
-              console.log('[Remote SW Server] Added Service-Worker-Allowed header for:', url);
-            }
+            responseHeaders['Service-Worker-Allowed'] = '/';
+            console.log('[Remote SW Server] Added Service-Worker-Allowed header for:', url, 'resourceType:', resourceType);
 
             await route.fulfill({
               status: response.status,
