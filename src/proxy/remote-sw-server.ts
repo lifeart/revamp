@@ -146,8 +146,7 @@ async function loadWsModule(): Promise<boolean> {
   wsModuleLoaded = true;
 
   try {
-    // @ts-expect-error - ws may not be installed
-    const wsModule = await import('ws');
+    const wsModule = await import("ws");
     WebSocketServerClass = wsModule.WebSocketServer;
     return true;
   } catch {

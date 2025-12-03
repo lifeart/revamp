@@ -28,6 +28,7 @@ export const remoteServiceWorkerBridgePolyfill = `
     var DEBUG = window.__REVAMP_DEBUG__ || window.__REVAMP_REMOTE_SW_DEBUG__ || false;
     var RECONNECT_DELAY = 3000;
     var MAX_RECONNECT_ATTEMPTS = 5;
+    var REQUEST_TIMEOUT = 30000; // 30 seconds
 
     // Generate a unique client ID for this page
     var clientId = 'client_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -126,6 +127,9 @@ export const remoteServiceWorkerBridgePolyfill = `
     var requestIdCounter = 0;
     var registeredScopes = {};
     var registrationPromises = {};
+    var messageQueue = [];
+    var connectionReadyCallbacks = [];
+    var isInitialized = false;
 
     function getWebSocketUrl() {
       var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -133,9 +137,16 @@ export const remoteServiceWorkerBridgePolyfill = `
     }
 
     function connectWebSocket() {
-      if (wsConnection && (wsConnection.readyState === WebSocket.CONNECTING || wsConnection.readyState === WebSocket.OPEN)) {
-        log('WebSocket already connected or connecting');
+      if (wsConnection && wsConnection.readyState === WebSocket.OPEN && isInitialized) {
+        log('WebSocket already connected');
         return Promise.resolve(wsConnection);
+      }
+
+      if (wsConnection && wsConnection.readyState === WebSocket.CONNECTING) {
+        log('WebSocket connection in progress, waiting...');
+        return new Promise(function(resolve) {
+          connectionReadyCallbacks.push(resolve);
+        });
       }
 
       return new Promise(function(resolve, reject) {
@@ -150,6 +161,13 @@ export const remoteServiceWorkerBridgePolyfill = `
           return;
         }
 
+        var initTimeout = setTimeout(function() {
+          if (!isInitialized) {
+            warn('WebSocket initialization timeout');
+            reject(new Error('WebSocket initialization timeout'));
+          }
+        }, 5000);
+
         wsConnection.onopen = function() {
           log('WebSocket connected');
           wsConnected = true;
@@ -162,13 +180,34 @@ export const remoteServiceWorkerBridgePolyfill = `
             origin: window.location.origin,
             userAgent: navigator.userAgent
           });
-
-          resolve(wsConnection);
         };
 
         wsConnection.onmessage = function(event) {
           try {
             var message = JSON.parse(event.data);
+            
+            // Mark as initialized when we receive init_ack
+            if (message.type === 'init_ack') {
+              clearTimeout(initTimeout);
+              isInitialized = true;
+              log('WebSocket initialized, processing queued messages');
+              
+              // Process queued messages
+              while (messageQueue.length > 0) {
+                var queuedMsg = messageQueue.shift();
+                sendMessage(queuedMsg);
+              }
+              
+              // Resolve waiting connection promises
+              var callbacks = connectionReadyCallbacks.slice();
+              connectionReadyCallbacks = [];
+              callbacks.forEach(function(callback) {
+                callback(wsConnection);
+              });
+              
+              resolve(wsConnection);
+            }
+            
             handleMessage(message);
           } catch (e) {
             warn('Failed to parse WebSocket message:', e);
@@ -178,7 +217,15 @@ export const remoteServiceWorkerBridgePolyfill = `
         wsConnection.onclose = function(event) {
           log('WebSocket closed:', event.code, event.reason);
           wsConnected = false;
+          isInitialized = false;
           wsConnection = null;
+
+          // Reject any waiting connection promises
+          var callbacks = connectionReadyCallbacks.slice();
+          connectionReadyCallbacks = [];
+          callbacks.forEach(function(callback) {
+            callback(null);
+          });
 
           // Attempt to reconnect
           if (wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -203,7 +250,14 @@ export const remoteServiceWorkerBridgePolyfill = `
 
     function sendMessage(message) {
       if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
-        warn('WebSocket not connected, cannot send message');
+        warn('WebSocket not connected, queueing message');
+        messageQueue.push(message);
+        return false;
+      }
+
+      if (!isInitialized && message.type !== 'client_init') {
+        log('WebSocket not initialized yet, queueing message');
+        messageQueue.push(message);
         return false;
       }
 
@@ -221,15 +275,26 @@ export const remoteServiceWorkerBridgePolyfill = `
         var requestId = 'req_' + (++requestIdCounter);
         message.requestId = requestId;
 
+        var timeoutId = setTimeout(function() {
+          if (pendingRequests[requestId]) {
+            delete pendingRequests[requestId];
+            reject(new Error('Request timeout - no response received'));
+          }
+        }, REQUEST_TIMEOUT);
+
         pendingRequests[requestId] = {
           resolve: resolve,
           reject: reject,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          timeoutId: timeoutId
         };
 
+        // If not initialized, the message will be queued and sent later
+        // Don't reject immediately - wait for initialization
         if (!sendMessage(message)) {
-          delete pendingRequests[requestId];
-          reject(new Error('Failed to send request'));
+          log('Request queued, waiting for WebSocket initialization');
+          // The message is now in the queue and will be sent when initialized
+          // Keep the pending request alive
         }
       });
     }
@@ -274,6 +339,7 @@ export const remoteServiceWorkerBridgePolyfill = `
     function handleResponse(message) {
       var pending = pendingRequests[message.requestId];
       if (pending) {
+        clearTimeout(pending.timeoutId);
         delete pendingRequests[message.requestId];
         if (message.error) {
           pending.reject(new Error(message.error));

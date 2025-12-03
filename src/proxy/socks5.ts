@@ -49,6 +49,7 @@ import {
   recordError,
   updateConnections,
 } from '../metrics/index.js';
+import { remoteSwServer, isRemoteSwEndpoint } from './remote-sw-server.js';
 
 // =============================================================================
 // Types
@@ -457,6 +458,46 @@ async function handleHttpRequestSocks5(
 // =============================================================================
 
 /**
+ * Handle WebSocket upgrade requests for the Remote SW endpoint.
+ * Creates an IncomingMessage-like object for the ws module.
+ *
+ * @param tlsClient - TLS socket to client
+ * @param request - Parsed HTTP request
+ */
+async function handleRemoteSwWebSocket(
+  tlsClient: TLSSocket,
+  request: { method: string; path: string; headers: Record<string, string> }
+): Promise<void> {
+  console.log(`🔌 SOCKS5 Remote SW WebSocket: ${request.path}`);
+
+  try {
+    // Ensure server is initialized
+    if (!remoteSwServer.isInitialized()) {
+      console.log(`🔌 Initializing Remote SW server...`);
+      await remoteSwServer.initialize();
+    }
+
+    // Create a mock IncomingMessage for the ws module
+    const { IncomingMessage } = await import('node:http');
+    const mockReq = Object.create(IncomingMessage.prototype);
+    mockReq.method = request.method;
+    mockReq.url = request.path;
+    mockReq.headers = request.headers;
+    mockReq.socket = tlsClient;
+    mockReq.connection = tlsClient;
+    mockReq.httpVersion = '1.1';
+    mockReq.httpVersionMajor = 1;
+    mockReq.httpVersionMinor = 1;
+
+    // Handle the upgrade
+    await remoteSwServer.handleUpgrade(mockReq, tlsClient, Buffer.alloc(0));
+  } catch (err) {
+    console.error(`❌ SOCKS5 Remote SW WebSocket error:`, err);
+    tlsClient.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+  }
+}
+
+/**
  * Handle WebSocket upgrade requests - proxy directly without transformation.
  *
  * @param tlsClient - TLS socket to client
@@ -558,6 +599,14 @@ function handleHttpsConnection(
     // Check for WebSocket upgrade
     if (request.headers['upgrade']?.toLowerCase() === 'websocket') {
       console.log(`🔌 WebSocket upgrade request: https://${hostname}${request.path}`);
+
+      // Check if this is a Remote SW endpoint - handle internally
+      if (isRemoteSwEndpoint(request.path)) {
+        handleRemoteSwWebSocket(tlsServer, request);
+        return;
+      }
+
+      // Otherwise proxy to the target server
       handleWebSocketUpgrade(tlsServer, hostname, requestBuffer);
       return;
     }

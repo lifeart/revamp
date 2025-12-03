@@ -675,8 +675,8 @@ function injectRevampScripts(
   $: CheerioAPI,
   injectPolyfills: boolean,
   spoofUserAgentInJs: boolean,
-  emulateServiceWorkers: boolean = true,
-  remoteServiceWorkers: boolean = false
+  emulateServiceWorkers: boolean = false,
+  remoteServiceWorkers: boolean = true
 ): void {
   if (injectPolyfills) {
     // CRITICAL: Polyfills MUST be injected before ANY other script in the document

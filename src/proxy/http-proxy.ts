@@ -755,6 +755,84 @@ function handleConnect(
     }
   );
 
+  // Handle WebSocket upgrade requests through the fake HTTPS server
+  fakeServer.on('upgrade', async (httpsReq, socket, upgradeHead) => {
+    const url = httpsReq.url || '';
+
+    // Check if this is a Revamp internal WebSocket endpoint
+    if (isRemoteSwEndpoint(url)) {
+      console.log(`🔌 HTTPS WebSocket upgrade for Remote SW: ${url}`);
+      try {
+        // Ensure server is initialized before handling upgrade
+        if (!remoteSwServer.isInitialized()) {
+          console.log(`🔌 Initializing Remote SW server...`);
+          await remoteSwServer.initialize();
+        }
+        await remoteSwServer.handleUpgrade(httpsReq, socket, upgradeHead);
+      } catch (err) {
+        console.error(`❌ Remote SW upgrade error:`, err);
+        socket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      }
+      return;
+    }
+
+    const targetHost = `${hostname}:${port}`;
+    console.log(`🔌 WebSocket upgrade: wss://${targetHost}${httpsReq.url}`);
+
+    // Create a direct TLS connection to the target server for WebSocket
+    import('node:tls').then(({ connect: tlsConnect }) => {
+      const targetSocket = tlsConnect({
+        host: hostname,
+        port: port,
+        servername: hostname,
+        rejectUnauthorized: false,
+      }, () => {
+        // Build the upgrade request to send to the target server
+        const headers = httpsReq.headers;
+        let upgradeRequest = `${httpsReq.method} ${httpsReq.url} HTTP/1.1\r\n`;
+        upgradeRequest += `Host: ${targetHost}\r\n`;
+
+        for (const [key, value] of Object.entries(headers)) {
+          if (key.toLowerCase() !== 'host' && value !== undefined) {
+            const headerValue = Array.isArray(value) ? value.join(', ') : value;
+            upgradeRequest += `${key}: ${headerValue}\r\n`;
+          }
+        }
+        upgradeRequest += '\r\n';
+
+        // Send the upgrade request
+        targetSocket.write(upgradeRequest);
+
+        // If there's initial data, send it too
+        if (upgradeHead.length > 0) {
+          targetSocket.write(upgradeHead);
+        }
+
+        // Pipe data between client and target
+        socket.pipe(targetSocket);
+        targetSocket.pipe(socket);
+      });
+
+      targetSocket.on('error', (err) => {
+        console.error(`❌ WebSocket target error: ${err.message}`);
+        socket.end();
+      });
+
+      socket.on('error', (err) => {
+        console.error(`❌ WebSocket client error: ${err.message}`);
+        targetSocket.end();
+      });
+
+      socket.on('close', () => {
+        targetSocket.end();
+      });
+
+      targetSocket.on('close', () => {
+        socket.end();
+      });
+    });
+  });
+
   // Listen on random port and connect client
   fakeServer.listen(0, '127.0.0.1', () => {
     const addr = fakeServer.address();
@@ -821,12 +899,22 @@ export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): 
   server.on('connect', handleConnect);
 
   // Handle WebSocket upgrades for remote SW endpoint
-  server.on('upgrade', (request, socket, head) => {
+  server.on('upgrade', async (request, socket, head) => {
     const url = request.url || '';
 
     if (isRemoteSwEndpoint(url)) {
       console.log(`🔌 WebSocket upgrade request for Remote SW: ${url}`);
-      remoteSwServer.handleUpgrade(request, socket, head);
+      try {
+        // Ensure server is initialized before handling upgrade
+        if (!remoteSwServer.isInitialized()) {
+          console.log(`🔌 Initializing Remote SW server...`);
+          await remoteSwServer.initialize();
+        }
+        await remoteSwServer.handleUpgrade(request, socket, head);
+      } catch (err) {
+        console.error(`❌ Remote SW upgrade error:`, err);
+        socket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      }
     } else {
       // For other upgrade requests, close the socket
       console.log(`⚠️ Unsupported WebSocket upgrade request: ${url}`);

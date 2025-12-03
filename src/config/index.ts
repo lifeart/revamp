@@ -69,8 +69,8 @@ export const defaultConfig: RevampConfig = {
   transformCss: true,
   transformHtml: true,
   bundleEsModules: true, // Bundle ES modules by default for legacy browser support
-  emulateServiceWorkers: true, // Enable SW bridge by default to transform and run SWs
-  remoteServiceWorkers: false, // Remote SW execution disabled by default (requires Playwright)
+  emulateServiceWorkers: false, // Enable SW bridge by default to transform and run SWs
+  remoteServiceWorkers: true, // Remote SW execution disabled by default (requires Playwright)
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
