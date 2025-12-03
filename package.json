@@ -76,7 +76,7 @@
     "@vitest/coverage-v8": "^4.0.14",
     "domhandler": "^5.0.3",
     "playwright": "^1.57.0",
-    "tsx": "^4.20.6",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.14"
   },
