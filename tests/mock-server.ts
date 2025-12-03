@@ -783,6 +783,45 @@ self.addEventListener('fetch', function(event) {
 console.log('[Simple SW] Script evaluated');
 `,
 
+  // Service Worker that handles fetch events
+  '/sw/fetch-sw.js': `// Fetch-intercepting Service Worker for testing
+console.log('[Fetch SW] Service Worker loaded');
+
+self.addEventListener('install', function(event) {
+  console.log('[Fetch SW] Installing...');
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', function(event) {
+  console.log('[Fetch SW] Activated');
+  event.waitUntil(clients.claim());
+});
+
+self.addEventListener('fetch', function(event) {
+  var url = new URL(event.request.url);
+  console.log('[Fetch SW] Intercepting:', url.pathname);
+
+  // Intercept /api/ requests
+  if (url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      new Response(JSON.stringify({
+        intercepted: true,
+        path: url.pathname,
+        method: event.request.method,
+        timestamp: Date.now()
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return;
+  }
+
+  // Pass through other requests
+});
+
+console.log('[Fetch SW] Script evaluated');
+`,
+
   // Service Worker with imports
   '/sw/sw-with-imports.js': `// Service Worker with module imports
 import { cacheFirst, networkFirst } from './sw-strategies.js';
@@ -1090,6 +1129,143 @@ export const CACHE_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
     }
 
     testInlineModernSw();
+  </script>
+</body>
+</html>`,
+
+  // =============================================================================
+  // Remote Service Worker Test Pages
+  // =============================================================================
+
+  // Test page for remote SW with WebSocket connection
+  '/sw-remote-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote Service Worker Test</title>
+</head>
+<body>
+  <h1>Remote Service Worker Test</h1>
+  <div id="result">Initializing...</div>
+  <div id="ws-status">WebSocket: connecting...</div>
+  <div id="sw-status">SW: not registered</div>
+
+  <script>
+    window.__remoteSwTestData = {
+      wsConnected: false,
+      wsError: null,
+      swRegistered: false,
+      swScope: null,
+      swError: null,
+      fetchRequests: [],
+      messages: []
+    };
+
+    async function testRemoteSw() {
+      var resultEl = document.getElementById('result');
+      var wsStatusEl = document.getElementById('ws-status');
+      var swStatusEl = document.getElementById('sw-status');
+
+      try {
+        console.log('[Remote SW Test] Starting remote SW test...');
+
+        // Check if serviceWorker API is available (polyfill should provide it)
+        if (!('serviceWorker' in navigator)) {
+          throw new Error('Service Worker API not available');
+        }
+
+        console.log('[Remote SW Test] Attempting to register service worker...');
+
+        var registration = await navigator.serviceWorker.register('/sw/simple-sw.js', {
+          scope: '/remote/'
+        });
+
+        console.log('[Remote SW Test] Registration returned:', registration);
+
+        window.__remoteSwTestData.swRegistered = true;
+        window.__remoteSwTestData.swScope = registration.scope;
+
+        swStatusEl.textContent = 'SW: registered, scope: ' + registration.scope;
+        resultEl.textContent = 'Remote SW registered successfully!';
+        resultEl.dataset.swRegistered = 'true';
+
+      } catch (error) {
+        console.error('[Remote SW Test] Error:', error.message);
+
+        window.__remoteSwTestData.swError = error.message;
+        window.__remoteSwTestData.swRegistered = false;
+
+        swStatusEl.textContent = 'SW: error - ' + error.message;
+        resultEl.textContent = 'Error: ' + error.message;
+        resultEl.dataset.swRegistered = 'false';
+      }
+    }
+
+    // Give polyfills time to load
+    setTimeout(testRemoteSw, 500);
+  </script>
+</body>
+</html>`,
+
+  // Test page that makes fetch requests through remote SW
+  '/sw-remote-fetch-test': `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Remote SW Fetch Test</title>
+</head>
+<body>
+  <h1>Remote SW Fetch Test</h1>
+  <div id="result">Initializing...</div>
+  <div id="fetch-results">Fetches: pending</div>
+
+  <script>
+    window.__remoteFetchTestData = {
+      swRegistered: false,
+      fetchResults: [],
+      errors: []
+    };
+
+    async function testRemoteFetch() {
+      var resultEl = document.getElementById('result');
+      var fetchResultsEl = document.getElementById('fetch-results');
+
+      try {
+        console.log('[Remote Fetch Test] Registering SW...');
+
+        var registration = await navigator.serviceWorker.register('/sw/fetch-sw.js', {
+          scope: '/api/'
+        });
+
+        console.log('[Remote Fetch Test] SW registered');
+        window.__remoteFetchTestData.swRegistered = true;
+
+        // Wait for SW to be active
+        await new Promise(function(resolve) { setTimeout(resolve, 1000); });
+
+        // Make some test fetches that the SW should intercept
+        console.log('[Remote Fetch Test] Making fetch requests...');
+
+        var responses = await Promise.all([
+          fetch('/api/data.json').then(function(r) { return r.json(); }).catch(function(e) { return { error: e.message }; }),
+          fetch('/api/users').then(function(r) { return r.json(); }).catch(function(e) { return { error: e.message }; })
+        ]);
+
+        window.__remoteFetchTestData.fetchResults = responses;
+        fetchResultsEl.textContent = 'Fetches: ' + JSON.stringify(responses);
+        resultEl.textContent = 'Fetch test complete';
+        resultEl.dataset.fetchComplete = 'true';
+
+      } catch (error) {
+        console.error('[Remote Fetch Test] Error:', error.message);
+        window.__remoteFetchTestData.errors.push(error.message);
+        resultEl.textContent = 'Error: ' + error.message;
+      }
+    }
+
+    setTimeout(testRemoteFetch, 500);
   </script>
 </body>
 </html>`,

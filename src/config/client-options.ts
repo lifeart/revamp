@@ -65,6 +65,13 @@ export const CLIENT_CONFIG_OPTIONS: readonly ConfigOptionMeta[] = [
     defaultValue: true,
     category: 'compatibility',
   },
+  {
+    key: 'remoteServiceWorkers',
+    label: 'Remote Service Workers',
+    description: 'Execute Service Workers remotely in Playwright and bridge requests back',
+    defaultValue: false,
+    category: 'compatibility',
+  },
 
   // Privacy options
   {

@@ -211,6 +211,7 @@ async function parseHttpRequest(
  * @param bodyLength - Body length for Content-Length header
  * @param isGzipped - Whether body is gzip compressed
  * @param corsOrigin - Origin for CORS headers
+ * @param isHtml - Whether response is HTML (for cache control)
  * @returns Headers string
  */
 function buildResponseHeaders(
@@ -219,13 +220,15 @@ function buildResponseHeaders(
   headers: Record<string, string | string[] | undefined>,
   bodyLength: number,
   isGzipped: boolean,
-  corsOrigin: string
+  corsOrigin: string,
+  isHtml: boolean = false
 ): string {
   let responseHeaders = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
 
   for (const [key, value] of Object.entries(headers)) {
     const lowerKey = key.toLowerCase();
-    if (!SKIP_RESPONSE_HEADERS.has(lowerKey)) {
+    // Skip cache-control for HTML, we'll add our own
+    if (!SKIP_RESPONSE_HEADERS.has(lowerKey) && !(isHtml && lowerKey === 'cache-control')) {
       if (Array.isArray(value)) {
         responseHeaders += `${key}: ${value.join(', ')}\r\n`;
       } else if (value !== undefined && value !== null) {
@@ -239,6 +242,14 @@ function buildResponseHeaders(
   if (isGzipped) {
     responseHeaders += `Content-Encoding: gzip\r\n`;
     responseHeaders += `Vary: Accept-Encoding\r\n`;
+  }
+
+  // Prevent browser caching for HTML documents since config changes affect transformations
+  if (isHtml) {
+    responseHeaders += `Cache-Control: no-cache, must-revalidate\r\n`;
+    if (!isGzipped) {
+      responseHeaders += `Vary: Accept-Encoding\r\n`;
+    }
   }
 
   responseHeaders += `Connection: close\r\n`;
@@ -410,6 +421,9 @@ async function handleHttpRequestSocks5(
       headers['accept-encoding']
     );
 
+    // Check if this is an HTML response
+    const isHtml = contentTypeStr.toLowerCase().includes('text/html');
+
     // Build and send response
     const responseHeaders = buildResponseHeaders(
       response.statusCode,
@@ -417,7 +431,8 @@ async function handleHttpRequestSocks5(
       response.headers,
       responseBody.length,
       isGzipped,
-      requestOrigin
+      requestOrigin,
+      isHtml
     );
 
     socket.write(responseHeaders);

@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getConfig } from '../config/index.js';
+import { getConfig, getClientConfig, type ClientConfig } from '../config/index.js';
 
 // =============================================================================
 // Types
@@ -132,10 +132,17 @@ function shouldSkipCache(url: string): boolean {
 }
 
 function getCacheKey(url: string, contentType: string, clientIp?: string): string {
-  // Include client IP in cache key if provided for multi-client support
+  // Include client IP and config hash in cache key
+  // Config hash ensures cache is invalidated when client config changes
+  const clientConfig = getClientConfig(clientIp);
+  const configHash = createHash('md5')
+    .update(JSON.stringify(clientConfig))
+    .digest('hex')
+    .substring(0, 8);
+
   const keySource = clientIp
-    ? `${clientIp}:${url}:${contentType}`
-    : `${url}:${contentType}`;
+    ? `${clientIp}:${configHash}:${url}:${contentType}`
+    : `${configHash}:${url}:${contentType}`;
   const hash = createHash('sha256').update(keySource).digest('hex');
   return hash;
 }

@@ -21,6 +21,7 @@ export interface RevampConfig {
   transformHtml: boolean;
   bundleEsModules: boolean; // Bundle ES modules for legacy browsers using esbuild
   emulateServiceWorkers: boolean; // Transform and bridge Service Workers (true) or block them (false)
+  remoteServiceWorkers: boolean; // Execute Service Workers remotely in Playwright and bridge requests back
   removeAds: boolean;
   removeTracking: boolean;
   injectPolyfills: boolean;
@@ -69,6 +70,7 @@ export const defaultConfig: RevampConfig = {
   transformHtml: true,
   bundleEsModules: true, // Bundle ES modules by default for legacy browser support
   emulateServiceWorkers: true, // Enable SW bridge by default to transform and run SWs
+  remoteServiceWorkers: false, // Remote SW execution disabled by default (requires Playwright)
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
@@ -174,6 +176,7 @@ export interface ClientConfig {
   transformHtml?: boolean;
   bundleEsModules?: boolean;
   emulateServiceWorkers?: boolean;
+  remoteServiceWorkers?: boolean;
   removeAds?: boolean;
   removeTracking?: boolean;
   injectPolyfills?: boolean;

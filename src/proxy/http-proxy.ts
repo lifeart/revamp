@@ -47,6 +47,7 @@ import {
 import { isConfigEndpoint, handleConfigRequest } from './config-endpoint.js';
 import { isRevampEndpoint, handleRevampRequest } from './revamp-api.js';
 import { shouldLogJsonRequest, logJsonRequest, isJsonContentType } from '../logger/json-request-logger.js';
+import { remoteSwServer, isRemoteSwEndpoint } from './remote-sw-server.js';
 
 // =============================================================================
 // Types
@@ -638,6 +639,13 @@ async function proxyRequest(
             const requestOrigin = req.headers['origin'] as string || '*';
             Object.assign(responseHeaders, buildCorsHeaders(requestOrigin));
 
+            // Prevent browser caching for HTML documents since config changes affect transformations
+            // This ensures users see updated polyfills when they change settings
+            if (finalContentType === 'html') {
+              responseHeaders['cache-control'] = 'no-cache, must-revalidate';
+              responseHeaders['vary'] = 'Accept-Encoding';
+            }
+
             // Send response
             res.writeHead(statusCode, responseHeaders);
             res.end(body);
@@ -811,6 +819,20 @@ export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): 
   });
 
   server.on('connect', handleConnect);
+
+  // Handle WebSocket upgrades for remote SW endpoint
+  server.on('upgrade', (request, socket, head) => {
+    const url = request.url || '';
+
+    if (isRemoteSwEndpoint(url)) {
+      console.log(`🔌 WebSocket upgrade request for Remote SW: ${url}`);
+      remoteSwServer.handleUpgrade(request, socket, head);
+    } else {
+      // For other upgrade requests, close the socket
+      console.log(`⚠️ Unsupported WebSocket upgrade request: ${url}`);
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    }
+  });
 
   server.listen(port, bindAddress, () => {
     console.log(`🌐 HTTP Proxy listening on ${bindAddress}:${port}`);

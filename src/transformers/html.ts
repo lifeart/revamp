@@ -675,13 +675,15 @@ function injectRevampScripts(
   $: CheerioAPI,
   injectPolyfills: boolean,
   spoofUserAgentInJs: boolean,
-  emulateServiceWorkers: boolean = true
+  emulateServiceWorkers: boolean = true,
+  remoteServiceWorkers: boolean = false
 ): void {
   if (injectPolyfills) {
     // CRITICAL: Polyfills MUST be injected before ANY other script in the document
     // This ensures Object.fromEntries, Array.from, etc. are available
     injectBeforeAllScripts($, buildPolyfillScript({
       emulateServiceWorkers,
+      remoteServiceWorkers,
       debug: false, // Could be made configurable in the future
     }));
 
@@ -823,7 +825,7 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     normalizeCharset($);
 
     // Inject Revamp scripts
-    injectRevampScripts($, effectiveConfig.injectPolyfills, effectiveConfig.spoofUserAgentInJs, effectiveConfig.emulateServiceWorkers);
+    injectRevampScripts($, effectiveConfig.injectPolyfills, effectiveConfig.spoofUserAgentInJs, effectiveConfig.emulateServiceWorkers, effectiveConfig.remoteServiceWorkers);
 
     // Add transformation statistics comment
     addTransformComment($, result);

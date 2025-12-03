@@ -10,12 +10,16 @@
  * - /__revamp__/pac/combined - Combined PAC file
  * - /__revamp__/sw/bundle - Service Worker bundling endpoint (URL-based)
  * - /__revamp__/sw/inline - Service Worker inline transformation (code-based)
+ * - /__revamp__/sw/remote - Remote Service Worker WebSocket endpoint
+ * - /__revamp__/sw/remote/status - Remote SW server status
  */
 
 import { handleConfigRequest, CONFIG_ENDPOINT, type ConfigEndpointResult } from './config-endpoint.js';
 import { generateDashboardHtml, generateMetricsJson } from '../metrics/dashboard.js';
 import { generateSocks5Pac, generateHttpPac, generateCombinedPac } from '../pac/generator.js';
 import { bundleServiceWorker, transformInlineServiceWorker } from '../transformers/sw-bundler.js';
+import { getRemoteSwStatus, isRemoteSwEndpoint } from './remote-sw-server.js';
+import { getClientConfig } from '../config/index.js';
 
 /** Base path for all Revamp API endpoints */
 export const REVAMP_API_BASE = '/__revamp__';
@@ -31,6 +35,8 @@ export const ENDPOINTS = {
   pacCombined: `${REVAMP_API_BASE}/pac/combined`,
   swBundle: `${REVAMP_API_BASE}/sw/bundle`,
   swInline: `${REVAMP_API_BASE}/sw/inline`,
+  swRemote: `${REVAMP_API_BASE}/sw/remote`,
+  swRemoteStatus: `${REVAMP_API_BASE}/sw/remote/status`,
 } as const;
 
 /**
@@ -78,12 +84,12 @@ export async function handleRevampRequest(path: string, method: string, body: st
 
   // Service Worker inline transformation endpoint (POST)
   if (path.startsWith(ENDPOINTS.swInline)) {
-    return handleSwInlineRequest(method, body);
+    return handleSwInlineRequest(method, body, clientIp);
   }
 
   // Service Worker bundle endpoint
   if (path.startsWith(ENDPOINTS.swBundle)) {
-    return handleSwBundleRequest(path, method);
+    return handleSwBundleRequest(path, method, clientIp);
   }
 
   // Config endpoint
@@ -157,6 +163,36 @@ export async function handleRevampRequest(path: string, method: string, body: st
     };
   }
 
+  // Remote SW status endpoint
+  if (path === ENDPOINTS.swRemoteStatus || path === `${ENDPOINTS.swRemoteStatus}/`) {
+    return {
+      statusCode: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      },
+      body: JSON.stringify(getRemoteSwStatus(), null, 2),
+    };
+  }
+
+  // Remote SW WebSocket endpoint info (actual WebSocket handled by HTTP server upgrade)
+  if (isRemoteSwEndpoint(path)) {
+    return {
+      statusCode: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        endpoint: ENDPOINTS.swRemote,
+        description: 'Remote Service Worker WebSocket endpoint',
+        note: 'Connect via WebSocket for remote SW execution',
+        status: getRemoteSwStatus(),
+      }, null, 2),
+    };
+  }
+
   // Unknown endpoint - return list of available endpoints
   return {
     statusCode: 200,
@@ -180,6 +216,8 @@ export async function handleRevampRequest(path: string, method: string, body: st
         sw: {
           bundle: ENDPOINTS.swBundle,
           inline: ENDPOINTS.swInline,
+          remote: ENDPOINTS.swRemote,
+          remoteStatus: ENDPOINTS.swRemoteStatus,
         },
       },
     }, null, 2),
@@ -190,7 +228,7 @@ export async function handleRevampRequest(path: string, method: string, body: st
  * Handle Service Worker bundle requests
  * URL format: /__revamp__/sw/bundle?url=<encoded-sw-url>&scope=<encoded-scope>
  */
-async function handleSwBundleRequest(path: string, method: string): Promise<ApiResult> {
+async function handleSwBundleRequest(path: string, method: string, clientIp?: string): Promise<ApiResult> {
   if (method !== 'GET') {
     return {
       statusCode: 405,
@@ -200,6 +238,22 @@ async function handleSwBundleRequest(path: string, method: string): Promise<ApiR
         'Allow': 'GET',
       },
       body: JSON.stringify({ error: 'Method not allowed. Use GET.' }),
+    };
+  }
+
+  // Check if remote SW mode is enabled - don't transpile in remote mode
+  const clientConfig = getClientConfig(clientIp);
+  if (clientConfig.remoteServiceWorkers) {
+    return {
+      statusCode: 400,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'SW bundling is disabled when remoteServiceWorkers is enabled',
+        hint: 'Remote SW mode executes Service Workers in a remote browser without transpilation',
+      }),
     };
   }
 
@@ -326,7 +380,7 @@ export function buildRawApiResponse(result: ApiResult): string {
  * Handle inline Service Worker transformation requests
  * POST body format: { code: string, scope?: string }
  */
-async function handleSwInlineRequest(method: string, body: string): Promise<ApiResult> {
+async function handleSwInlineRequest(method: string, body: string, clientIp?: string): Promise<ApiResult> {
   if (method !== 'POST') {
     return {
       statusCode: 405,
@@ -336,6 +390,22 @@ async function handleSwInlineRequest(method: string, body: string): Promise<ApiR
         'Allow': 'POST',
       },
       body: JSON.stringify({ error: 'Method not allowed. Use POST.' }),
+    };
+  }
+
+  // Check if remote SW mode is enabled - don't transpile in remote mode
+  const clientConfig = getClientConfig(clientIp);
+  if (clientConfig.remoteServiceWorkers) {
+    return {
+      statusCode: 400,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'SW transformation is disabled when remoteServiceWorkers is enabled',
+        hint: 'Remote SW mode executes Service Workers in a remote browser without transpilation',
+      }),
     };
   }
 

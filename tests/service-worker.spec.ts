@@ -606,4 +606,125 @@ test.describe('Service Worker Bridge', () => {
       logSuccess('emulateServiceWorkers config persists and resets correctly');
     });
   });
+
+  test.describe('Remote Service Workers', () => {
+    test('should have remoteServiceWorkers config option', async ({ page }) => {
+      const { getConfig, resetConfig } = await import('./helpers/test-utils');
+
+      await goToMockServer(page, '/');
+
+      // Get current config
+      const { config } = await getConfig(page);
+
+      // Check that remoteServiceWorkers exists and is false by default
+      expect(config).toHaveProperty('remoteServiceWorkers');
+      expect((config as { remoteServiceWorkers?: boolean }).remoteServiceWorkers).toBe(false);
+
+      logSuccess('remoteServiceWorkers config option exists and defaults to false');
+    });
+
+    test('should toggle remoteServiceWorkers config option', async ({ page }) => {
+      const { getConfig, updateConfig, resetConfig } = await import('./helpers/test-utils');
+
+      await goToMockServer(page, '/');
+
+      // Get current config
+      const { config: originalConfig } = await getConfig(page);
+      const originalValue = (originalConfig as { remoteServiceWorkers?: boolean }).remoteServiceWorkers;
+
+      logInfo(`Original remoteServiceWorkers: ${originalValue}`);
+      expect(originalValue).toBe(false); // Default should be false
+
+      // Set to true
+      await updateConfig(page, { remoteServiceWorkers: true } as never);
+
+      // Verify it changed
+      const { config: updatedConfig } = await getConfig(page);
+      expect((updatedConfig as { remoteServiceWorkers?: boolean }).remoteServiceWorkers).toBe(true);
+      logInfo('Config updated to true');
+
+      // Set back to false
+      await updateConfig(page, { remoteServiceWorkers: false } as never);
+
+      // Verify it changed back
+      const { config: restoredConfig } = await getConfig(page);
+      expect((restoredConfig as { remoteServiceWorkers?: boolean }).remoteServiceWorkers).toBe(false);
+      logInfo('Config restored to false');
+
+      // Reset to defaults
+      await resetConfig(page);
+
+      logSuccess('remoteServiceWorkers config can be toggled');
+    });
+
+    test('should have remote SW status endpoint', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const response = await fetch('/__revamp__/sw/remote/status');
+        return {
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(200);
+      expect(result.contentType).toContain('application/json');
+
+      const status = JSON.parse(result.text);
+      expect(status).toHaveProperty('initialized');
+      expect(status).toHaveProperty('clientCount');
+      expect(status).toHaveProperty('clients');
+
+      logInfo(`Remote SW status: ${JSON.stringify(status)}`);
+      logSuccess('Remote SW status endpoint returns valid JSON');
+    });
+
+    test('should have remote SW WebSocket endpoint info', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const response = await fetch('/__revamp__/sw/remote');
+        return {
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(200);
+      expect(result.contentType).toContain('application/json');
+
+      const info = JSON.parse(result.text);
+      expect(info).toHaveProperty('endpoint');
+      expect(info).toHaveProperty('description');
+      expect(info.endpoint).toContain('/__revamp__/sw/remote');
+
+      logInfo(`Remote SW endpoint info: ${JSON.stringify(info)}`);
+      logSuccess('Remote SW WebSocket endpoint info available');
+    });
+
+    test('should list remote SW endpoint in API list', async ({ page }) => {
+      await goToMockServer(page, '/');
+
+      const result = await page.evaluate(async () => {
+        const response = await fetch('/__revamp__/');
+        return {
+          status: response.status,
+          text: await response.text()
+        };
+      });
+
+      expect(result.status).toBe(200);
+
+      const apiList = JSON.parse(result.text);
+      expect(apiList).toHaveProperty('endpoints');
+      expect(apiList.endpoints).toHaveProperty('sw');
+      expect(apiList.endpoints.sw).toHaveProperty('remote');
+      expect(apiList.endpoints.sw).toHaveProperty('remoteStatus');
+
+      logSuccess('Remote SW endpoint listed in API list');
+    });
+  });
 });

@@ -37,6 +37,7 @@ export { mutationObserverPolyfill } from './mutation-observer.js';
 export { weakCollectionsPolyfill } from './weak-collections.js';
 export { intlPolyfill } from './intl.js';
 export { serviceWorkerBypassPolyfill, serviceWorkerBridgePolyfill } from './service-worker-bridge.js';
+export { remoteServiceWorkerBridgePolyfill } from './remote-service-worker-bridge.js';
 export { webComponentsPolyfill } from './web-components.js';
 export { lazyLoadPolyfill } from './lazy-load.js';
 
@@ -71,6 +72,7 @@ import { mutationObserverPolyfill } from './mutation-observer.js';
 import { weakCollectionsPolyfill } from './weak-collections.js';
 import { intlPolyfill } from './intl.js';
 import { serviceWorkerBypassPolyfill, serviceWorkerBridgePolyfill } from './service-worker-bridge.js';
+import { remoteServiceWorkerBridgePolyfill } from './remote-service-worker-bridge.js';
 import { webComponentsPolyfill } from './web-components.js';
 import { lazyLoadPolyfill } from './lazy-load.js';
 import { errorOverlayScript } from './error-overlay.js';
@@ -83,6 +85,8 @@ import { blockedScriptsStubs } from './blocked-scripts-stubs.js';
 export interface BuildPolyfillOptions {
   /** Whether to emulate Service Workers (true) or block them (false). Default: true */
   emulateServiceWorkers?: boolean;
+  /** Whether to use remote Service Workers executed in Playwright. Default: false */
+  remoteServiceWorkers?: boolean;
   /** Enable debug logging in polyfills. Default: false */
   debug?: boolean;
 }
@@ -92,12 +96,25 @@ export interface BuildPolyfillOptions {
  * @param options - Configuration options for polyfill behavior
  */
 export function buildPolyfillScript(options: BuildPolyfillOptions = {}): string {
-  const { emulateServiceWorkers = true, debug = false } = options;
+  const { emulateServiceWorkers = true, remoteServiceWorkers = false, debug = false } = options;
 
-  // Choose SW polyfill based on config
-  const swPolyfill = emulateServiceWorkers
-    ? serviceWorkerBridgePolyfill
-    : serviceWorkerBypassPolyfill;
+  // Choose SW polyfill based on config:
+  // 1. If remoteServiceWorkers is enabled, use remote bridge (executes SW in Playwright)
+  // 2. If emulateServiceWorkers is enabled, use local bridge (transforms and runs SW locally)
+  // 3. Otherwise, use bypass (blocks SW registration)
+  let swPolyfill: string;
+  let swMode: string;
+
+  if (remoteServiceWorkers) {
+    swPolyfill = remoteServiceWorkerBridgePolyfill;
+    swMode = 'remote (Playwright execution)';
+  } else if (emulateServiceWorkers) {
+    swPolyfill = serviceWorkerBridgePolyfill;
+    swMode = 'bridge (enabled)';
+  } else {
+    swPolyfill = serviceWorkerBypassPolyfill;
+    swMode = 'bypass (blocked)';
+  }
 
   const polyfills = [
     // Blocked scripts stubs (must be first to prevent errors from blocked ad scripts)
@@ -146,8 +163,6 @@ export function buildPolyfillScript(options: BuildPolyfillOptions = {}): string 
     ? `window.__REVAMP_DEBUG__ = true;`
     : '';
 
-  const swMode = emulateServiceWorkers ? 'bridge (enabled)' : 'bypass (blocked)';
-
   return `
 <!-- Revamp Polyfills for iOS 9+ (iPad 2) and iOS 11+ -->
 <script>
@@ -157,6 +172,7 @@ export function buildPolyfillScript(options: BuildPolyfillOptions = {}): string 
   // Service Worker mode: ${swMode}
 ${polyfills.join('\n')}
   console.log('[Revamp] Polyfills loaded for iOS 9+ (iPad 2) compatibility');
+  console.log('[Revamp] Service Worker mode: ${swMode}');
 })();
 </script>
 `;
@@ -208,6 +224,7 @@ export type PolyfillName =
   | 'intl'
   | 'serviceWorkerBypass'
   | 'serviceWorkerBridge'
+  | 'remoteServiceWorkerBridge'
   | 'webComponents'
   | 'lazyLoad';
 
@@ -240,6 +257,7 @@ const polyfillMap: Record<PolyfillName, string> = {
   intl: intlPolyfill,
   serviceWorkerBypass: serviceWorkerBypassPolyfill,
   serviceWorkerBridge: serviceWorkerBridgePolyfill,
+  remoteServiceWorkerBridge: remoteServiceWorkerBridgePolyfill,
   webComponents: webComponentsPolyfill,
   lazyLoad: lazyLoadPolyfill,
 };
