@@ -22,15 +22,18 @@ Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern we
 - **🔧 JavaScript Transpilation** — Babel transforms modern JS (optional chaining, nullish coalescing, async/await) to ES5/ES6
 - **🎨 CSS Transformation** — PostCSS adds vendor prefixes and transforms modern CSS features
 - **📄 HTML Modification** — Injects polyfills and can remove ads/tracking scripts
+- **🖼️ Image Optimization** — Converts WebP/AVIF to JPEG/PNG for legacy browser support
+- **📦 ES Module Bundling** — esbuild-based bundler converts ES modules to legacy-compatible bundles
 - **🔒 HTTPS Interception** — Transparent SSL/TLS interception with auto-generated certificates
 - **🧦 SOCKS5 Proxy** — Device-wide traffic routing (recommended for iOS)
 - **🌐 HTTP Proxy** — Alternative proxy method
-- **📦 Smart Caching** — Memory + disk caching for faster repeat visits
+- **💾 Smart Caching** — Memory + disk caching for faster repeat visits
 - **🎭 User-Agent Spoofing** — Bypass browser detection (optional)
 - **🚫 Ad & Tracking Removal** — Block common ad networks and trackers
 - **📱 Easy Setup** — Built-in captive portal for certificate installation
+- **🔄 Remote Service Workers** — Bridge server for Service Worker emulation on legacy devices
 
-### Polyfills for Legacy Browsers
+### Polyfills for Legacy Browsers (30+)
 
 - **Promise.finally, Promise.allSettled** — Modern Promise methods
 - **fetch API** — Full fetch/Headers/Response polyfill
@@ -42,6 +45,11 @@ Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern we
 - **Intl API** — Basic DateTimeFormat and NumberFormat
 - **Service Worker Bypass** — Disables SW registration for compatibility
 - **Lazy Loading** — Polyfill for `loading="lazy"` attribute
+- **AbortController** — Request cancellation support
+- **Array methods** — flat, flatMap, from, includes, and more
+- **Object methods** — entries, values, fromEntries
+- **String methods** — padStart, padEnd, replaceAll
+- **CustomEvent** — Custom event creation and dispatch
 
 ### CSS Enhancements
 
@@ -160,6 +168,9 @@ const server = createRevampServer({
   transformJs: true, // Babel transpilation
   transformCss: true, // PostCSS transformation
   transformHtml: true, // HTML polyfill injection
+  bundleEsModules: true, // Bundle ES modules for legacy browsers
+  emulateServiceWorkers: true, // Service Worker bypass/emulation
+  remoteServiceWorkers: true, // Remote Service Worker bridge
   removeAds: true, // Block ad domains
   removeTracking: true, // Block tracking domains
   injectPolyfills: true, // Add polyfills for missing APIs
@@ -232,6 +243,7 @@ src/
 │   ├── http-client.ts    # HTTP request utilities
 │   ├── shared.ts         # Shared utilities
 │   ├── revamp-api.ts     # API endpoint handler
+│   ├── remote-sw-server.ts # Remote Service Worker bridge
 │   └── types.ts          # Type definitions
 ├── transformers/         # Content transformation
 │   ├── js.ts             # JavaScript (Babel worker pool)
@@ -241,7 +253,9 @@ src/
 │   ├── dark-mode-strip.ts # Dark mode CSS removal
 │   ├── html.ts           # HTML (Cheerio)
 │   ├── image.ts          # Image optimization
-│   └── polyfills/        # 25+ polyfill scripts
+│   ├── esm-bundler.ts    # ES module bundler
+│   ├── sw-bundler.ts     # Service Worker bundler
+│   └── polyfills/        # 30+ polyfill scripts
 ├── metrics/              # Metrics collection
 ├── pac/                  # PAC file generation
 ├── cache/                # Caching system
@@ -364,7 +378,9 @@ The worker pool's main benefit is **keeping the main event loop responsive** dur
 | `cheerio`     | HTML parsing/manipulation                  |
 | `node-forge`  | Certificate generation                     |
 | `sharp`       | Image optimization                         |
+| `esbuild`     | ES module bundling for legacy browsers     |
 | `tinypool`    | Worker thread pool for parallel transforms |
+| `ws`          | WebSocket for Remote Service Worker bridge |
 
 ## 🤝 Contributing
 
