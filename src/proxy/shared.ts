@@ -21,11 +21,27 @@ const brotliDecompressAsync = promisify(brotliDecompress);
 const inflateAsync = promisify(inflate);
 const gzipAsync = promisify(gzip);
 import { URL } from 'node:url';
-import { getConfig, type RevampConfig } from '../config/index.js';
+import { getConfig, getEffectiveConfigForRequest, type RevampConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
 import { recordCacheHit } from '../metrics/index.js';
 import type { ContentType } from './types.js';
+import {
+  createFilterContext,
+  shouldBlockDomainWithProfile,
+  shouldBlockUrlWithProfile,
+  type FilterContext,
+} from '../filters/index.js';
+import {
+  runPreTransformHooks,
+  runPostTransformHooks,
+  runFilterDecisionHooks,
+} from '../plugins/hook-executor.js';
+import type {
+  TransformContext as PluginTransformContext,
+  FilterContext as PluginFilterContext,
+} from '../plugins/hooks.js';
+import { getProfileForDomain } from '../config/domain-manager.js';
 
 // Re-export types for convenience
 export type { ContentType } from './types.js';
@@ -379,7 +395,37 @@ export async function transformContent(
     }
   }
 
-  const text = decodeBufferToString(body, charset);
+  let text = decodeBufferToString(body, charset);
+
+  // Get domain profile for the URL
+  const parsedUrl = new URL(url, 'http://localhost');
+  const { profile } = getProfileForDomain(parsedUrl.hostname);
+
+  // Execute transform:pre hooks
+  if (contentType !== 'other') {
+    const transformContext: PluginTransformContext = {
+      content: text,
+      url,
+      type: contentType as 'js' | 'css' | 'html',
+      config: effectiveConfig,
+      clientIp,
+      profile,
+    };
+
+    const preTransformResult = await runPreTransformHooks(transformContext);
+    if (preTransformResult) {
+      // Check if plugins want to skip transformation
+      if (preTransformResult.value.skipTransform) {
+        console.log(`🔌 Transform skipped by plugin: ${preTransformResult.stoppedBy || 'unknown'}`);
+        return body;
+      }
+      // Apply content modifications from plugins
+      if (preTransformResult.value.content) {
+        text = preTransformResult.value.content;
+      }
+    }
+  }
+
   let transformed: string;
 
   switch (contentType) {
@@ -411,6 +457,22 @@ export async function transformContent(
       return body;
   }
 
+  // Execute transform:post hooks
+  const postTransformContext: PluginTransformContext & { transformed: string } = {
+    content: text,
+    url,
+    type: contentType as 'js' | 'css' | 'html',
+    config: effectiveConfig,
+    clientIp,
+    profile,
+    transformed,
+  };
+
+  const postTransformResult = await runPostTransformHooks(postTransformContext);
+  if (postTransformResult && postTransformResult.value.content) {
+    transformed = postTransformResult.value.content;
+  }
+
   const result = Buffer.from(transformed, 'utf-8');
 
   // Cache the result (only if cache is enabled)
@@ -422,11 +484,34 @@ export async function transformContent(
 }
 
 /**
- * Check if a domain should be blocked (ads/tracking)
+ * Check if a domain should be blocked (ads/tracking).
+ * Supports domain-specific profiles when filterContext is provided.
+ * Also executes filter:decision plugin hooks.
+ *
+ * @param hostname - The hostname to check
+ * @param config - Optional config override
+ * @param filterContext - Optional filter context for domain-specific rules
  */
-export function shouldBlockDomain(hostname: string, config?: RevampConfig): boolean {
+export function shouldBlockDomain(
+  hostname: string,
+  config?: RevampConfig,
+  filterContext?: FilterContext
+): boolean {
   const effectiveConfig = config || getConfig();
 
+  // If we have a filter context, use domain-aware blocking
+  if (filterContext) {
+    return shouldBlockDomainWithProfile(
+      hostname,
+      filterContext,
+      effectiveConfig.removeAds,
+      effectiveConfig.removeTracking,
+      effectiveConfig.adDomains,
+      effectiveConfig.trackingDomains
+    );
+  }
+
+  // Fallback to simple domain list checking (backward compatibility)
   // Check ad domains
   if (effectiveConfig.removeAds) {
     for (const domain of effectiveConfig.adDomains) {
@@ -449,9 +534,60 @@ export function shouldBlockDomain(hostname: string, config?: RevampConfig): bool
 }
 
 /**
- * Check if a URL should be blocked by pattern
+ * Check if a domain should be blocked, with plugin hook support.
+ * This async version executes filter:decision hooks for plugin-based blocking.
+ *
+ * @param hostname - The hostname to check
+ * @param url - The full URL being accessed
+ * @param config - Optional config override
+ * @param filterContext - Optional filter context for domain-specific rules
  */
-export function shouldBlockUrl(url: string, config?: RevampConfig): boolean {
+export async function shouldBlockDomainAsync(
+  hostname: string,
+  url: string,
+  config?: RevampConfig,
+  filterContext?: FilterContext
+): Promise<{ blocked: boolean; reason?: string }> {
+  const effectiveConfig = config || getConfig();
+
+  // First check built-in blocking
+  const builtInBlocked = shouldBlockDomain(hostname, effectiveConfig, filterContext);
+  if (builtInBlocked) {
+    return { blocked: true, reason: 'Built-in domain filter' };
+  }
+
+  // Get domain profile for hook context
+  const { profile } = getProfileForDomain(hostname);
+
+  // Execute filter:decision hooks
+  const pluginFilterContext: PluginFilterContext = {
+    url,
+    hostname,
+    config: effectiveConfig,
+    profile,
+  };
+
+  const filterResult = await runFilterDecisionHooks(pluginFilterContext);
+  if (filterResult && filterResult.value.block) {
+    return { blocked: true, reason: filterResult.value.reason || `Blocked by plugin: ${filterResult.stoppedBy || 'unknown'}` };
+  }
+
+  return { blocked: false };
+}
+
+/**
+ * Check if a URL should be blocked by pattern.
+ * Supports domain-specific profiles when filterContext is provided.
+ *
+ * @param url - The URL to check
+ * @param config - Optional config override
+ * @param filterContext - Optional filter context for domain-specific rules
+ */
+export function shouldBlockUrl(
+  url: string,
+  config?: RevampConfig,
+  filterContext?: FilterContext
+): boolean {
   const effectiveConfig = config || getConfig();
 
   // Never block internal Revamp API endpoints
@@ -459,7 +595,17 @@ export function shouldBlockUrl(url: string, config?: RevampConfig): boolean {
     return false;
   }
 
-  // Check tracking URL patterns
+  // If we have a filter context, use domain-aware blocking
+  if (filterContext) {
+    return shouldBlockUrlWithProfile(
+      url,
+      filterContext,
+      effectiveConfig.removeTracking,
+      effectiveConfig.trackingUrls
+    );
+  }
+
+  // Fallback to simple URL pattern checking (backward compatibility)
   if (effectiveConfig.removeTracking) {
     const urlLower = url.toLowerCase();
     for (const pattern of effectiveConfig.trackingUrls) {
@@ -471,6 +617,59 @@ export function shouldBlockUrl(url: string, config?: RevampConfig): boolean {
 
   return false;
 }
+
+/**
+ * Check if a URL should be blocked, with plugin hook support.
+ * This async version executes filter:decision hooks for plugin-based blocking.
+ *
+ * @param url - The URL to check
+ * @param config - Optional config override
+ * @param filterContext - Optional filter context for domain-specific rules
+ */
+export async function shouldBlockUrlAsync(
+  url: string,
+  config?: RevampConfig,
+  filterContext?: FilterContext
+): Promise<{ blocked: boolean; reason?: string }> {
+  const effectiveConfig = config || getConfig();
+
+  // First check built-in URL blocking
+  const builtInBlocked = shouldBlockUrl(url, effectiveConfig, filterContext);
+  if (builtInBlocked) {
+    return { blocked: true, reason: 'Built-in URL filter' };
+  }
+
+  // Parse hostname for hook context
+  let hostname = '';
+  try {
+    const parsedUrl = new URL(url);
+    hostname = parsedUrl.hostname;
+  } catch {
+    // Invalid URL, can't run hooks
+    return { blocked: false };
+  }
+
+  // Get domain profile for hook context
+  const { profile } = getProfileForDomain(hostname);
+
+  // Execute filter:decision hooks
+  const pluginFilterContext: PluginFilterContext = {
+    url,
+    hostname,
+    config: effectiveConfig,
+    profile,
+  };
+
+  const filterResult = await runFilterDecisionHooks(pluginFilterContext);
+  if (filterResult && filterResult.value.block) {
+    return { blocked: true, reason: filterResult.value.reason || `Blocked by plugin: ${filterResult.stoppedBy || 'unknown'}` };
+  }
+
+  return { blocked: false };
+}
+
+// Re-export filter context creation for use in proxy handlers
+export { createFilterContext, type FilterContext } from '../filters/index.js';
 
 /**
  * Spoof user agent header if enabled in config

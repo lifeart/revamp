@@ -378,6 +378,18 @@ describe('HTTP Client Integration Tests', () => {
   describe('JSON Request Logging (SOCKS5 integration)', () => {
     const testLogDir = './.test-http-client-json-logs';
 
+    // Helper to wait for a directory to exist (async logging is fire-and-forget)
+    async function waitForDirectory(dir: string, timeoutMs: number = 2000): Promise<boolean> {
+      const startTime = Date.now();
+      while (Date.now() - startTime < timeoutMs) {
+        if (existsSync(dir)) {
+          return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return false;
+    }
+
     beforeEach(async () => {
       resetConfig();
       // Clean up test directory before each test
@@ -408,10 +420,10 @@ describe('HTTP Client Integration Tests', () => {
       );
 
       expect(response.statusCode).toBe(200);
-      // Wait for async logging to complete
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Wait for async logging to complete (logging is fire-and-forget)
+      const dirCreated = await waitForDirectory(testLogDir);
       // Should have created the log directory
-      expect(existsSync(testLogDir)).toBe(true);
+      expect(dirCreated).toBe(true);
     });
 
     it('should not log JSON responses when logging is disabled', async () => {
@@ -468,11 +480,11 @@ describe('HTTP Client Integration Tests', () => {
 
       expect(response.statusCode).toBe(200);
 
-      // Wait for async logging to complete
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Wait for async logging to complete (logging is fire-and-forget)
+      const dirCreated = await waitForDirectory(testLogDir);
 
       // Find and read the log file
-      expect(existsSync(testLogDir)).toBe(true);
+      expect(dirCreated).toBe(true);
       const ipDir = join(testLogDir, '192.168.1.100', '127.0.0.1');
       expect(existsSync(ipDir)).toBe(true);
 
@@ -516,8 +528,8 @@ describe('HTTP Client Integration Tests', () => {
 
       expect(response.statusCode).toBe(200);
 
-      // Wait for async logging to complete
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Wait for async logging to complete (logging is fire-and-forget)
+      await waitForDirectory(testLogDir);
 
       // Find and read the log file
       const ipDir = join(testLogDir, '192.168.1.200', '127.0.0.1');

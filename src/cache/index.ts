@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getConfig, getClientConfig, type ClientConfig } from '../config/index.js';
+import { getProfileForDomain } from '../config/domain-manager.js';
 
 // =============================================================================
 // Types
@@ -132,17 +133,43 @@ function shouldSkipCache(url: string): boolean {
 }
 
 function getCacheKey(url: string, contentType: string, clientIp?: string): string {
-  // Include client IP and config hash in cache key
-  // Config hash ensures cache is invalidated when client config changes
+  // Include client IP, config hash, and domain profile hash in cache key
+  // This ensures cache is invalidated when client config or domain profile changes
+
+  // Extract domain from URL for profile lookup
+  let domain = 'unknown';
+  try {
+    domain = new URL(url).hostname;
+  } catch {
+    // Invalid URL, use default
+  }
+
+  // Get domain profile hash
+  const { profile } = getProfileForDomain(domain);
+  const profileHash = profile
+    ? createHash('md5')
+        .update(JSON.stringify({
+          id: profile.id,
+          updatedAt: profile.updatedAt,
+          transforms: profile.transforms,
+          removeAds: profile.removeAds,
+          removeTracking: profile.removeTracking,
+        }))
+        .digest('hex')
+        .substring(0, 8)
+    : 'none';
+
+  // Get client config hash
   const clientConfig = getClientConfig(clientIp);
   const configHash = createHash('md5')
     .update(JSON.stringify(clientConfig))
     .digest('hex')
     .substring(0, 8);
 
+  // Build cache key with all components
   const keySource = clientIp
-    ? `${clientIp}:${configHash}:${url}:${contentType}`
-    : `${configHash}:${url}:${contentType}`;
+    ? `${clientIp}:${profileHash}:${configHash}:${url}:${contentType}`
+    : `${profileHash}:${configHash}:${url}:${contentType}`;
   const hash = createHash('sha256').update(keySource).digest('hex');
   return hash;
 }

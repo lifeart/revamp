@@ -44,6 +44,18 @@ import {
   removeCorsHeaders,
   buildCorsHeaders,
 } from './shared.js';
+import {
+  runPreRequestHooks,
+  runPostResponseHooks,
+  type ChainExecutionResult,
+} from '../plugins/hook-executor.js';
+import type {
+  RequestContext,
+  ResponseContext,
+  PreRequestResult,
+  PostResponseResult,
+} from '../plugins/hooks.js';
+import { getProfileForDomain } from '../config/domain-manager.js';
 import { isConfigEndpoint, handleConfigRequest } from './config-endpoint.js';
 import { isRevampEndpoint, handleRevampRequest } from './revamp-api.js';
 import { shouldLogJsonRequest, logJsonRequest, isJsonContentType } from '../logger/json-request-logger.js';
@@ -542,7 +554,55 @@ async function proxyRequest(
   }
 
   const config = getEffectiveConfig(effectiveClientIp);
+  const { profile } = getProfileForDomain(parsedUrl.hostname);
   recordRequest();
+
+  // Generate unique request ID
+  const requestId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const startTime = Date.now();
+
+  // Execute request:pre hooks
+  const requestContext: RequestContext = {
+    requestId,
+    url: targetUrl,
+    method: req.method || 'GET',
+    headers: { ...req.headers } as Record<string, string | string[] | undefined>,
+    clientIp: effectiveClientIp,
+    hostname: parsedUrl.hostname,
+    config,
+    profile,
+    isHttps,
+    startTime,
+    pluginData: new Map(),
+  };
+
+  const preRequestResult = await runPreRequestHooks(requestContext);
+  if (preRequestResult) {
+    // Check if request was blocked by a plugin
+    if (preRequestResult.value.blocked) {
+      console.log(`🔌 Request blocked by plugin: ${preRequestResult.stoppedBy || 'unknown'}`);
+      recordBlocked();
+      const blockedResponse = preRequestResult.value.blockedResponse;
+      if (blockedResponse) {
+        res.writeHead(blockedResponse.statusCode, blockedResponse.headers);
+        res.end(blockedResponse.body);
+      } else {
+        res.writeHead(204);
+        res.end();
+      }
+      return;
+    }
+
+    // Apply URL modifications from plugins
+    if (preRequestResult.value.url) {
+      targetUrl = preRequestResult.value.url;
+    }
+
+    // Apply header modifications from plugins
+    if (preRequestResult.value.headers) {
+      Object.assign(req.headers, preRequestResult.value.headers);
+    }
+  }
 
   // Check domain/URL blocking
   if (checkAndBlockRequest(res, parsedUrl.hostname, targetUrl, config)) {
@@ -583,8 +643,8 @@ async function proxyRequest(
             body = Buffer.from(await decompressBody(body, encoding));
 
             // Handle redirects
-            const statusCode = proxyRes.statusCode || 200;
-            if (isRedirectStatus(statusCode)) {
+            let finalStatusCode = proxyRes.statusCode || 200;
+            if (isRedirectStatus(finalStatusCode)) {
               markAsRedirect(targetUrl);
             }
 
@@ -595,10 +655,10 @@ async function proxyRequest(
             // Debug: Log transformation decision for JS files
             const isJsPath = targetUrl.includes('/js/') || targetUrl.includes('.js') || targetUrl.includes('javascript');
             if (isJsPath) {
-              console.log(`🔍 JS Debug: URL=${targetUrl.substring(0, 100)}... status=${statusCode} bodyLen=${body.length} contentType=${contentType}`);
+              console.log(`🔍 JS Debug: URL=${targetUrl.substring(0, 100)}... status=${finalStatusCode} bodyLen=${body.length} contentType=${contentType}`);
             }
 
-            if (!isRedirectStatus(statusCode) && body.length > 0) {
+            if (!isRedirectStatus(finalStatusCode) && body.length > 0) {
               body = await transformResponseBody(
                 body,
                 contentType,
@@ -608,15 +668,43 @@ async function proxyRequest(
                 proxyRes.headers
               );
             } else if (isJsPath) {
-              console.log(`⚠️ JS Skipped: isRedirect=${isRedirectStatus(statusCode)} bodyLength=${body.length}`);
+              console.log(`⚠️ JS Skipped: isRedirect=${isRedirectStatus(finalStatusCode)} bodyLength=${body.length}`);
             }
 
             // Prepare response headers
-            const responseHeaders = sanitizeResponseHeaders(proxyRes.headers);
+            let responseHeaders = sanitizeResponseHeaders(proxyRes.headers);
+
+            // Execute response:post hooks
+            const detectedContentType = getContentType(proxyRes.headers as Record<string, string | string[] | undefined>, targetUrl);
+            const responseContext: ResponseContext = {
+              ...requestContext,
+              statusCode: finalStatusCode,
+              responseHeaders: { ...responseHeaders },
+              body,
+              contentType: detectedContentType,
+              originalSize: Buffer.concat(chunks).length,
+              duration: Date.now() - startTime,
+            };
+
+            const postResponseResult = await runPostResponseHooks(responseContext);
+            if (postResponseResult) {
+              // Apply body modifications from plugins
+              if (postResponseResult.value.body) {
+                body = postResponseResult.value.body;
+              }
+              // Apply header modifications from plugins
+              if (postResponseResult.value.headers) {
+                responseHeaders = { ...responseHeaders, ...postResponseResult.value.headers };
+              }
+              // Apply status code modifications from plugins
+              if (postResponseResult.value.statusCode !== undefined) {
+                finalStatusCode = postResponseResult.value.statusCode;
+              }
+            }
 
             // Update charset for transformed text content
             const finalContentType = getContentType(proxyRes.headers as Record<string, string | string[] | undefined>, targetUrl);
-            if (!isRedirectStatus(statusCode) && finalContentType !== 'other' && !needsImageTransform(contentType, targetUrl)) {
+            if (!isRedirectStatus(finalStatusCode) && finalContentType !== 'other' && !needsImageTransform(contentType, targetUrl)) {
               updateCharsetToUtf8(responseHeaders);
             }
 
@@ -647,7 +735,7 @@ async function proxyRequest(
             }
 
             // Send response
-            res.writeHead(statusCode, responseHeaders);
+            res.writeHead(finalStatusCode, responseHeaders);
             res.end(body);
 
             // Log JSON requests

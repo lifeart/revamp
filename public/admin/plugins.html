@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plugins - Revamp Admin</title>
+  <link rel="stylesheet" href="css/admin.css">
+  <style>
+    .plugin-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-lg);
+      margin-bottom: var(--spacing-md);
+      transition: all var(--transition-fast);
+    }
+    .plugin-card:hover {
+      border-color: var(--color-primary);
+    }
+    .plugin-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: var(--spacing-md);
+    }
+    .plugin-info { flex: 1; }
+    .plugin-name {
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin-bottom: var(--spacing-xs);
+    }
+    .plugin-version {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-left: var(--spacing-sm);
+    }
+    .plugin-author {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+    .plugin-description {
+      color: var(--text-secondary);
+      margin-bottom: var(--spacing-md);
+    }
+    .plugin-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-md);
+      margin-bottom: var(--spacing-md);
+    }
+    .plugin-meta-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+    .plugin-meta-item svg {
+      width: 16px;
+      height: 16px;
+    }
+    .plugin-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-xs);
+    }
+    .plugin-tag {
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      border-radius: var(--radius-sm);
+      background: var(--bg-primary);
+      color: var(--text-muted);
+    }
+    .plugin-tag.hook { background: rgba(59, 130, 246, 0.2); color: var(--color-primary); }
+    .plugin-tag.permission { background: rgba(245, 158, 11, 0.2); color: var(--color-warning); }
+    .plugin-actions {
+      display: flex;
+      gap: var(--spacing-sm);
+      flex-shrink: 0;
+    }
+    .state-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: var(--radius-full);
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .state-badge.active {
+      background: rgba(74, 222, 128, 0.2);
+      color: var(--color-success);
+    }
+    .state-badge.inactive {
+      background: rgba(156, 163, 175, 0.2);
+      color: var(--text-muted);
+    }
+    .state-badge.error {
+      background: rgba(255, 68, 68, 0.2);
+      color: var(--color-error);
+    }
+    .state-badge.loading {
+      background: rgba(59, 130, 246, 0.2);
+      color: var(--color-primary);
+    }
+    .state-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: var(--spacing-md);
+      margin-bottom: var(--spacing-lg);
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-md);
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: var(--spacing-xs);
+    }
+    .stat-label {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+    .empty-state {
+      text-align: center;
+      padding: var(--spacing-xl);
+      color: var(--text-muted);
+    }
+    .empty-state svg {
+      width: 64px;
+      height: 64px;
+      margin-bottom: var(--spacing-md);
+      opacity: 0.5;
+    }
+    .config-preview {
+      background: var(--bg-primary);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-md);
+      font-family: monospace;
+      font-size: 0.875rem;
+      max-height: 200px;
+      overflow: auto;
+    }
+    .plugin-error {
+      background: rgba(255, 68, 68, 0.1);
+      border: 1px solid var(--color-error);
+      border-radius: var(--radius-md);
+      padding: var(--spacing-md);
+      margin-top: var(--spacing-md);
+      color: var(--color-error);
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+  <button class="mobile-menu-toggle" aria-label="Toggle menu">
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M3 12h18M3 6h18M3 18h18"/>
+    </svg>
+  </button>
+
+  <div class="admin-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="/__revamp__/admin/../revamp-logo.png" alt="Revamp" class="sidebar-logo" onerror="this.style.display='none'">
+        <span class="sidebar-title">Revamp Admin</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">Main</div>
+          <a href="index.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+            Dashboard
+          </a>
+          <a href="domains.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            Domain Profiles
+          </a>
+          <a href="config.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Configuration
+          </a>
+          <a href="plugins.html" class="nav-link active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            Plugins
+          </a>
+          <a href="sw.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            Service Workers
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-section-title">External</div>
+          <a href="/__revamp__/metrics" class="nav-link" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            Metrics Dashboard
+          </a>
+          <a href="https://github.com/lifeart/revamp" class="nav-link" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+            GitHub
+          </a>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="page-header">
+        <h1 class="page-title">Plugins</h1>
+        <p class="page-subtitle">Manage Revamp plugins to extend proxy functionality</p>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">--</div>
+          <div class="stat-label">Total Plugins</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-active">--</div>
+          <div class="stat-label">Active</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-hooks">--</div>
+          <div class="stat-label">Hooks Registered</div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="card mb-lg">
+        <div class="card-header">
+          <span class="card-title">Plugin Actions</span>
+        </div>
+        <div class="flex gap-md">
+          <button class="btn btn-primary" id="btn-load-all">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Load All Plugins
+          </button>
+          <button class="btn btn-secondary" id="btn-refresh">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,4 23,10 17,10"/><polyline points="1,20 1,14 7,14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Refresh
+          </button>
+          <button class="btn btn-secondary" id="btn-discover">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+            Discover Plugins
+          </button>
+        </div>
+      </div>
+
+      <!-- Plugin List -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Installed Plugins</span>
+        </div>
+        <div id="plugin-list">
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <p>No plugins installed</p>
+            <p class="text-sm">Place plugins in the <code>.revamp-plugins</code> directory and click "Load All Plugins"</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Plugin Config Modal -->
+      <div class="modal" id="config-modal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 class="modal-title">Plugin Configuration</h3>
+            <button class="modal-close" id="config-modal-close">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label">Plugin ID</label>
+              <input type="text" class="form-input" id="config-plugin-id" readonly>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Configuration (JSON)</label>
+              <textarea class="form-input" id="config-json" rows="10" style="font-family: monospace;"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="config-cancel">Cancel</button>
+            <button class="btn btn-primary" id="config-save">Save Configuration</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/plugins.js"></script>
+</body>
+</html>

@@ -2,7 +2,10 @@
  * Revamp API Endpoint Handler
  *
  * Handles all /__revamp__/* API endpoints:
+ * - /__revamp__/admin/* - Admin panel (served directly, bypasses all transformations)
  * - /__revamp__/config - Proxy configuration
+ * - /__revamp__/domains - Domain rules management (profiles, patterns)
+ * - /__revamp__/domains/match/:domain - Test domain profile matching
  * - /__revamp__/metrics - JSON metrics
  * - /__revamp__/metrics/dashboard - HTML metrics dashboard
  * - /__revamp__/pac/socks5 - SOCKS5 PAC file
@@ -12,21 +15,40 @@
  * - /__revamp__/sw/inline - Service Worker inline transformation (code-based)
  * - /__revamp__/sw/remote - Remote Service Worker WebSocket endpoint
  * - /__revamp__/sw/remote/status - Remote SW server status
+ *
+ * IMPORTANT: All /__revamp__/* endpoints are handled BEFORE the proxy's
+ * transformation pipeline runs. This ensures:
+ * - Admin panel is never modified by JS/CSS/HTML transformations
+ * - API responses are not cached by the proxy cache
+ * - Ad/tracking blocking does not affect admin panel or API calls
  */
 
+import { readFile } from 'node:fs/promises';
+import { join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { handleConfigRequest, CONFIG_ENDPOINT, type ConfigEndpointResult } from './config-endpoint.js';
 import { generateDashboardHtml, generateMetricsJson } from '../metrics/dashboard.js';
 import { generateSocks5Pac, generateHttpPac, generateCombinedPac } from '../pac/generator.js';
 import { bundleServiceWorker, transformInlineServiceWorker } from '../transformers/sw-bundler.js';
 import { getRemoteSwStatus, isRemoteSwEndpoint } from './remote-sw-server.js';
 import { getClientConfig } from '../config/index.js';
+import { isDomainRulesEndpoint, handleDomainRulesRequest, DOMAIN_RULES_BASE } from './domain-rules-api.js';
+import { isPluginEndpoint, handlePluginRequest } from '../plugins/api.js';
+
+// Get project root directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = join(__filename, '..');
+const PROJECT_ROOT = join(__dirname, '..', '..');
 
 /** Base path for all Revamp API endpoints */
 export const REVAMP_API_BASE = '/__revamp__';
 
 /** API endpoint paths */
 export const ENDPOINTS = {
+  admin: `${REVAMP_API_BASE}/admin`,
   config: `${REVAMP_API_BASE}/config`,
+  domains: `${REVAMP_API_BASE}/domains`,
+  plugins: `${REVAMP_API_BASE}/plugins`,
   metrics: `${REVAMP_API_BASE}/metrics`,
   metricsJson: `${REVAMP_API_BASE}/metrics/json`,
   metricsDashboard: `${REVAMP_API_BASE}/metrics/dashboard`,
@@ -38,6 +60,20 @@ export const ENDPOINTS = {
   swRemote: `${REVAMP_API_BASE}/sw/remote`,
   swRemoteStatus: `${REVAMP_API_BASE}/sw/remote/status`,
 } as const;
+
+/** MIME types for static files */
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
 
 /**
  * API response result
@@ -54,6 +90,63 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+/**
+ * Serve static files from the admin panel directory.
+ *
+ * IMPORTANT: This function serves files directly from disk without any
+ * proxy transformations, filtering, or caching. This ensures the admin
+ * panel UI is never modified by:
+ * - JavaScript transpilation (Babel)
+ * - CSS transformation (PostCSS)
+ * - HTML modification (polyfill injection)
+ * - Ad/tracking blocking
+ * - Proxy-level caching
+ *
+ * The admin panel is designed to work on legacy browsers using ES5-compatible
+ * vanilla JavaScript, so no transformation is needed.
+ */
+async function serveAdminFile(filePath: string): Promise<ApiResult> {
+  // Security: prevent directory traversal
+  const normalizedPath = filePath.replace(/\.\./g, '').replace(/\/+/g, '/');
+
+  // Default to index.html for directory requests
+  let targetPath = normalizedPath;
+  if (targetPath === '' || targetPath === '/') {
+    targetPath = '/index.html';
+  }
+
+  const fullPath = join(PROJECT_ROOT, 'public', 'admin', targetPath);
+  const ext = extname(fullPath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  try {
+    const content = await readFile(fullPath);
+
+    return {
+      statusCode: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': contentType,
+        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+      },
+      body: content.toString('utf-8'),
+    };
+  } catch (err) {
+    // File not found - return 404
+    return {
+      statusCode: 404,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        error: 'Not found',
+        path: targetPath,
+      }),
+    };
+  }
+}
 
 /**
  * Check if a path is a Revamp API endpoint
@@ -80,6 +173,25 @@ export async function handleRevampRequest(path: string, method: string, body: st
       },
       body: '',
     };
+  }
+
+  // Admin panel static files - served directly without any proxy transformations
+  // This ensures the admin UI is never affected by JS/CSS/HTML transformations,
+  // ad blocking, tracking removal, or caching
+  if (path.startsWith(ENDPOINTS.admin)) {
+    const filePath = path.slice(ENDPOINTS.admin.length);
+    return serveAdminFile(filePath);
+  }
+
+  // Domain rules API endpoints
+  if (isDomainRulesEndpoint(path)) {
+    return handleDomainRulesRequest(path, method, body);
+  }
+
+  // Plugin API endpoints
+  if (path.startsWith(ENDPOINTS.plugins)) {
+    const pluginPath = path.slice(REVAMP_API_BASE.length);
+    return handlePluginRequest(pluginPath, method, body);
   }
 
   // Service Worker inline transformation endpoint (POST)
@@ -203,7 +315,13 @@ export async function handleRevampRequest(path: string, method: string, body: st
     body: JSON.stringify({
       name: 'Revamp API',
       endpoints: {
+        admin: ENDPOINTS.admin,
         config: ENDPOINTS.config,
+        domains: {
+          list: ENDPOINTS.domains,
+          match: `${ENDPOINTS.domains}/match/:domain`,
+          profile: `${ENDPOINTS.domains}/:id`,
+        },
         metrics: {
           dashboard: ENDPOINTS.metrics,
           json: ENDPOINTS.metricsJson,

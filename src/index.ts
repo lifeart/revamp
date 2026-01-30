@@ -11,6 +11,7 @@ import { createHttpProxy, createSocks5Proxy } from './proxy/index.js';
 import { createCaptivePortal } from './portal/index.js';
 import { generateCA, getCACert } from './certs/index.js';
 import { clearCache, getCacheStats } from './cache/index.js';
+import { initializePluginSystem, shutdownPluginSystem } from './plugins/index.js';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { networkInterfaces } from 'node:os';
@@ -147,6 +148,12 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
       console.log('📜 Starting captive portal...');
       portalServer = createCaptivePortal(config.captivePortalPort, config.bindAddress);
 
+      // Initialize plugin system
+      console.log('🔌 Initializing plugin system...');
+      initializePluginSystem().catch((err) => {
+        console.error('Failed to initialize plugins:', err);
+      });
+
       // Print setup instructions
       printSetupInstructions(config);
 
@@ -167,6 +174,12 @@ ${generateFeaturesDisplay(config)}
 
     stop(): void {
       console.log('🛑 Stopping Revamp...');
+
+      // Shutdown plugins first
+      console.log('🔌 Shutting down plugins...');
+      shutdownPluginSystem().catch((err) => {
+        console.error('Failed to shutdown plugins:', err);
+      });
 
       if (httpServer) {
         httpServer.close();

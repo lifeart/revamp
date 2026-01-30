@@ -19,6 +19,14 @@ import { transformJs } from './js.js';
 import { buildPolyfillScript, getErrorOverlayScript, getConfigOverlayScript, userAgentPolyfill } from './polyfills/index.js';
 import { bundleEsModule, bundleInlineModule, getModuleShimScript, isModuleScript, parseImportMap } from './esm-bundler.js';
 import type { ImportMap } from './esm-bundler.js';
+import {
+  createFilterContext,
+  getAdPatterns,
+  getTrackingPatterns,
+  type FilterContext,
+  type AdPatterns,
+  type TrackingPatterns,
+} from '../filters/index.js';
 
 // =============================================================================
 // Types
@@ -209,16 +217,32 @@ const RSC_PAYLOAD_PATTERNS: readonly RegExp[] = [
 
 /**
  * Check if a script is ad-related based on its src URL or content.
+ * @param src - Script src URL
+ * @param content - Script inline content
+ * @param customPatterns - Optional custom patterns from domain profile
  */
-function isAdScript(src: string | undefined, content: string): boolean {
-  return matchesAnyPattern(src, content, AD_SCRIPT_PATTERNS);
+function isAdScript(
+  src: string | undefined,
+  content: string,
+  customPatterns?: readonly RegExp[]
+): boolean {
+  const patterns = customPatterns ?? AD_SCRIPT_PATTERNS;
+  return matchesAnyPattern(src, content, patterns);
 }
 
 /**
  * Check if a script is tracking-related based on its src URL or content.
+ * @param src - Script src URL
+ * @param content - Script inline content
+ * @param customPatterns - Optional custom patterns from domain profile
  */
-function isTrackingScript(src: string | undefined, content: string): boolean {
-  return matchesAnyPattern(src, content, TRACKING_SCRIPT_PATTERNS);
+function isTrackingScript(
+  src: string | undefined,
+  content: string,
+  customPatterns?: readonly RegExp[]
+): boolean {
+  const patterns = customPatterns ?? TRACKING_SCRIPT_PATTERNS;
+  return matchesAnyPattern(src, content, patterns);
 }
 
 /**
@@ -316,14 +340,27 @@ function removeCspMetaTags($: CheerioAPI): void {
 /**
  * Process and optionally remove ad/tracking scripts.
  * Returns count of removed scripts.
+ * @param $ - Cheerio instance
+ * @param removeAds - Whether to remove ad scripts
+ * @param removeTracking - Whether to remove tracking scripts
+ * @param filterContext - Optional filter context for domain-specific patterns
  */
 function processScripts(
   $: CheerioAPI,
   removeAds: boolean,
-  removeTracking: boolean
+  removeTracking: boolean,
+  filterContext?: FilterContext
 ): TransformResult {
   let removedAds = 0;
   let removedTracking = 0;
+
+  // Get domain-specific patterns if context is provided
+  const adPatterns = filterContext
+    ? getAdPatterns(filterContext)
+    : { scriptPatterns: [...AD_SCRIPT_PATTERNS], containerSelectors: [...AD_CONTAINER_SELECTORS] };
+  const trackingPatterns = filterContext
+    ? getTrackingPatterns(filterContext)
+    : { scriptPatterns: [...TRACKING_SCRIPT_PATTERNS], pixelSelectors: [...TRACKING_PIXEL_SELECTORS] };
 
   $('script').each((_, elem) => {
     const $script = $(elem);
@@ -337,14 +374,14 @@ function processScripts(
     }
 
     // Remove ad scripts
-    if (removeAds && isAdScript(src, content)) {
+    if (removeAds && isAdScript(src, content, adPatterns.scriptPatterns)) {
       $script.remove();
       removedAds++;
       return;
     }
 
     // Remove tracking scripts
-    if (removeTracking && isTrackingScript(src, content)) {
+    if (removeTracking && isTrackingScript(src, content, trackingPatterns.scriptPatterns)) {
       $script.remove();
       removedTracking++;
       return;
@@ -568,9 +605,16 @@ async function transformModuleScripts(
 
 /**
  * Remove ad container elements.
+ * @param $ - Cheerio instance
+ * @param filterContext - Optional filter context for domain-specific selectors
  */
-function removeAdContainers($: CheerioAPI): void {
-  for (const selector of AD_CONTAINER_SELECTORS) {
+function removeAdContainers($: CheerioAPI, filterContext?: FilterContext): void {
+  // Get domain-specific selectors if context is provided
+  const selectors = filterContext
+    ? getAdPatterns(filterContext).containerSelectors
+    : AD_CONTAINER_SELECTORS;
+
+  for (const selector of selectors) {
     try {
       $(selector).remove();
     } catch {
@@ -581,9 +625,16 @@ function removeAdContainers($: CheerioAPI): void {
 
 /**
  * Remove tracking pixels and hidden iframes.
+ * @param $ - Cheerio instance
+ * @param filterContext - Optional filter context for domain-specific selectors
  */
-function removeTrackingPixels($: CheerioAPI): void {
-  for (const selector of TRACKING_PIXEL_SELECTORS) {
+function removeTrackingPixels($: CheerioAPI, filterContext?: FilterContext): void {
+  // Get domain-specific selectors if context is provided
+  const selectors = filterContext
+    ? getTrackingPatterns(filterContext).pixelSelectors
+    : TRACKING_PIXEL_SELECTORS;
+
+  for (const selector of selectors) {
     try {
       $(selector).remove();
     } catch {
@@ -769,6 +820,9 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     return html;
   }
 
+  // Create filter context for domain-specific patterns
+  const filterContext = url ? createFilterContext(url) : undefined;
+
   try {
     // Extract content after </html> to preserve it (Cheerio would move it inside the document)
     const { mainHtml, trailingContent } = extractContentAfterHtml(html);
@@ -795,8 +849,8 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     // Remove CSP meta tags (required for injected inline scripts)
     removeCspMetaTags($);
 
-    // Process and remove ad/tracking scripts
-    const result = processScripts($, effectiveConfig.removeAds, effectiveConfig.removeTracking);
+    // Process and remove ad/tracking scripts (with domain-specific patterns)
+    const result = processScripts($, effectiveConfig.removeAds, effectiveConfig.removeTracking, filterContext);
 
     // Transform inline scripts for legacy browsers
     if (effectiveConfig.transformJs) {
@@ -808,14 +862,14 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
       result.bundledModules = await transformModuleScripts($, url, effectiveConfig);
     }
 
-    // Remove ad containers
+    // Remove ad containers (with domain-specific selectors)
     if (effectiveConfig.removeAds) {
-      removeAdContainers($);
+      removeAdContainers($, filterContext);
     }
 
-    // Remove tracking pixels
+    // Remove tracking pixels (with domain-specific selectors)
     if (effectiveConfig.removeTracking) {
-      removeTrackingPixels($);
+      removeTrackingPixels($, filterContext);
     }
 
     // Remove preload links (not useful for legacy browsers)

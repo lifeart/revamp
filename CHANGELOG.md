@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Plugin System** - Extensible architecture for custom functionality
+  - Hook-based interceptor chain for request/response lifecycle
+  - 10 hook types: `request:pre`, `response:post`, `transform:pre`, `transform:post`, `filter:decision`, `config:resolution`, `domain:lifecycle`, `cache:get`, `cache:set`, `metrics:record`
+  - 14 permission types for fine-grained access control
+  - Plugin lifecycle management (load, initialize, activate, deactivate, shutdown)
+  - Sandboxed plugin context API with permission enforcement
+  - Hot-reload support for development
+  - Dependency resolution with topological sort
+  - REST API for plugin management (`/__revamp__/plugins/*`)
+  - Admin panel UI for plugin management
+  - Plugin storage, caching, metrics, and custom endpoint registration
 - Centralized client config options with single source of truth (`src/config/client-options.ts`)
 - Dynamic features display in console output
 - Generated config overlay script from metadata
@@ -15,9 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Dashboard config items now dynamically generated from metadata
 - Improved npm package publishing with `files`, `exports`, and `bin` fields
+- Configuration hierarchy now includes plugin hooks at highest priority
 
 ### Fixed
 - CI e2e tests now build project before running to compile worker files
+- SW bundle endpoint tests now properly disable `remoteServiceWorkers` for testing
+- JSON logging integration tests now use polling instead of fixed timeouts for reliability
 
 ## [1.0.0] - 2025-11-28
 

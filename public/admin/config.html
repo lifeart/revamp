@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration - Revamp Admin</title>
+  <link rel="stylesheet" href="css/admin.css">
+  <style>
+    .config-section { margin-bottom: var(--spacing-xl); }
+    .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--spacing-lg); }
+    .config-item { padding: var(--spacing-md); background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); }
+    .config-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-sm); }
+    .config-item-name { font-weight: 600; }
+    .config-item-desc { font-size: 0.875rem; color: var(--text-muted); }
+    .json-preview { background: var(--bg-primary); padding: var(--spacing-md); border-radius: var(--radius-md); overflow-x: auto; font-family: monospace; font-size: 0.875rem; white-space: pre; }
+    .actions-bar { display: flex; gap: var(--spacing-md); margin-top: var(--spacing-lg); padding-top: var(--spacing-lg); border-top: 1px solid var(--border-color); }
+  </style>
+</head>
+<body>
+  <button class="mobile-menu-toggle" aria-label="Toggle menu">
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M3 12h18M3 6h18M3 18h18"/>
+    </svg>
+  </button>
+
+  <div class="admin-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="/__revamp__/admin/../revamp-logo.png" alt="Revamp" class="sidebar-logo" onerror="this.style.display='none'">
+        <span class="sidebar-title">Revamp Admin</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">Main</div>
+          <a href="index.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+            Dashboard
+          </a>
+          <a href="domains.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            Domain Profiles
+          </a>
+          <a href="config.html" class="nav-link active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Configuration
+          </a>
+          <a href="plugins.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            Plugins
+          </a>
+          <a href="sw.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            Service Workers
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-section-title">External</div>
+          <a href="/__revamp__/metrics" class="nav-link" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            Metrics Dashboard
+          </a>
+          <a href="https://github.com/lifeart/revamp" class="nav-link" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+            GitHub
+          </a>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="page-header">
+        <h1 class="page-title">Configuration</h1>
+        <p class="page-subtitle">Manage proxy settings for your device</p>
+      </div>
+
+      <!-- Transformations -->
+      <div class="card config-section">
+        <div class="card-header">
+          <span class="card-title">Content Transformations</span>
+        </div>
+        <p class="text-muted mb-md">Control how content is transformed for legacy browser compatibility.</p>
+        <div class="config-grid" id="transforms-grid">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Filtering -->
+      <div class="card config-section">
+        <div class="card-header">
+          <span class="card-title">Content Filtering</span>
+        </div>
+        <p class="text-muted mb-md">Block ads, tracking scripts, and unwanted content.</p>
+        <div class="config-grid" id="filtering-grid">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Service Workers -->
+      <div class="card config-section">
+        <div class="card-header">
+          <span class="card-title">Service Workers</span>
+        </div>
+        <p class="text-muted mb-md">Handle Service Worker compatibility for legacy browsers.</p>
+        <div class="config-grid" id="sw-grid">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- User Agent -->
+      <div class="card config-section">
+        <div class="card-header">
+          <span class="card-title">User Agent</span>
+        </div>
+        <p class="text-muted mb-md">Spoof the browser's User-Agent to bypass detection.</p>
+        <div class="config-grid" id="ua-grid">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Actions</span>
+        </div>
+        <div class="actions-bar" style="border-top: none; padding-top: 0; margin-top: 0;">
+          <button class="btn btn-primary btn-lg" id="save-btn">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save Changes
+          </button>
+          <button class="btn btn-secondary btn-lg" id="reset-btn">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Reset to Defaults
+          </button>
+        </div>
+
+        <!-- JSON Preview -->
+        <div class="mt-lg">
+          <div class="flex justify-between items-center mb-sm">
+            <span class="card-title">JSON Preview</span>
+            <button class="btn btn-secondary btn-icon" id="copy-json-btn" title="Copy JSON">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+          <div class="json-preview" id="json-preview">Loading...</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/config.js"></script>
+</body>
+</html>

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Domain Profiles - Revamp Admin</title>
+  <link rel="stylesheet" href="css/admin.css">
+  <style>
+    .pattern-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      margin: 2px;
+    }
+    .pattern-tag-exact { border-color: var(--color-primary); }
+    .pattern-tag-suffix { border-color: var(--color-success); }
+    .pattern-tag-regex { border-color: var(--color-warning); }
+    .patterns-cell { max-width: 300px; }
+    .pattern-list { display: flex; flex-wrap: wrap; gap: 4px; }
+    .profile-row td { vertical-align: middle; }
+    .actions-cell { white-space: nowrap; }
+    .domain-tester { margin-top: var(--spacing-lg); }
+    .tester-result { margin-top: var(--spacing-md); padding: var(--spacing-md); border-radius: var(--radius-md); }
+    .tester-result.match { background: rgba(74, 222, 128, 0.1); border: 1px solid var(--color-success); }
+    .tester-result.no-match { background: rgba(255, 68, 68, 0.1); border: 1px solid var(--color-error); }
+    .pattern-editor { margin-bottom: var(--spacing-md); }
+    .pattern-row { display: flex; gap: var(--spacing-sm); margin-bottom: var(--spacing-sm); align-items: center; }
+    .pattern-row select { width: 120px; flex-shrink: 0; }
+    .pattern-row input { flex: 1; }
+    .advanced-section { margin-top: var(--spacing-lg); padding-top: var(--spacing-lg); border-top: 1px solid var(--border-color); }
+    .advanced-toggle { cursor: pointer; color: var(--text-muted); display: flex; align-items: center; gap: var(--spacing-sm); }
+    .advanced-toggle:hover { color: var(--text-primary); }
+    .advanced-content { display: none; margin-top: var(--spacing-md); }
+    .advanced-content.show { display: block; }
+  </style>
+</head>
+<body>
+  <button class="mobile-menu-toggle" aria-label="Toggle menu">
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M3 12h18M3 6h18M3 18h18"/>
+    </svg>
+  </button>
+
+  <div class="admin-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <img src="/__revamp__/admin/../revamp-logo.png" alt="Revamp" class="sidebar-logo" onerror="this.style.display='none'">
+        <span class="sidebar-title">Revamp Admin</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">Main</div>
+          <a href="index.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+            Dashboard
+          </a>
+          <a href="domains.html" class="nav-link active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            Domain Profiles
+          </a>
+          <a href="config.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Configuration
+          </a>
+          <a href="plugins.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+            Plugins
+          </a>
+          <a href="sw.html" class="nav-link">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            Service Workers
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-section-title">External</div>
+          <a href="/__revamp__/metrics" class="nav-link" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            Metrics Dashboard
+          </a>
+          <a href="https://github.com/lifeart/revamp" class="nav-link" target="_blank">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+            GitHub
+          </a>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="page-header">
+        <div class="flex justify-between items-center">
+          <div>
+            <h1 class="page-title">Domain Profiles</h1>
+            <p class="page-subtitle">Configure per-domain filtering and transformation rules</p>
+          </div>
+          <button class="btn btn-primary btn-lg" id="create-profile-btn">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Create Profile
+          </button>
+        </div>
+      </div>
+
+      <!-- Profiles Table -->
+      <div class="card mb-lg">
+        <div class="card-header">
+          <span class="card-title">Profiles (<span id="profile-count">0</span>)</span>
+          <div class="flex gap-sm">
+            <input type="text" class="form-input" id="search-input" placeholder="Search profiles..." style="width: 200px;">
+          </div>
+        </div>
+        <div class="table-container">
+          <table class="table" id="profiles-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Patterns</th>
+                <th>Priority</th>
+                <th>Filters</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="profiles-tbody">
+              <tr>
+                <td colspan="6" class="text-center text-muted" style="padding: 40px;">
+                  <div class="spinner" style="margin: 0 auto 16px;"></div>
+                  Loading profiles...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Domain Tester -->
+      <div class="card domain-tester">
+        <div class="card-header">
+          <span class="card-title">Domain Tester</span>
+        </div>
+        <p class="text-muted mb-md">Test which profile matches a specific domain.</p>
+        <div class="flex gap-md">
+          <input type="text" class="form-input" id="test-domain-input" placeholder="example.com" style="flex: 1; max-width: 400px;">
+          <button class="btn btn-primary" id="test-domain-btn">Test Match</button>
+        </div>
+        <div id="tester-result" class="tester-result hidden"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Profile Modal Template -->
+  <script id="profile-modal-template" type="text/template">
+    <form id="profile-form">
+      <div class="form-group">
+        <label class="form-label">Profile Name *</label>
+        <input type="text" class="form-input" name="name" required placeholder="e.g., YouTube Optimization">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Priority</label>
+        <input type="number" class="form-input" name="priority" value="0" min="0" max="1000">
+        <div class="form-hint">Higher priority profiles are matched first (0-1000)</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Domain Patterns *</label>
+        <div class="pattern-editor" id="pattern-editor">
+          <!-- Patterns added dynamically -->
+        </div>
+        <button type="button" class="btn btn-secondary" id="add-pattern-btn">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          Add Pattern
+        </button>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Filtering</label>
+        <div class="flex gap-lg">
+          <label class="toggle">
+            <input type="checkbox" class="toggle-input" name="removeAds" checked>
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Remove Ads</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" class="toggle-input" name="removeTracking" checked>
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Remove Tracking</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Transformations</label>
+        <div class="grid grid-2">
+          <label class="toggle">
+            <input type="checkbox" class="toggle-input" name="transformJs">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Transform JS</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" class="toggle-input" name="transformCss">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Transform CSS</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" class="toggle-input" name="transformHtml">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Transform HTML</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" class="toggle-input" name="bundleEsModules">
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Bundle ES Modules</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="toggle">
+          <input type="checkbox" class="toggle-input" name="enabled" checked>
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">Profile Enabled</span>
+        </label>
+      </div>
+
+      <div class="advanced-section">
+        <div class="advanced-toggle" id="advanced-toggle">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          Advanced Options
+        </div>
+        <div class="advanced-content" id="advanced-content">
+          <div class="form-group">
+            <label class="form-label">Custom Ad Patterns</label>
+            <textarea class="form-textarea" name="customAdPatterns" placeholder="One pattern per line (e.g., ad_break)"></textarea>
+            <div class="form-hint">Script patterns to block as ads</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Custom Ad Selectors</label>
+            <textarea class="form-textarea" name="customAdSelectors" placeholder="One CSS selector per line (e.g., .video-ads)"></textarea>
+            <div class="form-hint">CSS selectors for ad containers to remove</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Custom Tracking Patterns</label>
+            <textarea class="form-textarea" name="customTrackingPatterns" placeholder="One pattern per line"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Custom Tracking Selectors</label>
+            <textarea class="form-textarea" name="customTrackingSelectors" placeholder="One CSS selector per line"></textarea>
+          </div>
+        </div>
+      </div>
+    </form>
+  </script>
+
+  <script src="js/api.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/domains.js"></script>
+</body>
+</html>

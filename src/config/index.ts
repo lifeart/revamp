@@ -4,6 +4,10 @@
  */
 
 import { CLIENT_CONFIG_OPTIONS, getClientConfigKeys } from './client-options.js';
+import type { DomainProfile } from './domain-rules.js';
+import { getProfileForDomain } from './domain-manager.js';
+import { runConfigResolutionHooks } from '../plugins/hook-executor.js';
+import type { ConfigResolutionContext } from '../plugins/hooks.js';
 
 export interface RevampConfig {
   // Server settings
@@ -263,3 +267,99 @@ export function getEffectiveConfig(clientIp?: string): RevampConfig {
   }
   return result;
 }
+
+/** Result of domain-aware config resolution */
+export interface EffectiveConfigResult {
+  /** The fully resolved configuration */
+  config: RevampConfig;
+  /** The matched domain profile (if any) */
+  profile: DomainProfile | null;
+}
+
+/**
+ * Get fully resolved config for a specific request.
+ * Merges configuration with priority: Domain Profile > Client Config > Global Config
+ *
+ * @param domain - The domain being accessed
+ * @param clientIp - Optional client IP for per-client config lookup
+ * @returns The effective config and matched domain profile
+ */
+export function getEffectiveConfigForRequest(
+  domain: string,
+  clientIp?: string
+): EffectiveConfigResult {
+  // Start with client+global config merge
+  const baseConfig = getEffectiveConfig(clientIp);
+
+  // Get domain profile
+  const { profile } = getProfileForDomain(domain);
+
+  // If no profile, return base config
+  if (!profile) {
+    return { config: baseConfig, profile: null };
+  }
+
+  // Clone base config and apply profile overrides
+  const result = { ...baseConfig };
+
+  // Apply transformation overrides from domain profile
+  if (profile.transforms) {
+    for (const [key, value] of Object.entries(profile.transforms)) {
+      if (value !== undefined) {
+        (result as Record<string, unknown>)[key] = value;
+      }
+    }
+  }
+
+  // Apply domain-level ad/tracking toggles
+  if (profile.removeAds !== undefined) {
+    result.removeAds = profile.removeAds;
+  }
+  if (profile.removeTracking !== undefined) {
+    result.removeTracking = profile.removeTracking;
+  }
+  if (profile.cacheEnabled !== undefined) {
+    result.cacheEnabled = profile.cacheEnabled;
+  }
+
+  return { config: result, profile };
+}
+
+/**
+ * Get fully resolved config for a specific request with plugin hook support.
+ * Merges configuration with priority: Plugin Hooks > Domain Profile > Client Config > Global Config
+ *
+ * @param domain - The domain being accessed
+ * @param clientIp - Optional client IP for per-client config lookup
+ * @returns The effective config and matched domain profile
+ */
+export async function getEffectiveConfigForRequestAsync(
+  domain: string,
+  clientIp?: string
+): Promise<EffectiveConfigResult> {
+  // Get base config from synchronous resolution
+  const { config: baseConfig, profile } = getEffectiveConfigForRequest(domain, clientIp);
+
+  // Execute config:resolution hooks for plugin overrides
+  const hookContext: ConfigResolutionContext = {
+    baseConfig,
+    clientIp,
+    domain,
+  };
+
+  const hookResult = await runConfigResolutionHooks(hookContext);
+
+  // If no plugin overrides, return base result
+  if (!hookResult || !hookResult.value.overrides) {
+    return { config: baseConfig, profile };
+  }
+
+  // Apply plugin config overrides (highest priority)
+  const finalConfig = { ...baseConfig, ...hookResult.value.overrides };
+
+  return { config: finalConfig, profile };
+}
+
+// Re-export domain manager functions for convenience
+export { getProfileForDomain } from './domain-manager.js';
+export type { DomainProfile } from './domain-rules.js';

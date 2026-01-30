@@ -218,6 +218,12 @@ describe('handleRevampRequest', () => {
   });
 
   describe('Service Worker bundle endpoint', () => {
+    // SW bundling is disabled when remoteServiceWorkers is enabled (default)
+    // These tests require remoteServiceWorkers to be disabled
+    beforeEach(() => {
+      updateConfig({ remoteServiceWorkers: false });
+    });
+
     it('should return 400 when url parameter is missing', async () => {
       const result = await handleRevampRequest('/__revamp__/sw/bundle', 'GET');
       expect(result.statusCode).toBe(400);
