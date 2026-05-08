@@ -8,6 +8,7 @@ import type { DomainProfile } from './domain-rules.js';
 import { getProfileForDomain } from './domain-manager.js';
 import { runConfigResolutionHooks } from '../plugins/hook-executor.js';
 import type { ConfigResolutionContext } from '../plugins/hooks.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 
 export interface RevampConfig {
   // Server settings
@@ -80,8 +81,8 @@ export const defaultConfig: RevampConfig = {
   transformCss: true,
   transformHtml: true,
   bundleEsModules: true, // Bundle ES modules by default for legacy browser support
-  emulateServiceWorkers: false, // Enable SW bridge by default to transform and run SWs
-  remoteServiceWorkers: true, // Remote SW execution disabled by default (requires Playwright)
+  emulateServiceWorkers: true, // Enable SW bridge by default to transform and run SWs
+  remoteServiceWorkers: false, // Remote SW execution disabled by default (requires Playwright)
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
@@ -234,7 +235,9 @@ export function getClientConfig(clientIp?: string): ClientConfig {
 export function setClientConfig(config: ClientConfig, clientIp?: string): void {
   const key = clientIp || DEFAULT_CLIENT_KEY;
   clientConfigs.set(key, config);
-  console.log(`[Revamp] Client config updated for ${clientIp || 'default'}:`, config);
+  // clientIp comes from socket.remoteAddress / X-Forwarded-For; sanitize so an
+  // attacker can't inject fake log lines via a malformed address string.
+  console.log('[Revamp] Client config updated for %s:', sanitizeForLog(clientIp || 'default'), config);
 }
 
 /**
@@ -244,7 +247,7 @@ export function setClientConfig(config: ClientConfig, clientIp?: string): void {
 export function resetClientConfig(clientIp?: string): void {
   if (clientIp) {
     clientConfigs.delete(clientIp);
-    console.log(`[Revamp] Client config reset for ${clientIp}`);
+    console.log('[Revamp] Client config reset for %s', sanitizeForLog(clientIp));
   } else {
     clientConfigs.clear();
     console.log('[Revamp] All client configs reset to defaults');

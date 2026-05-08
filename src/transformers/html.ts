@@ -507,13 +507,53 @@ function extractImportMap($: CheerioAPI): ImportMap | undefined {
 
 /**
  * Wrap bundled module code in a DOMContentLoaded callback.
- * ES modules are deferred by default, so they execute after DOM is ready.
- * When we bundle them into regular scripts, we need to preserve this behavior.
+ *
+ * Native `<script type="module">` is deferred: the module body runs
+ * AFTER the document is parsed but BEFORE the DOMContentLoaded event
+ * fires. When we bundle the module into a classical inline script we
+ * lose that scheduling — the script becomes parser-blocking and runs
+ * in-place. This wrapper restores the "execute after parse" half of
+ * the contract.
+ *
+ * The trickier half is the gap between parse-complete and DCL. Module
+ * code commonly does `document.addEventListener('DOMContentLoaded',
+ * fn)` and relies on `fn` firing once. If we naively schedule the
+ * bundle on DCL and the bundle then tries to add another DCL listener,
+ * that listener is added DURING DCL dispatch — by spec, never invoked.
+ *
+ * To preserve module semantics we patch `document.addEventListener`
+ * for the duration of the bundle. While the patch is active, any
+ * registration for `DOMContentLoaded` / `readystatechange` (when the
+ * relevant state has already been reached) invokes the listener
+ * synchronously instead of dropping it.
  */
 function wrapInDomReady(code: string): string {
   return `(function(){
   function __revampExec(){
+    var origAdd = document.addEventListener;
+    var origRemove = document.removeEventListener;
+    var pastDcl = document.readyState !== "loading";
+    var pastLoad = document.readyState === "complete";
+    document.addEventListener = function(type, listener, options){
+      if (typeof listener !== "function" && (!listener || typeof listener.handleEvent !== "function")) {
+        return origAdd.call(this, type, listener, options);
+      }
+      var fire = (type === "DOMContentLoaded" && pastDcl) ||
+                 (type === "load" && pastLoad);
+      if (!fire) return origAdd.call(this, type, listener, options);
+      var fn = typeof listener === "function" ? listener : listener.handleEvent.bind(listener);
+      try {
+        var ev;
+        try { ev = new Event(type); } catch (_) { ev = { type: type, target: document }; }
+        fn.call(document, ev);
+      } catch (e) { (console.error || console.log).call(console, "[Revamp]", e); }
+    };
+    try {
 ${code}
+    } finally {
+      document.addEventListener = origAdd;
+      document.removeEventListener = origRemove;
+    }
   }
   if(document.readyState==="loading"){
     document.addEventListener("DOMContentLoaded",__revampExec);
