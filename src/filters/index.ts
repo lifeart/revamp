@@ -308,7 +308,14 @@ export function getTrackingPatterns(context: FilterContext): TrackingPatterns {
  */
 export function pathMatchesBlocklistPattern(path: string, rawPattern: string): boolean {
   const pathLower = path.toLowerCase();
-  const pattern = rawPattern.toLowerCase().replace(/^\/+/, '').replace(/\/+$/, '');
+  // Strip leading and trailing slashes without a regex quantifier — `\/+`
+  // makes CodeQL's polynomial-regex detector unhappy even though the anchors
+  // make it linear in practice. Two pointer walks are clearer anyway.
+  let start = 0;
+  let end = rawPattern.length;
+  while (start < end && rawPattern.charCodeAt(start) === 47) start++;
+  while (end > start && rawPattern.charCodeAt(end - 1) === 47) end--;
+  const pattern = rawPattern.slice(start, end).toLowerCase();
   if (!pattern) return false;
 
   return (
