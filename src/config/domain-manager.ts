@@ -18,6 +18,8 @@ import type {
 } from './domain-rules.js';
 import { DEFAULT_RULES_STORE } from './domain-rules.js';
 import { readJson, writeJsonAtomic, onFileChange } from './storage.js';
+import { safeRegex } from '../util/safe-regex.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 
 const RULES_FILENAME = 'domain-rules.json';
 
@@ -114,18 +116,29 @@ function compilePatterns(): void {
 function compilePattern(pattern: DomainPattern): void {
   try {
     if (pattern.type === 'regex') {
-      pattern.compiled = new RegExp(pattern.pattern, 'i');
+      // Length-capped + star-height-checked compile: rejects the
+      // backtracking shapes CodeQL flags as `js/regex-injection`.
+      const compiled = safeRegex(pattern.pattern, 'i');
+      if (!compiled) {
+        console.warn(
+          '[DomainManager] Rejected unsafe regex pattern: %s',
+          sanitizeForLog(pattern.pattern)
+        );
+      }
+      pattern.compiled = compiled ?? undefined;
     } else if (pattern.type === 'suffix') {
       // Convert *.google.com to regex: ^.*\.google\.com$ or ^google\.com$
       const escaped = pattern.pattern
         .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
         .replace(/\*/g, '.*');
-      pattern.compiled = new RegExp(`^${escaped}$`, 'i');
+      // Already escaped + anchored — safeRegex still applies as belt-and-braces.
+      pattern.compiled = safeRegex(`^${escaped}$`, 'i') ?? undefined;
     }
   } catch (err) {
     console.warn(
-      `[DomainManager] Invalid pattern "${pattern.pattern}":`,
-      err
+      '[DomainManager] Invalid pattern %s: %s',
+      sanitizeForLog(pattern.pattern),
+      sanitizeForLog(err instanceof Error ? err.message : String(err))
     );
     pattern.compiled = undefined;
   }

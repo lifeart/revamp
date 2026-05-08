@@ -9,12 +9,14 @@ import {
 } from './index.js';
 import { __testing } from './__testing.js';
 import { resetConfig, updateConfig } from '../config/index.js';
-import { existsSync, rmSync, statSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync, chmodSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 describe('Certificate Generation', () => {
-  const testCertDir = join(tmpdir(), 'revamp-test-certs-' + Date.now());
+  // mkdtempSync creates a uniquely-named directory with restrictive perms (0700)
+  // — avoids the symlink/predictable-name races that `join(tmpdir(), ...)` has.
+  const testCertDir = mkdtempSync(join(tmpdir(), 'revamp-test-certs-'));
 
   beforeEach(() => {
     resetConfig();

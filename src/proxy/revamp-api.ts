@@ -34,6 +34,7 @@ import { getRemoteSwStatus, isRemoteSwEndpoint } from './remote-sw-server.js';
 import { getClientConfig } from '../config/index.js';
 import { isDomainRulesEndpoint, handleDomainRulesRequest, DOMAIN_RULES_BASE } from './domain-rules-api.js';
 import { isPluginEndpoint, handlePluginRequest } from '../plugins/api.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 
 // Get project root directory
 const __filename = fileURLToPath(import.meta.url);
@@ -576,7 +577,8 @@ async function handleSwInlineRequest(method: string, body: string, clientIp?: st
     };
   }
 
-  console.log(`📦 SW Inline transform request: ${code.length} bytes (scope: ${scope})`);
+  // `scope` arrives via JSON body and is attacker-controlled; sanitize.
+  console.log('📦 SW Inline transform request: %d bytes (scope: %s)', code.length, sanitizeForLog(scope));
 
   try {
     const result = await transformInlineServiceWorker(code, scope);

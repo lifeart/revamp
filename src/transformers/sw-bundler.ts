@@ -463,7 +463,10 @@ export async function transformInlineServiceWorker(code: string, scope: string =
   try {
     const config = getConfig();
 
-    console.log(`📦 Transforming inline Service Worker (${code.length} bytes)`);
+    // `code` is attacker-controlled; logging just the length is enough,
+    // but using a constant format string keeps the call out of CodeQL's
+    // tainted-format-string sink list.
+    console.log('📦 Transforming inline Service Worker (%d bytes)', code.length);
 
     let swCode = code;
 

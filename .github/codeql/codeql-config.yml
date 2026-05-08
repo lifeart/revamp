@@ -1,0 +1,29 @@
+name: "Revamp CodeQL config"
+
+# Re-state the query suites from the workflow so this config supersedes
+# the inline `queries:` in `codeql.yml` cleanly.
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+
+# Test files use intentionally unsafe-looking patterns (predictable tmp
+# paths, mock SSRF endpoints, deliberate XSS payloads in fixtures) that
+# would otherwise generate noise. The actual security-relevant code is
+# in `src/**/!(*.test).ts` and is still analysed.
+paths-ignore:
+  - 'src/**/*.test.ts'
+  - 'tests/**'
+  - 'examples/plugins/**/*.test.ts'
+
+# Revamp is, by design, an HTTP/SOCKS proxy that forwards arbitrary
+# bytes from upstream servers AND a small captive-portal admin HTTP
+# server that serves predefined HTML/JSON responses chosen by a
+# request-path router. Both `res.end(body)` patterns are flagged by
+# `js/reflected-xss` because user-controlled values (URL, headers)
+# influence the route taken and thus the eventual byte stream — but
+# that *is* the product's behaviour, not a vulnerability we can
+# encode-our-way-out-of without breaking it. We drop the rule for
+# this codebase only; the rest of `security-extended` still runs.
+query-filters:
+  - exclude:
+      id: js/reflected-xss
