@@ -16,7 +16,7 @@ import type {
   PluginsConfig,
   DEFAULT_PLUGINS_CONFIG,
 } from './types.js';
-import { pluginRegistry } from './registry.js';
+import { pluginRegistry } from './internal.js';
 import { createPluginContext, cleanupPluginResources } from './context.js';
 import {
   validateManifest,
@@ -603,16 +603,23 @@ export class PluginLoader {
     try {
       // Note: Using fs.watch which is available in Node.js
       // For production, consider using chokidar for better cross-platform support
-      import('node:fs').then(({ watch: fsWatch }) => {
-        const watcher = fsWatch(pluginDir, { recursive: true }, (event, filename) => {
-          if (filename && (filename.endsWith('.js') || filename.endsWith('.json'))) {
-            this.scheduleReload(pluginId);
-          }
-        });
+      // Surface the dynamic-import failure instead of dropping it on the floor
+      // (CLAUDE.md: no silent error swallowing). The outer try/catch only
+      // catches synchronous throws, not the rejected promise from import().
+      import('node:fs')
+        .then(({ watch: fsWatch }) => {
+          const watcher = fsWatch(pluginDir, { recursive: true }, (event, filename) => {
+            if (filename && (filename.endsWith('.js') || filename.endsWith('.json'))) {
+              this.scheduleReload(pluginId);
+            }
+          });
 
-        this.watchers.set(pluginId, watcher as unknown as FSWatcher);
-        console.log(`[PluginLoader] Watching plugin: ${pluginId}`);
-      });
+          this.watchers.set(pluginId, watcher as unknown as FSWatcher);
+          console.log(`[PluginLoader] Watching plugin: ${pluginId}`);
+        })
+        .catch((err: unknown) => {
+          console.error(`[PluginLoader] Failed to watch plugin ${pluginId}:`, err);
+        });
     } catch (err) {
       console.error(`[PluginLoader] Failed to watch plugin ${pluginId}:`, err);
     }

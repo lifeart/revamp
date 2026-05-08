@@ -65,7 +65,16 @@ function createTestPluginManifest(id: string, hooks: string[] = ['request:pre'])
     revampVersion: '1.0.0' as const,
     main: 'index.js',
     hooks: hooks as ('request:pre' | 'response:post')[],
-    permissions: ['request:read' as const, 'request:modify' as const],
+    // T37: registry now enforces HOOK_PERMISSION_REQUIREMENTS even when called
+    // directly (defence in depth). The test plugins exercise both request:pre
+    // and response:post chains, so the manifest declares the matching
+    // permissions; otherwise registerHook would reject for response:post.
+    permissions: [
+      'request:read' as const,
+      'request:modify' as const,
+      'response:read' as const,
+      'response:modify' as const,
+    ],
   };
 }
 
@@ -900,6 +909,69 @@ describe('HookExecutor', () => {
       const limitedResult = await hookExecutor.executePreRequest(createRequestContext({ clientIp }));
       expect(limitedResult.stopped).toBe(true);
       expect(limitedResult.value.blocked).toBe(true);
+    });
+  });
+
+  // T40 regression: a chained `request:pre` pipeline must propagate plugin
+  // A's mutated `url` (and `headers`) into the RequestContext that plugin B
+  // observes. This mirrors the T14 chain test for `response:post` at
+  // src/proxy/socks5-plugin-hooks.test.ts:285-363, but for `request:pre`.
+  // Without per-hook propagation, plugin B silently sees the original URL
+  // and downstream rewriting silently drops plugin A's edit.
+  describe('Chained request:pre propagation (T40 regression)', () => {
+    it('propagates plugin A url/header rewrite into plugin B context', async () => {
+      const PLUGIN_A = 'com.test.t40-plugin-a';
+      const PLUGIN_B = 'com.test.t40-plugin-b';
+
+      pluginRegistry.register({ manifest: createTestPluginManifest(PLUGIN_A) });
+      pluginRegistry.register({ manifest: createTestPluginManifest(PLUGIN_B) });
+      pluginRegistry.updateState(PLUGIN_A, 'active');
+      pluginRegistry.updateState(PLUGIN_B, 'active');
+
+      let pluginBObservedUrl: string | null = null;
+      let pluginBObservedHeader: string | undefined;
+
+      // Plugin A: high priority, rewrites the URL and adds an x-trace header.
+      pluginRegistry.registerHook(
+        PLUGIN_A,
+        'request:pre',
+        (async () => {
+          return {
+            continue: true,
+            value: {
+              url: 'https://rewritten/',
+              headers: { 'x-trace': 'a-tagged' },
+            },
+          };
+        }) as PreRequestHook,
+        100
+      );
+
+      // Plugin B: low priority, reads ctx.url & ctx.headers and asserts that
+      // it sees plugin A's mutation, not the upstream value.
+      pluginRegistry.registerHook(
+        PLUGIN_B,
+        'request:pre',
+        (async (ctx: RequestContext) => {
+          pluginBObservedUrl = ctx.url;
+          pluginBObservedHeader = ctx.headers['x-trace'] as string | undefined;
+          return { continue: true };
+        }) as PreRequestHook,
+        1
+      );
+
+      const context = createRequestContext({
+        url: 'https://upstream.example/path',
+      });
+      const result = await hookExecutor.executePreRequest(context);
+
+      // Both hooks ran in priority order: A then B.
+      expect(result.hooksExecuted).toBe(2);
+      // Plugin B must have observed plugin A's rewrite, not the upstream URL.
+      expect(pluginBObservedUrl).toBe('https://rewritten/');
+      expect(pluginBObservedHeader).toBe('a-tagged');
+      // Final merged value carries plugin A's url through to the caller.
+      expect(result.value.url).toBe('https://rewritten/');
     });
   });
 });

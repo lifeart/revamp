@@ -15,25 +15,26 @@
 
   /**
    * Update dashboard with metrics data
-   * @param {Object} data - Metrics data from API
+   * @param {Object} data - Metrics data from API (shape: ProxyMetrics)
    */
   function updateDashboard(data) {
-    // Update uptime
+    var requests = data.requests || {};
+    var bandwidth = data.bandwidth || {};
+    var transforms = data.transforms || {};
+
     var uptimeEl = document.getElementById('uptime');
     if (uptimeEl && data.uptime !== undefined) {
       uptimeEl.textContent = UI.formatDuration(data.uptime);
     }
 
-    // Update last refresh
     var lastRefreshEl = document.getElementById('last-refresh');
     if (lastRefreshEl) {
       lastRefreshEl.textContent = new Date().toLocaleTimeString();
     }
 
-    // Update stats
     var totalRequestsEl = document.getElementById('total-requests');
-    if (totalRequestsEl && data.totalRequests !== undefined) {
-      totalRequestsEl.textContent = UI.formatNumber(data.totalRequests);
+    if (totalRequestsEl && requests.total !== undefined) {
+      totalRequestsEl.textContent = UI.formatNumber(requests.total);
     }
 
     var activeConnectionsEl = document.getElementById('active-connections');
@@ -41,53 +42,50 @@
       activeConnectionsEl.textContent = UI.formatNumber(data.activeConnections);
     }
 
+    // T24: API is the canonical scale (0..100). Render as-is.
     var cacheHitRateEl = document.getElementById('cache-hit-rate');
     var cacheProgressEl = document.getElementById('cache-progress');
     if (cacheHitRateEl && data.cacheHitRate !== undefined) {
       var hitRate = data.cacheHitRate;
-      cacheHitRateEl.textContent = UI.formatPercent(hitRate, true);
+      cacheHitRateEl.textContent = UI.formatPercent(hitRate, false);
       if (cacheProgressEl) {
-        cacheProgressEl.style.width = (hitRate * 100) + '%';
+        cacheProgressEl.style.width = hitRate + '%';
       }
     }
 
     var blockedRequestsEl = document.getElementById('blocked-requests');
-    if (blockedRequestsEl && data.blockedRequests !== undefined) {
-      blockedRequestsEl.textContent = UI.formatNumber(data.blockedRequests);
+    if (blockedRequestsEl && requests.blocked !== undefined) {
+      blockedRequestsEl.textContent = UI.formatNumber(requests.blocked);
     }
 
-    // Update bandwidth
     var bandwidthInEl = document.getElementById('bandwidth-in');
-    if (bandwidthInEl && data.bandwidthIn !== undefined) {
-      bandwidthInEl.textContent = UI.formatBytes(data.bandwidthIn);
+    if (bandwidthInEl && bandwidth.totalBytesIn !== undefined) {
+      bandwidthInEl.textContent = UI.formatBytes(bandwidth.totalBytesIn);
     }
 
     var bandwidthOutEl = document.getElementById('bandwidth-out');
-    if (bandwidthOutEl && data.bandwidthOut !== undefined) {
-      bandwidthOutEl.textContent = UI.formatBytes(data.bandwidthOut);
+    if (bandwidthOutEl && bandwidth.totalBytesOut !== undefined) {
+      bandwidthOutEl.textContent = UI.formatBytes(bandwidth.totalBytesOut);
     }
 
-    // Update transformations
-    if (data.transforms) {
-      var transformJsEl = document.getElementById('transform-js');
-      if (transformJsEl) {
-        transformJsEl.textContent = UI.formatNumber(data.transforms.js || 0);
-      }
+    var transformJsEl = document.getElementById('transform-js');
+    if (transformJsEl) {
+      transformJsEl.textContent = UI.formatNumber(transforms.js || 0);
+    }
 
-      var transformCssEl = document.getElementById('transform-css');
-      if (transformCssEl) {
-        transformCssEl.textContent = UI.formatNumber(data.transforms.css || 0);
-      }
+    var transformCssEl = document.getElementById('transform-css');
+    if (transformCssEl) {
+      transformCssEl.textContent = UI.formatNumber(transforms.css || 0);
+    }
 
-      var transformHtmlEl = document.getElementById('transform-html');
-      if (transformHtmlEl) {
-        transformHtmlEl.textContent = UI.formatNumber(data.transforms.html || 0);
-      }
+    var transformHtmlEl = document.getElementById('transform-html');
+    if (transformHtmlEl) {
+      transformHtmlEl.textContent = UI.formatNumber(transforms.html || 0);
+    }
 
-      var transformImagesEl = document.getElementById('transform-images');
-      if (transformImagesEl) {
-        transformImagesEl.textContent = UI.formatNumber(data.transforms.images || 0);
-      }
+    var transformImagesEl = document.getElementById('transform-images');
+    if (transformImagesEl) {
+      transformImagesEl.textContent = UI.formatNumber(transforms.images || 0);
     }
   }
 

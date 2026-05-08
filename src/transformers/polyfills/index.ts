@@ -6,6 +6,9 @@
 // Blocked scripts stubs (must be first to prevent errors from blocked ad scripts)
 export { blockedScriptsStubs } from './blocked-scripts-stubs.js';
 
+// regenerator-runtime — required by Babel's async/generator output on iOS 9
+export { regeneratorRuntimePolyfill } from './regenerator-runtime.js';
+
 // Core polyfills
 export { symbolPolyfill } from './symbol.js';
 export { arrayPolyfill } from './array.js';
@@ -78,6 +81,7 @@ import { lazyLoadPolyfill } from './lazy-load.js';
 import { errorOverlayScript } from './error-overlay.js';
 import { configOverlayScript } from './config-overlay.js';
 import { blockedScriptsStubs } from './blocked-scripts-stubs.js';
+import { regeneratorRuntimePolyfill } from './regenerator-runtime.js';
 
 /**
  * Options for building polyfill script
@@ -117,13 +121,23 @@ export function buildPolyfillScript(options: BuildPolyfillOptions = {}): string 
   }
 
   const polyfills = [
-    // Blocked scripts stubs (must be first to prevent errors from blocked ad scripts)
+    // regenerator-runtime must be FIRST so its `regeneratorRuntime = runtime`
+    // assignment lands on the (non-strict) outer scope as a global before any
+    // transformed async/generator code references it.
+    regeneratorRuntimePolyfill,
+
+    // Blocked scripts stubs (must run early to prevent errors from blocked ad scripts)
     blockedScriptsStubs,
 
     // ES Modules compatibility (run first to handle nomodule scripts)
     esModulesPolyfill,
 
     // Core ES6+ polyfills
+    // NOTE: symbolPolyfill is intentionally an empty string. A real Symbol
+    // shim is non-trivial and the previous string-based fake corrupted
+    // iteration semantics. Letting Safari 9 surface its native absence is
+    // safer than serving wrong answers; UA spoofing must not claim Symbol
+    // support to servers. See ./symbol.ts.
     symbolPolyfill,
     weakCollectionsPolyfill,
     arrayPolyfill,
@@ -197,6 +211,7 @@ export function getConfigOverlayScript(): string {
  */
 export type PolyfillName =
   | 'blockedScriptsStubs'
+  | 'regeneratorRuntime'
   | 'symbol'
   | 'array'
   | 'string'
@@ -230,6 +245,7 @@ export type PolyfillName =
 
 const polyfillMap: Record<PolyfillName, string> = {
   blockedScriptsStubs: blockedScriptsStubs,
+  regeneratorRuntime: regeneratorRuntimePolyfill,
   symbol: symbolPolyfill,
   array: arrayPolyfill,
   string: stringPolyfill,

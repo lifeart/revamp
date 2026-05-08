@@ -78,8 +78,17 @@ export {
 } from './context.js';
 
 // Registry
-export { PluginRegistry, pluginRegistry } from './registry.js';
-import { pluginRegistry as _pluginRegistry } from './registry.js';
+//
+// T37: `pluginRegistry` (the singleton) is intentionally NOT re-exported from
+// the public `revamp/plugin` surface. A plugin getting hold of it could call
+// `pluginRegistry.registerHook(...)` directly and bypass the
+// `HOOK_PERMISSION_REQUIREMENTS` check that `createPluginContext` enforces.
+// The class itself is still exported for type-only consumers, but the
+// instance lives in `./internal.js` so only Revamp's runtime can reach it.
+// `pluginRegistry.registerHook` also performs the same permission check
+// internally as defence in depth — see `registry.ts`.
+export { PluginRegistry } from './registry.js';
+import { pluginRegistry as _pluginRegistry } from './internal.js';
 
 // Loader
 export { PluginLoader, pluginLoader } from './loader.js';

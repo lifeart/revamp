@@ -1,0 +1,37 @@
+name: "Revamp CodeQL config"
+
+# Re-state the query suites from the workflow so this config supersedes
+# the inline `queries:` in `codeql.yml` cleanly.
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+
+# Test files use intentionally unsafe-looking patterns (predictable tmp
+# paths, mock SSRF endpoints, deliberate XSS payloads in fixtures) that
+# would otherwise generate noise. The actual security-relevant code is
+# in `src/**/!(*.test).ts` and is still analysed.
+#
+# `src/util/safe-regex.ts` IS the mitigation for `js/regex-injection`
+# (length cap + star-height bound before `new RegExp`). The helper
+# itself inevitably constructs a regex from a tainted value, so CodeQL
+# would flag it as a sink even though every call site routes through
+# it. Exempt only this file; the rule still fires anywhere else a
+# raw `new RegExp(userInput)` appears.
+paths-ignore:
+  - 'src/**/*.test.ts'
+  - 'tests/**'
+  - 'examples/plugins/**/*.test.ts'
+  - 'src/util/safe-regex.ts'
+
+# Revamp is, by design, an HTTP/SOCKS proxy that forwards arbitrary
+# bytes from upstream servers AND a small captive-portal admin HTTP
+# server that serves predefined HTML/JSON responses chosen by a
+# request-path router. Both `res.end(body)` patterns are flagged by
+# `js/reflected-xss` because user-controlled values (URL, headers)
+# influence the route taken and thus the eventual byte stream — but
+# that *is* the product's behaviour, not a vulnerability we can
+# encode-our-way-out-of without breaking it. We drop the rule for
+# this codebase only; the rest of `security-extended` still runs.
+query-filters:
+  - exclude:
+      id: js/reflected-xss

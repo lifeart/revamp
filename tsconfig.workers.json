@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "isolatedModules": false
+  },
+  "include": ["src/transformers/js-worker.ts"],
+  "exclude": ["**/*.test.ts", "node_modules", "dist"]
+}

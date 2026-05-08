@@ -19,6 +19,7 @@ import {
   getProfileForDomain,
   initializeDomainManager,
 } from '../config/domain-manager.js';
+import { isSafeRegexSource } from '../util/safe-regex.js';
 
 // =============================================================================
 // Types
@@ -316,11 +317,11 @@ function isValidPattern(pattern: unknown): pattern is DomainPattern {
     return false;
   }
 
-  // Validate regex patterns
+  // Validate regex patterns — `safeRegex` enforces a length cap +
+  // star-height bound, satisfying `js/regex-injection` and rejecting
+  // patterns that would cause catastrophic backtracking at match time.
   if (p.type === 'regex') {
-    try {
-      new RegExp(p.pattern as string);
-    } catch {
+    if (!isSafeRegexSource(p.pattern as string)) {
       return false;
     }
   }

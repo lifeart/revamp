@@ -47,7 +47,7 @@ export default defineConfig({
       // Use captive portal port for ready check since it responds to direct HTTP requests
       // The HTTP proxy port (8080) expects proxied requests, not direct ones
       url: 'http://127.0.0.1:8888',
-      reuseExistingServer: false,
+      reuseExistingServer: !process.env.CI,
       timeout: 30000,
       stdout: 'pipe',
       stderr: 'pipe',
@@ -56,7 +56,7 @@ export default defineConfig({
       command: 'pnpm mock-server',
       // Mock server HTTP port for ready check
       url: 'http://127.0.0.1:9080',
-      reuseExistingServer: false,
+      reuseExistingServer: !process.env.CI,
       timeout: 10000,
       stdout: 'pipe',
       stderr: 'pipe',

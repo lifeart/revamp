@@ -628,3 +628,375 @@ describe('multi-client cache isolation', () => {
     expect(stats.memoryEntries).toBe(3);
   });
 });
+
+describe('cache cookie / auth / method isolation (T4 leak repro)', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-leak-repro-test-' + Date.now());
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should not serve one user logged-in HTML to another user behind the same NAT IP', async () => {
+    // Two distinct users sit behind one NAT'd IP. They differ only in their
+    // session cookies. Without cookie-aware keying, user B receives user A's
+    // private HTML — the original cross-user leak.
+    const url = 'https://example.com/dashboard';
+    const contentType = 'text/html';
+    const sharedClientIp = '203.0.113.7';
+
+    const userAHeaders = { cookie: 'session=alice-secret-token; csrftoken=abc' };
+    const userBHeaders = { cookie: 'auth=bob-bearer; sid=xyz' };
+
+    await setCache(
+      url,
+      contentType,
+      Buffer.from('<html>Alice private dashboard</html>'),
+      sharedClientIp,
+      'GET',
+      userAHeaders
+    );
+
+    const userBResult = await getCached(url, contentType, sharedClientIp, 'GET', userBHeaders);
+    expect(userBResult).toBeNull();
+
+    const userAResult = await getCached(url, contentType, sharedClientIp, 'GET', userAHeaders);
+    expect(userAResult?.toString()).toBe('<html>Alice private dashboard</html>');
+  });
+
+  it('should isolate cache between Authorization-bearing and anonymous requests', async () => {
+    const url = 'https://example.com/api/me';
+    const contentType = 'application/json';
+
+    await setCache(
+      url,
+      contentType,
+      Buffer.from('{"user":"alice"}'),
+      undefined,
+      'GET',
+      { authorization: 'Bearer alice-token' }
+    );
+
+    const anonResult = await getCached(url, contentType);
+    expect(anonResult).toBeNull();
+  });
+
+  it('should isolate cache by HTTP method', async () => {
+    const url = 'https://example.com/resource';
+    const contentType = 'application/json';
+
+    await setCache(url, contentType, Buffer.from('{"verb":"GET"}'), undefined, 'GET');
+
+    const postResult = await getCached(url, contentType, undefined, 'POST');
+    expect(postResult).toBeNull();
+
+    const getResult = await getCached(url, contentType, undefined, 'GET');
+    expect(getResult?.toString()).toBe('{"verb":"GET"}');
+  });
+
+  it('should treat method case-insensitively', async () => {
+    const url = 'https://example.com/case-method';
+    await setCache(url, 'text/plain', Buffer.from('x'), undefined, 'get');
+    const result = await getCached(url, 'text/plain', undefined, 'GET');
+    expect(result?.toString()).toBe('x');
+  });
+
+  it('should skip caching when response carries Set-Cookie', async () => {
+    const url = 'https://example.com/login-redirect';
+    const data = Buffer.from('<html>welcome</html>');
+
+    await setCache(url, 'text/html', data, undefined, 'GET', undefined, {
+      'set-cookie': 'session=opaque; HttpOnly',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result).toBeNull();
+  });
+
+  it('should skip caching when response carries Cache-Control: no-store', async () => {
+    const url = 'https://example.com/no-store-page';
+    await setCache(url, 'text/html', Buffer.from('secret'), undefined, 'GET', undefined, {
+      'cache-control': 'no-store, max-age=0',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result).toBeNull();
+  });
+
+  it('should skip caching when response carries Cache-Control: private', async () => {
+    const url = 'https://example.com/private-page';
+    await setCache(url, 'text/html', Buffer.from('private body'), undefined, 'GET', undefined, {
+      'cache-control': 'private, max-age=600',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result).toBeNull();
+  });
+
+  it('should still cache when Cache-Control is public or missing', async () => {
+    const url = 'https://example.com/public-page';
+    const data = Buffer.from('public body');
+
+    await setCache(url, 'text/html', data, undefined, 'GET', undefined, {
+      'cache-control': 'public, max-age=3600',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result?.toString()).toBe('public body');
+  });
+
+  it('should reuse cache across requests with the same cookie name shape', async () => {
+    // Two requests with cookies of the same *names* (different values) should
+    // share a cache bucket — we only key on names by spec, not values.
+    const url = 'https://example.com/feed';
+    const contentType = 'text/html';
+    const data = Buffer.from('feed body');
+
+    await setCache(url, contentType, data, '10.0.0.1', 'GET', {
+      cookie: 'session=token-A; csrf=v1',
+    });
+
+    const result = await getCached(url, contentType, '10.0.0.1', 'GET', {
+      cookie: 'csrf=v2; session=token-B',
+    });
+    expect(result?.toString()).toBe('feed body');
+  });
+
+  it('should NOT mark uncacheable when Cache-Control contains a vendor token like "x-private-cdn"', async () => {
+    // P1 #4: directive matching must be on full tokens, not substrings.
+    // "x-private-cdn" must not trip the "private" guard.
+    const url = 'https://example.com/x-private-cdn-page';
+    const data = Buffer.from('cacheable body');
+
+    await setCache(url, 'text/html', data, undefined, 'GET', undefined, {
+      'cache-control': 'public, max-age=60, x-private-cdn',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result?.toString()).toBe('cacheable body');
+  });
+
+  it('should mark uncacheable for "private, max-age=60" (real private directive)', async () => {
+    const url = 'https://example.com/real-private';
+    await setCache(url, 'text/html', Buffer.from('private body'), undefined, 'GET', undefined, {
+      'cache-control': 'private, max-age=60',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result).toBeNull();
+  });
+
+  it('should still mark uncacheable when "private" is mid-string with whitespace separators', async () => {
+    const url = 'https://example.com/private-mid';
+    await setCache(url, 'text/html', Buffer.from('x'), undefined, 'GET', undefined, {
+      'cache-control': 'max-age=60 private must-revalidate',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result).toBeNull();
+  });
+
+  it('should NOT match no-store on a vendor token like "x-no-store-flag"', async () => {
+    const url = 'https://example.com/x-no-store-vendor';
+    const data = Buffer.from('still cacheable');
+
+    await setCache(url, 'text/html', data, undefined, 'GET', undefined, {
+      'cache-control': 'public, max-age=60, x-no-store-flag',
+    });
+
+    const result = await getCached(url, 'text/html');
+    expect(result?.toString()).toBe('still cacheable');
+  });
+});
+
+describe('cache Vary header support (T41)', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-vary-test-' + Date.now());
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should NOT cache a response with Vary: *', async () => {
+    const url = 'https://example.com/vary-star';
+    await setCache(
+      url,
+      'text/html',
+      Buffer.from('<html>v</html>'),
+      undefined,
+      'GET',
+      { 'accept-language': 'en-US' },
+      { vary: '*' }
+    );
+
+    // Vary: * is uncacheable per RFC. Even with the same request headers
+    // the entry must not be retrievable.
+    const result = await getCached(url, 'text/html', undefined, 'GET', {
+      'accept-language': 'en-US',
+    });
+    expect(result).toBeNull();
+
+    const stats = getCacheStats();
+    expect(stats.memoryEntries).toBe(0);
+  });
+
+  it('should miss when request Vary header value differs', async () => {
+    const url = 'https://example.com/feed';
+    const contentType = 'text/html';
+    const data = Buffer.from('<html>english body</html>');
+
+    await setCache(
+      url,
+      contentType,
+      data,
+      undefined,
+      'GET',
+      { 'accept-language': 'en-US' },
+      { vary: 'Accept-Language' }
+    );
+
+    // Different Accept-Language should miss — Vary fingerprint differs.
+    const missResult = await getCached(url, contentType, undefined, 'GET', {
+      'accept-language': 'fr-FR',
+    });
+    expect(missResult).toBeNull();
+  });
+
+  it('should hit when request Vary header value matches', async () => {
+    const url = 'https://example.com/feed-hit';
+    const contentType = 'text/html';
+    const data = Buffer.from('<html>english body</html>');
+
+    await setCache(
+      url,
+      contentType,
+      data,
+      undefined,
+      'GET',
+      { 'accept-language': 'en-US' },
+      { vary: 'Accept-Language' }
+    );
+
+    const hitResult = await getCached(url, contentType, undefined, 'GET', {
+      'accept-language': 'en-US',
+    });
+    expect(hitResult?.toString()).toBe('<html>english body</html>');
+  });
+
+  it('should persist a .vary sidecar to disk for Vary responses', async () => {
+    const url = 'https://example.com/sidecar-test';
+    const contentType = 'text/html';
+    const data = Buffer.from('<html>sidecar</html>');
+
+    await setCache(
+      url,
+      contentType,
+      data,
+      undefined,
+      'GET',
+      { 'accept-language': 'en-US' },
+      { vary: 'Accept-Language' }
+    );
+
+    // Wait for the fire-and-forget file write to finish.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Walk the cache dir and confirm a `.vary` file exists.
+    const { readdir, readFile } = await import('node:fs/promises');
+    let foundSidecar = false;
+    let sidecarContent = '';
+    const subdirs = await readdir(testCacheDir);
+    for (const subdir of subdirs) {
+      const subdirPath = join(testCacheDir, subdir);
+      try {
+        const files = await readdir(subdirPath);
+        for (const file of files) {
+          if (file.endsWith('.vary')) {
+            foundSidecar = true;
+            sidecarContent = await readFile(join(subdirPath, file), 'utf-8');
+            break;
+          }
+        }
+      } catch {
+        // Ignore non-directories
+      }
+      if (foundSidecar) break;
+    }
+
+    expect(foundSidecar).toBe(true);
+    const parsed = JSON.parse(sidecarContent) as { names: string[] };
+    expect(parsed.names).toEqual(['accept-language']);
+  });
+
+  it('should serve correct variant after memory eviction (sidecar reload)', async () => {
+    const url = 'https://example.com/reload-vary';
+    const contentType = 'text/html';
+    const data = Buffer.from('<html>en variant</html>');
+
+    await setCache(
+      url,
+      contentType,
+      data,
+      undefined,
+      'GET',
+      { 'accept-language': 'en-US' },
+      { vary: 'Accept-Language' }
+    );
+
+    // Wait for fire-and-forget writes.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Clear memory only — sidecar must be re-read from disk.
+    clearMemoryCache();
+
+    const hit = await getCached(url, contentType, undefined, 'GET', {
+      'accept-language': 'en-US',
+    });
+    expect(hit?.toString()).toBe('<html>en variant</html>');
+
+    const miss = await getCached(url, contentType, undefined, 'GET', {
+      'accept-language': 'fr-FR',
+    });
+    expect(miss).toBeNull();
+  });
+});

@@ -12,3 +12,5 @@ export {
   isJsonContentType,
   type JsonRequestLog,
 } from './json-request-logger.js';
+
+export { sanitizeForLog } from './sanitize.js';

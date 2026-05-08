@@ -16,7 +16,9 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { connect } from 'node:net';
 import { TLSSocket, connect as tlsConnect } from 'node:tls';
-import { generateDomainCert } from '../certs/index.js';
+import { randomUUID } from 'node:crypto';
+import { generateDomainCert, CertRateLimitError } from '../certs/index.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 import {
   SOCKS_VERSION,
   AUTH_NO_AUTH,
@@ -32,6 +34,7 @@ import {
   createReply,
 } from './socks5-protocol.js';
 import { makeHttpRequest, makeHttpsRequest } from './http-client.js';
+import { getConfig } from '../config/index.js';
 import { isRevampEndpoint, handleRevampRequest, buildRawApiResponse } from './revamp-api.js';
 import {
   shouldCompress,
@@ -40,13 +43,17 @@ import {
   shouldBlockDomain,
   shouldBlockUrl,
   SKIP_RESPONSE_HEADERS,
-  buildCorsPreflightResponse,
-  buildCorsHeadersString,
+  buildScopedCorsPreflightResponse,
+  buildScopedCorsHeadersString,
 } from './shared.js';
+import { getProfileForDomain } from '../config/domain-manager.js';
+import type { DomainProfile } from '../config/domain-rules.js';
 import {
   recordRequest,
   recordBlocked,
   recordError,
+  recordHostBlocked,
+  recordHostError,
   updateConnections,
 } from '../metrics/index.js';
 import { remoteSwServer, isRemoteSwEndpoint } from './remote-sw-server.js';
@@ -161,17 +168,50 @@ function parseHeaders(headerLines: string[]): Record<string, string> {
   return headers;
 }
 
+/** Default cap on inbound SOCKS5 request body when config doesn't specify. */
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Build a raw HTTP/1.1 413 Payload Too Large response. SOCKS5 is a byte
+ * stream — we don't have a `ServerResponse` like the http-proxy path, so we
+ * write the raw bytes directly to the socket.
+ */
+function build413Response(limitBytes: number): string {
+  const body = `Request body exceeds max (${limitBytes} bytes)`;
+  return (
+    'HTTP/1.1 413 Payload Too Large\r\n' +
+    'Content-Type: text/plain\r\n' +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    'Connection: close\r\n' +
+    '\r\n' +
+    body
+  );
+}
+
+/**
+ * Sentinel returned from `parseHttpRequest` when the inbound body would
+ * exceed `maxRequestBodyBytes`. The caller writes the 413 response and
+ * closes the socket.
+ *
+ * T38: previously the SOCKS5 path read up to a client-supplied
+ * `Content-Length` with no upper bound, so a 100 MB+ Content-Length would
+ * happily allocate 100 MB+ on an iPad-class host before any limit kicked in.
+ */
+const PARSE_BODY_TOO_LARGE = Symbol('PARSE_BODY_TOO_LARGE');
+type ParseHttpResult = ParsedHttpRequest | null | typeof PARSE_BODY_TOO_LARGE;
+
 /**
  * Parse HTTP request from buffer.
  *
  * @param buffer - Request buffer
  * @param socket - Socket to read additional body data from
- * @returns Parsed request or null if incomplete
+ * @returns Parsed request, `null` if the request is still incomplete, or
+ *   `PARSE_BODY_TOO_LARGE` when the body exceeds `maxRequestBodyBytes`.
  */
 async function parseHttpRequest(
   buffer: Buffer,
   socket: Socket | TLSSocket
-): Promise<ParsedHttpRequest | null> {
+): Promise<ParseHttpResult> {
   const headerEnd = buffer.indexOf('\r\n\r\n');
   if (headerEnd === -1) {
     return null;
@@ -186,14 +226,33 @@ async function parseHttpRequest(
   const headers = parseHeaders(lines.slice(1));
   const contentLength = parseInt(headers['content-length'] || '0', 10);
 
+  // T38: enforce the same `maxRequestBodyBytes` cap the http-proxy path uses
+  // via `bufferRequestBody`. Reject up-front when the announced body is too
+  // large; otherwise cap the read loop so a misbehaving / malicious client
+  // can't OOM the host by sending more bytes than Content-Length advertised.
+  const maxBytes = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    return PARSE_BODY_TOO_LARGE;
+  }
+
   let body = buffer.subarray(bodyStart);
 
   // Wait for full body if needed
   while (body.length < contentLength) {
+    if (body.length > maxBytes) {
+      return PARSE_BODY_TOO_LARGE;
+    }
     const moreData = await new Promise<Buffer>((resolve) => {
       socket.once('data', resolve);
     });
     body = Buffer.concat([body, moreData]);
+  }
+
+  // Defensive: even when `contentLength` claimed to be small, the surrounding
+  // `data` listener may have appended more bytes than promised before parsing
+  // ran. Cap the final body too.
+  if (body.length > maxBytes) {
+    return PARSE_BODY_TOO_LARGE;
   }
 
   return { method, path, headers, body };
@@ -206,12 +265,17 @@ async function parseHttpRequest(
 /**
  * Build HTTP response headers string.
  *
+ * T9: CORS headers are only emitted when the matched `profile` opts in via
+ * `corsAllowOrigins` and the request `Origin` matches; otherwise no
+ * cross-origin permission headers are added.
+ *
  * @param statusCode - HTTP status code
  * @param statusMessage - Status message
  * @param headers - Response headers
  * @param bodyLength - Body length for Content-Length header
  * @param isGzipped - Whether body is gzip compressed
- * @param corsOrigin - Origin for CORS headers
+ * @param requestOrigin - Origin header from the client request, if any
+ * @param profile - Matched domain profile (drives CORS opt-in)
  * @param isHtml - Whether response is HTML (for cache control)
  * @returns Headers string
  */
@@ -221,7 +285,8 @@ function buildResponseHeaders(
   headers: Record<string, string | string[] | undefined>,
   bodyLength: number,
   isGzipped: boolean,
-  corsOrigin: string,
+  requestOrigin: string | undefined,
+  profile: DomainProfile | null,
   isHtml: boolean = false
 ): string {
   let responseHeaders = `HTTP/1.1 ${statusCode} ${statusMessage}\r\n`;
@@ -254,7 +319,7 @@ function buildResponseHeaders(
   }
 
   responseHeaders += `Connection: close\r\n`;
-  responseHeaders += buildCorsHeadersString(corsOrigin);
+  responseHeaders += buildScopedCorsHeadersString(profile, requestOrigin);
   responseHeaders += '\r\n';
 
   return responseHeaders;
@@ -276,20 +341,20 @@ function buildBlockedResponse(): string {
 /**
  * Build error response.
  *
+ * T9: error responses no longer carry blanket CORS headers — those are
+ * security-sensitive and should only ever be opt-in per domain profile,
+ * never default-on for failure paths.
+ *
  * @param statusCode - HTTP status code
  * @param message - Error message
- * @param corsOrigin - Origin for CORS headers
  * @returns HTTP error response string
  */
 function buildErrorResponse(
   statusCode: number,
-  message: string,
-  corsOrigin: string
+  message: string
 ): string {
   return (
     `HTTP/1.1 ${statusCode} ${message}\r\n` +
-    `Access-Control-Allow-Origin: ${corsOrigin}\r\n` +
-    'Access-Control-Allow-Credentials: true\r\n' +
     'Content-Type: text/plain\r\n' +
     `Content-Length: ${message.length}\r\n` +
     'Connection: close\r\n' +
@@ -340,6 +405,7 @@ function checkAndBlockUrl(targetUrl: string, socket: Socket | TLSSocket): boolea
   if (shouldBlockUrl(targetUrl)) {
     console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
     recordBlocked();
+    recordHostBlocked(targetUrl);
     socket.write(buildBlockedResponse());
     return true;
   }
@@ -397,11 +463,19 @@ async function handleHttpRequestSocks5(
     return;
   }
 
-  const requestOrigin = headers['origin'] || '*';
+  const requestOrigin = headers['origin'];
+  const { profile } = getProfileForDomain(hostname);
 
-  // Handle CORS preflight
+  // Handle CORS preflight (T9: only respond permissively when the matched
+  // profile opts in; otherwise fall through to a non-permissive 403 so
+  // browsers don't believe cross-origin access is allowed by default).
   if (method === 'OPTIONS') {
-    socket.write(buildCorsPreflightResponse(requestOrigin));
+    const preflight = buildScopedCorsPreflightResponse(profile, requestOrigin);
+    if (preflight !== null) {
+      socket.write(preflight);
+    } else {
+      socket.write(buildErrorResponse(403, 'Forbidden'));
+    }
     if (socket instanceof TLSSocket) {
       socket.end();
     }
@@ -433,6 +507,7 @@ async function handleHttpRequestSocks5(
       responseBody.length,
       isGzipped,
       requestOrigin,
+      profile,
       isHtml
     );
 
@@ -446,7 +521,8 @@ async function handleHttpRequestSocks5(
     const error = err as Error;
     console.error(`❌ Request error for ${targetUrl}:`, error.message);
     recordError();
-    socket.write(buildErrorResponse(502, 'Bad Gateway', requestOrigin));
+    recordHostError(targetUrl);
+    socket.write(buildErrorResponse(502, 'Bad Gateway'));
     if (socket instanceof TLSSocket) {
       socket.end();
     }
@@ -514,7 +590,7 @@ function handleWebSocketUpgrade(
   const tlsServer = tlsConnect({
     host: hostname,
     port: 443,
-    rejectUnauthorized: false,
+    rejectUnauthorized: getConfig().allowInsecureUpstream !== true,
   });
 
   tlsServer.on('secureConnect', () => {
@@ -566,11 +642,31 @@ function handleHttpsConnection(
 ): void {
   console.log(`🔒 Starting TLS interception for ${hostname}`);
 
-  // Tell client connection is established
-  clientSocket.write(createReply(REPLY_SUCCESS, addressType));
+  // Generate certificate for this domain (rate-limited per client IP).
+  // P1-2: previously the non-rate-limit branch re-threw, which inside this
+  // synchronous SOCKS5 data handler surfaces as `uncaughtException` and can
+  // crash the process. Log + record + send a SOCKS5 general-failure reply
+  // and close the socket gracefully instead.
+  let certPair: ReturnType<typeof generateDomainCert>;
+  try {
+    certPair = generateDomainCert(hostname, clientIp);
+  } catch (err) {
+    if (err instanceof CertRateLimitError) {
+      console.warn(`[socks5] cert mint rate limit exceeded for ${clientIp}`);
+      recordError();
+      clientSocket.write(createReply(REPLY_GENERAL_FAILURE, addressType));
+      clientSocket.end();
+      return;
+    }
+    console.error('[socks5] cert mint failed', err);
+    recordError();
+    clientSocket.write(createReply(REPLY_GENERAL_FAILURE, addressType));
+    clientSocket.end();
+    return;
+  }
 
-  // Generate certificate for this domain
-  const certPair = generateDomainCert(hostname);
+  // Tell client connection is established (after we have a cert)
+  clientSocket.write(createReply(REPLY_SUCCESS, addressType));
 
   // Upgrade to TLS
   const tlsServer = new TLSSocket(clientSocket, {
@@ -592,7 +688,16 @@ function handleHttpsConnection(
     requestBuffer = Buffer.concat([requestBuffer, data]);
 
     const request = await parseHttpRequest(requestBuffer, tlsServer);
-    if (!request) return;
+    if (request === null) return;
+    if (request === PARSE_BODY_TOO_LARGE) {
+      requestComplete = true;
+      const limit = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
+      console.warn(`[socks5] HTTPS request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
+      recordError();
+      tlsServer.write(build413Response(limit));
+      tlsServer.end();
+      return;
+    }
 
     requestComplete = true;
 
@@ -667,7 +772,15 @@ function handleHttpConnection(
     requestBuffer = Buffer.concat([requestBuffer, data]);
 
     const request = await parseHttpRequest(requestBuffer, clientSocket);
-    if (!request) return;
+    if (request === null) return;
+    if (request === PARSE_BODY_TOO_LARGE) {
+      const limit = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
+      console.warn(`[socks5] HTTP request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
+      recordError();
+      clientSocket.write(build413Response(limit));
+      clientSocket.end();
+      return;
+    }
 
     await handleHttpRequestSocks5(
       request,
@@ -825,6 +938,10 @@ function handleRequest(
   // Check domain blocking
   if (shouldBlockDomain(address.host)) {
     console.log(`🚫 Blocked: ${address.host}`);
+    recordBlocked();
+    // T25: synthesize a URL so the per-host counter records the hit. SOCKS5
+    // CONNECT only gives us host:port, no scheme/path.
+    recordHostBlocked(`https://${address.host}/`);
     clientSocket.write(createReply(REPLY_SUCCESS, address.addressType));
     clientSocket.end();
     return null;
@@ -852,6 +969,21 @@ function handleRequest(
  * @param clientSocket - Client socket
  * @param httpProxyPort - HTTP proxy port (unused, for compatibility)
  */
+/**
+ * Resolve a client IP for rate-limit-bucket assignment.
+ *
+ * Exported for unit tests (P1-1 — empty-clientIp DoS bucket) so the
+ * synthetic-bucket logic can be exercised without a real TCP socket. The
+ * production code path is the same as the inline call sites in
+ * `handleConnection` and `http-proxy.handleConnect`.
+ */
+export function resolveBucketClientIp(rawClientIp: string): string {
+  if (rawClientIp) return rawClientIp;
+  const synthetic = `__unknown_${randomUUID()}`;
+  console.warn('[proxy] no client IP — using synthetic bucket', synthetic);
+  return synthetic;
+}
+
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
   let targetSocket: Socket | TLSSocket | null = null;
@@ -859,7 +991,13 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
 
   updateConnections(1);
 
-  const clientIp = normalizeIpAddress(clientSocket.remoteAddress || '');
+  // P1-1: `normalizeIpAddress('')` returns '' when remoteAddress is
+  // undefined. Without `resolveBucketClientIp` `enforceMintRateLimit('')`
+  // would collapse every unknown client into a single shared 30/min bucket
+  // — trivial DoS. Each unknown connection gets its own synthetic bucket.
+  const clientIp = resolveBucketClientIp(
+    normalizeIpAddress(clientSocket.remoteAddress || '')
+  );
 
   clientSocket.on('data', (data: Buffer) => {
     buffer = Buffer.concat([buffer, data]);

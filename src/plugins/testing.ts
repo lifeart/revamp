@@ -12,7 +12,10 @@ import type {
   HookName,
 } from './types.js';
 import type { PluginContext, ApiEndpointHandler } from './context.js';
-import type { HookTypes } from './hooks.js';
+import {
+  type HookTypes,
+  HOOK_PERMISSION_REQUIREMENTS,
+} from './hooks.js';
 import type {
   RequestContext,
   ResponseContext,
@@ -319,6 +322,12 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
       handler: HookTypes[T],
       priority: number = 0
     ): void {
+      const required = HOOK_PERMISSION_REQUIREMENTS[hookName];
+      if (!permissionSet.has(required)) {
+        throw new Error(
+          `Plugin ${pluginId} lacks permission ${required} required for hook ${hookName}`
+        );
+      }
       registeredHooks.set(hookName, { handler, priority });
     },
 
@@ -418,6 +427,7 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
         errors: 0,
         activeConnections: 0,
         peakConnections: 0,
+        hosts: [],
       };
     },
 

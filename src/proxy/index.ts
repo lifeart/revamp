@@ -105,6 +105,10 @@ export {
   buildCorsPreflightResponse,
   buildCorsHeadersString,
   removeCorsHeaders,
+  buildScopedCorsHeaders,
+  buildScopedCorsHeadersString,
+  buildScopedCorsPreflightResponse,
+  resolveCorsAllowOrigin,
 
   // Headers
   SKIP_RESPONSE_HEADERS,

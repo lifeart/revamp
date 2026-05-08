@@ -6,8 +6,12 @@ import {
   recordTransform,
   recordBandwidth,
   recordError,
+  recordHostBlocked,
+  recordHostTransform,
+  recordHostError,
   updateConnections,
   getMetrics,
+  getHostMetrics,
   resetMetrics,
   formatBytes,
   formatDuration,
@@ -355,6 +359,161 @@ describe('formatBytes', () => {
 
   it('should handle negative bytes', () => {
     expect(formatBytes(-1024)).toBe('-1.00 KB');
+  });
+});
+
+describe('cacheHitRate scale (T24)', () => {
+  beforeEach(() => {
+    resetMetrics();
+  });
+
+  it('returns 0..100 from the API (canonical scale; UI must render as-is)', () => {
+    recordRequest();
+    recordRequest();
+    recordRequest();
+    recordRequest();
+    recordCacheHit();
+
+    const metrics = getMetrics();
+    expect(metrics.cacheHitRate).toBe(25);
+    expect(metrics.cacheHitRate).toBeGreaterThanOrEqual(0);
+    expect(metrics.cacheHitRate).toBeLessThanOrEqual(100);
+  });
+
+  it('caps cleanly at 100 when every request is a cache hit', () => {
+    recordRequest();
+    recordCacheHit();
+
+    const metrics = getMetrics();
+    expect(metrics.cacheHitRate).toBe(100);
+  });
+});
+
+describe('per-host metrics (T25)', () => {
+  beforeEach(() => {
+    resetMetrics();
+  });
+
+  it('records blocked events with the source URL', () => {
+    recordHostBlocked('https://ads.example.com/banner.js');
+
+    const host = getHostMetrics('ads.example.com');
+    expect(host).not.toBeNull();
+    expect(host!.blocked).toBe(1);
+    expect(host!.lastUrls[0]).toBe('https://ads.example.com/banner.js');
+  });
+
+  it('records transform events per type', () => {
+    recordHostTransform('https://example.com/app.js', 'js');
+    recordHostTransform('https://example.com/app.css', 'css');
+    recordHostTransform('https://example.com/page.html', 'html');
+    recordHostTransform('https://example.com/logo.png', 'images');
+
+    const host = getHostMetrics('example.com');
+    expect(host).not.toBeNull();
+    expect(host!.transformedJs).toBe(1);
+    expect(host!.transformedCss).toBe(1);
+    expect(host!.transformedHtml).toBe(1);
+    expect(host!.transformedImages).toBe(1);
+    expect(host!.lastUrls.length).toBe(4);
+  });
+
+  it('records errors per host', () => {
+    recordHostError('https://example.com/api');
+
+    const host = getHostMetrics('example.com');
+    expect(host).not.toBeNull();
+    expect(host!.errors).toBe(1);
+  });
+
+  it('caps lastUrls at 20 (newest first)', () => {
+    for (let i = 0; i < 25; i++) {
+      recordHostTransform(`https://example.com/${i}.js`, 'js');
+    }
+    const host = getHostMetrics('example.com');
+    expect(host).not.toBeNull();
+    expect(host!.lastUrls.length).toBe(20);
+    expect(host!.lastUrls[0]).toBe('https://example.com/24.js');
+    expect(host!.lastUrls[19]).toBe('https://example.com/5.js');
+  });
+
+  it('de-dupes consecutive identical URLs', () => {
+    recordHostTransform('https://example.com/app.js', 'js');
+    recordHostTransform('https://example.com/app.js', 'js');
+    recordHostTransform('https://example.com/app.js', 'js');
+
+    const host = getHostMetrics('example.com');
+    expect(host).not.toBeNull();
+    expect(host!.transformedJs).toBe(3);
+    expect(host!.lastUrls.length).toBe(1);
+  });
+
+  it('lowercases hostname keys', () => {
+    recordHostBlocked('https://ADS.Example.COM/foo');
+    expect(getHostMetrics('ads.example.com')).not.toBeNull();
+    expect(getHostMetrics('ADS.EXAMPLE.COM')).not.toBeNull();
+  });
+
+  it('exposes hosts in getMetrics()', () => {
+    recordHostBlocked('https://a.com/x');
+    recordHostTransform('https://b.com/y.js', 'js');
+
+    const metrics = getMetrics();
+    expect(metrics.hosts).toBeDefined();
+    expect(metrics.hosts.length).toBe(2);
+    const names = metrics.hosts.map((h) => h.host).sort();
+    expect(names).toEqual(['a.com', 'b.com']);
+  });
+
+  it('skips records when URL is not a valid absolute URL', () => {
+    recordHostBlocked('not a url');
+    recordHostBlocked(undefined);
+    recordHostTransform('', 'js');
+
+    const metrics = getMetrics();
+    expect(metrics.hosts.length).toBe(0);
+  });
+
+  it('clears host metrics on reset', () => {
+    recordHostBlocked('https://example.com/foo');
+    expect(getHostMetrics('example.com')).not.toBeNull();
+    resetMetrics();
+    expect(getHostMetrics('example.com')).toBeNull();
+    expect(getMetrics().hosts.length).toBe(0);
+  });
+
+  it('caps hostMetrics at 500 entries with LRU eviction (P1-1)', () => {
+    // Insert 501 unique hosts. The first inserted host should be evicted
+    // and the map should never exceed the cap, preventing memory DoS via
+    // CDN sprawl or attacker-controlled subdomains.
+    for (let i = 0; i < 501; i++) {
+      recordHostBlocked(`https://host${i}.example.com/x`);
+    }
+
+    const metrics = getMetrics();
+    expect(metrics.hosts.length).toBe(500);
+    // Oldest insertion (host0) should have been evicted.
+    expect(getHostMetrics('host0.example.com')).toBeNull();
+    // Newest insertion is retained.
+    expect(getHostMetrics('host500.example.com')).not.toBeNull();
+    // A mid-range host inserted after host0 is also retained.
+    expect(getHostMetrics('host1.example.com')).not.toBeNull();
+  });
+
+  it('LRU touch keeps frequently-used hosts from being evicted', () => {
+    // Insert 500 hosts (fills cap exactly).
+    for (let i = 0; i < 500; i++) {
+      recordHostBlocked(`https://host${i}.example.com/x`);
+    }
+    // Re-touch host0 so it moves to the tail (most-recent).
+    recordHostBlocked('https://host0.example.com/again');
+    // Now insert one more, which should evict host1 (the new oldest)
+    // rather than host0 (which was just touched).
+    recordHostBlocked('https://host500.example.com/x');
+
+    expect(getHostMetrics('host0.example.com')).not.toBeNull();
+    expect(getHostMetrics('host1.example.com')).toBeNull();
+    expect(getHostMetrics('host500.example.com')).not.toBeNull();
   });
 });
 

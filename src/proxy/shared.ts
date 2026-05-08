@@ -24,12 +24,13 @@ import { URL } from 'node:url';
 import { getConfig, getEffectiveConfigForRequest, type RevampConfig } from '../config/index.js';
 import { getCached, setCache } from '../cache/index.js';
 import { transformJs, transformCss, transformHtml, isHtmlDocument } from '../transformers/index.js';
-import { recordCacheHit } from '../metrics/index.js';
+import { recordCacheHit, recordError } from '../metrics/index.js';
 import type { ContentType } from './types.js';
 import {
   createFilterContext,
   shouldBlockDomainWithProfile,
   shouldBlockUrlWithProfile,
+  pathMatchesBlocklistPattern,
   type FilterContext,
 } from '../filters/index.js';
 import {
@@ -294,8 +295,9 @@ export async function decompressBody(body: Buffer, encoding: string | undefined)
       default:
         return body;
     }
-  } catch {
-    // Decompression failed, return original body
+  } catch (err) {
+    console.warn(`[proxy/decompress] ${normalizedEncoding} failed, passing body through`, err);
+    recordError();
     return body;
   }
 }
@@ -368,6 +370,12 @@ export function decodeBufferToString(body: Buffer, charset: string): string {
  * @param charset - The charset to use for decoding (defaults to 'utf-8')
  * @param config - Optional config override
  * @param clientIp - Optional client IP for per-client cache separation
+ * @param method - HTTP method (folded into cache key so non-GET requests
+ *   never share a bucket with a GET response)
+ * @param requestHeaders - Original request headers; Cookie/Authorization names
+ *   are folded into the cache key to prevent NAT'd cross-user data leaks
+ * @param responseHeaders - Upstream response headers; used to skip caching
+ *   when origin marks the response Set-Cookie / no-store / private
  */
 export async function transformContent(
   body: Buffer,
@@ -375,7 +383,10 @@ export async function transformContent(
   url: string,
   charset: string = 'utf-8',
   config?: RevampConfig,
-  clientIp?: string
+  clientIp?: string,
+  method: string = 'GET',
+  requestHeaders?: Record<string, string | string[] | undefined>,
+  responseHeaders?: Record<string, string | string[] | undefined>
 ): Promise<Buffer> {
   const effectiveConfig = config || getConfig();
 
@@ -387,7 +398,7 @@ export async function transformContent(
 
   // Check cache first (only if cache is enabled in config)
   if (effectiveConfig.cacheEnabled) {
-    const cached = await getCached(url, contentType, clientIp);
+    const cached = await getCached(url, contentType, clientIp, method, requestHeaders);
     if (cached) {
       console.log(`📦 Cache hit: ${url}${clientIp ? ` (client: ${clientIp})` : ''}`);
       recordCacheHit();
@@ -477,7 +488,7 @@ export async function transformContent(
 
   // Cache the result (only if cache is enabled)
   if (effectiveConfig.cacheEnabled) {
-    await setCache(url, contentType, result, clientIp);
+    await setCache(url, contentType, result, clientIp, method, requestHeaders, responseHeaders);
   }
 
   return result;
@@ -605,11 +616,22 @@ export function shouldBlockUrl(
     );
   }
 
-  // Fallback to simple URL pattern checking (backward compatibility)
+  // Fallback to simple URL pattern checking (backward compatibility).
+  // Match by path boundary to avoid false positives like "/stat" inside
+  // "/architect/" or "/hit" inside "/health-status/". Patterns may include
+  // a leading slash (e.g. "/metrics"); the matcher strips it so the same
+  // pattern still aligns with paths like "/api/v1/metrics".
   if (effectiveConfig.removeTracking) {
-    const urlLower = url.toLowerCase();
-    for (const pattern of effectiveConfig.trackingUrls) {
-      if (urlLower.includes(pattern.toLowerCase())) {
+    let path: string;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      // Malformed URL — treat as non-match. Pattern matching needs a parsed
+      // path; logging every malformed URL here would be too noisy.
+      return false;
+    }
+    for (const rawPattern of effectiveConfig.trackingUrls) {
+      if (pathMatchesBlocklistPattern(path, rawPattern)) {
         return true;
       }
     }
@@ -645,7 +667,8 @@ export async function shouldBlockUrlAsync(
     const parsedUrl = new URL(url);
     hostname = parsedUrl.hostname;
   } catch {
-    // Invalid URL, can't run hooks
+    // Invalid URL: cannot resolve hostname, so plugins can't make a decision.
+    // Log-spam guard: this is the same per-request URL the caller already saw.
     return { blocked: false };
   }
 
@@ -739,6 +762,140 @@ export function removeCorsHeaders(headers: Record<string, string | string[] | un
   delete headers['access-control-expose-headers'];
   delete headers['access-control-allow-credentials'];
   delete headers['access-control-max-age'];
+}
+
+/**
+ * Resolve which CORS Allow-Origin value (if any) should be injected for a
+ * proxied response (T9).
+ *
+ * Default behaviour: do not inject any CORS headers. Profiles must opt in
+ * with `corsAllowOrigins` to expand cross-origin reachability for that
+ * domain. Returns `null` when no header should be injected.
+ *
+ * `'*'` in `corsAllowOrigins` is honoured as a wildcard that matches any
+ * origin and is reflected verbatim. For any other entry, the upstream
+ * client `Origin` header must match exactly (no subdomain wildcards).
+ *
+ * Per the Fetch spec, `Access-Control-Allow-Credentials: true` is
+ * incompatible with `Access-Control-Allow-Origin: *`; reflecting the
+ * request origin under a `*` allow-list while also emitting credentials
+ * would let any site read credentialed responses cross-origin. To prevent
+ * a credential leak, this misconfiguration collapses to OFF (returns
+ * `null`) rather than to a permissive injection.
+ */
+export function resolveCorsAllowOrigin(
+  profile:
+    | { corsAllowOrigins?: string[]; corsAllowCredentials?: boolean }
+    | null
+    | undefined,
+  requestOrigin: string | undefined
+): string | null {
+  const allowList = profile?.corsAllowOrigins;
+  if (!allowList || allowList.length === 0) {
+    return null;
+  }
+
+  if (profile?.corsAllowCredentials === true && allowList.includes('*')) {
+    console.warn(
+      '[cors] credentials cannot be combined with wildcard origin; treating profile as CORS-disabled'
+    );
+    return null;
+  }
+
+  if (allowList.includes('*')) {
+    return requestOrigin && requestOrigin !== '' ? requestOrigin : '*';
+  }
+
+  if (!requestOrigin) {
+    return null;
+  }
+
+  return allowList.includes(requestOrigin) ? requestOrigin : null;
+}
+
+/**
+ * Build the CORS header set to inject for a proxied response, gated by the
+ * matched domain profile (T9). Returns an empty object when the profile has
+ * not opted in or the request `Origin` does not match the allow list — the
+ * default Revamp posture is "no CORS injection."
+ */
+export function buildScopedCorsHeaders(
+  profile: { corsAllowOrigins?: string[]; corsAllowCredentials?: boolean } | null | undefined,
+  requestOrigin: string | undefined
+): Record<string, string> {
+  const allowOrigin = resolveCorsAllowOrigin(profile, requestOrigin);
+  if (allowOrigin === null) {
+    return {};
+  }
+
+  const headers: Record<string, string> = {
+    'access-control-allow-origin': allowOrigin,
+    'access-control-allow-methods': CORS_ALLOWED_METHODS,
+    'access-control-allow-headers': CORS_ALLOWED_HEADERS,
+    'access-control-expose-headers': CORS_EXPOSE_HEADERS,
+  };
+
+  if (profile?.corsAllowCredentials === true) {
+    headers['access-control-allow-credentials'] = 'true';
+  }
+
+  return headers;
+}
+
+/**
+ * Raw HTTP-response variant of {@link buildScopedCorsHeaders} for the
+ * SOCKS5 path that builds responses by string concatenation. Returns an
+ * empty string when no CORS injection should occur (T9 default).
+ */
+export function buildScopedCorsHeadersString(
+  profile: { corsAllowOrigins?: string[]; corsAllowCredentials?: boolean } | null | undefined,
+  requestOrigin: string | undefined
+): string {
+  const allowOrigin = resolveCorsAllowOrigin(profile, requestOrigin);
+  if (allowOrigin === null) {
+    return '';
+  }
+
+  let result =
+    `Access-Control-Allow-Origin: ${allowOrigin}\r\n` +
+    `Access-Control-Allow-Methods: ${CORS_ALLOWED_METHODS}\r\n` +
+    `Access-Control-Allow-Headers: ${CORS_ALLOWED_HEADERS}\r\n` +
+    `Access-Control-Expose-Headers: ${CORS_EXPOSE_HEADERS}\r\n`;
+  if (profile?.corsAllowCredentials === true) {
+    result += 'Access-Control-Allow-Credentials: true\r\n';
+  }
+  return result;
+}
+
+/**
+ * Raw HTTP-response variant of the CORS preflight builder, gated by the
+ * matched domain profile (T9). Returns `null` when the profile has not
+ * opted in — callers should reply with a non-permissive 403/204 in that
+ * case rather than a permissive preflight.
+ */
+export function buildScopedCorsPreflightResponse(
+  profile: { corsAllowOrigins?: string[]; corsAllowCredentials?: boolean } | null | undefined,
+  requestOrigin: string | undefined
+): string | null {
+  const allowOrigin = resolveCorsAllowOrigin(profile, requestOrigin);
+  if (allowOrigin === null) {
+    return null;
+  }
+
+  let response =
+    'HTTP/1.1 204 No Content\r\n' +
+    `Access-Control-Allow-Origin: ${allowOrigin}\r\n` +
+    `Access-Control-Allow-Methods: ${CORS_ALLOWED_METHODS}\r\n` +
+    `Access-Control-Allow-Headers: ${CORS_ALLOWED_HEADERS}\r\n`;
+  if (profile?.corsAllowCredentials === true) {
+    response += 'Access-Control-Allow-Credentials: true\r\n';
+  }
+  response +=
+    'Access-Control-Max-Age: 86400\r\n' +
+    'Content-Length: 0\r\n' +
+    'Connection: close\r\n' +
+    '\r\n';
+  return response;
 }
 
 /**

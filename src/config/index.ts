@@ -8,6 +8,7 @@ import type { DomainProfile } from './domain-rules.js';
 import { getProfileForDomain } from './domain-manager.js';
 import { runConfigResolutionHooks } from '../plugins/hook-executor.js';
 import type { ConfigResolutionContext } from '../plugins/hooks.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 
 export interface RevampConfig {
   // Server settings
@@ -44,6 +45,7 @@ export interface RevampConfig {
   certDir: string;
   caKeyFile: string;
   caCertFile: string;
+  allowInsecureUpstream?: boolean; // If true, skip upstream TLS certificate validation (dangerous)
 
   // Domain filtering (for future extensibility)
   whitelist: string[];
@@ -57,6 +59,12 @@ export interface RevampConfig {
   // JSON request logging
   logJsonRequests: boolean; // Log application/json requests (disabled by default)
   jsonLogDir: string; // Directory for JSON request logs
+
+  // Body-size limits (P1-3). Both default to 50 MB and are independently
+  // tunable so a host that legitimately receives large downloads but never
+  // accepts large uploads can lift one without the other.
+  maxRequestBodyBytes?: number; // Max accepted inbound request body, in bytes
+  maxResponseBodyBytes?: number; // Max accepted upstream response body, in bytes
 }
 
 // Default configuration targeting iOS 9+ (iPad 2) and iOS 11+
@@ -73,8 +81,8 @@ export const defaultConfig: RevampConfig = {
   transformCss: true,
   transformHtml: true,
   bundleEsModules: true, // Bundle ES modules by default for legacy browser support
-  emulateServiceWorkers: false, // Enable SW bridge by default to transform and run SWs
-  remoteServiceWorkers: true, // Remote SW execution disabled by default (requires Playwright)
+  emulateServiceWorkers: true, // Enable SW bridge by default to transform and run SWs
+  remoteServiceWorkers: false, // Remote SW execution disabled by default (requires Playwright)
   removeAds: true,
   removeTracking: true,
   injectPolyfills: true,
@@ -91,6 +99,7 @@ export const defaultConfig: RevampConfig = {
   certDir: './.revamp-certs',
   caKeyFile: 'ca.key',
   caCertFile: 'ca.crt',
+  allowInsecureUpstream: false,
 
   whitelist: [], // empty = allow all
   blacklist: [],
@@ -147,6 +156,10 @@ export const defaultConfig: RevampConfig = {
   // JSON request logging (disabled by default)
   logJsonRequests: false, // Log application/json requests
   jsonLogDir: './.revamp-json-logs', // Directory for JSON request logs
+
+  // Body-size limits (P1-3): default 50 MB on both sides.
+  maxRequestBodyBytes: 50 * 1024 * 1024,
+  maxResponseBodyBytes: 50 * 1024 * 1024,
 };
 
 // Current active configuration (mutable for runtime changes)
@@ -222,7 +235,15 @@ export function getClientConfig(clientIp?: string): ClientConfig {
 export function setClientConfig(config: ClientConfig, clientIp?: string): void {
   const key = clientIp || DEFAULT_CLIENT_KEY;
   clientConfigs.set(key, config);
-  console.log(`[Revamp] Client config updated for ${clientIp || 'default'}:`, config);
+  // Both `clientIp` (X-Forwarded-For / socket) and `config` (JSON body)
+  // are attacker-controlled — pass each through `sanitizeForLog` so a
+  // crafted value can't forge a fake log line. JSON-stringifying the
+  // body first keeps a single-argument log shape that CodeQL recognises.
+  console.log(
+    '[Revamp] Client config updated for %s: %s',
+    sanitizeForLog(clientIp || 'default'),
+    sanitizeForLog(JSON.stringify(config))
+  );
 }
 
 /**
@@ -232,7 +253,7 @@ export function setClientConfig(config: ClientConfig, clientIp?: string): void {
 export function resetClientConfig(clientIp?: string): void {
   if (clientIp) {
     clientConfigs.delete(clientIp);
-    console.log(`[Revamp] Client config reset for ${clientIp}`);
+    console.log('[Revamp] Client config reset for %s', sanitizeForLog(clientIp));
   } else {
     clientConfigs.clear();
     console.log('[Revamp] All client configs reset to defaults');

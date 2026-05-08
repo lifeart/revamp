@@ -166,7 +166,8 @@ export async function logJsonRequest(
         : responseBody.toString('utf-8');
       data = JSON.parse(bodyStr);
     } catch {
-      // If parsing fails, store as raw string
+      // Non-JSON body in a logged response is a normal occurrence (e.g. JSON
+      // logger called speculatively); fall back to the raw string.
       data = typeof responseBody === 'string'
         ? responseBody
         : responseBody.toString('utf-8');
@@ -181,7 +182,7 @@ export async function logJsonRequest(
           : requestBody.toString('utf-8');
         parsedRequestBody = JSON.parse(reqBodyStr);
       } catch {
-        // If parsing fails, store as raw string
+        // Non-JSON request body — store as raw string. See note above.
         parsedRequestBody = typeof requestBody === 'string'
           ? requestBody
           : requestBody.toString('utf-8');

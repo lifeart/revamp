@@ -102,7 +102,7 @@ function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
         'Accept': '*/*',
         'Accept-Encoding': 'identity',
       },
-      rejectUnauthorized: false,
+      rejectUnauthorized: getConfig().allowInsecureUpstream !== true,
       timeout: FETCH_TIMEOUT,
     };
 
@@ -463,7 +463,12 @@ export async function transformInlineServiceWorker(code: string, scope: string =
   try {
     const config = getConfig();
 
-    console.log(`📦 Transforming inline Service Worker (${code.length} bytes)`);
+    // `code` is attacker-controlled; CodeQL taints every property
+    // access on it, including `.length`. Drop the size from the log to
+    // satisfy `js/log-injection` — the message alone still tells us a
+    // transform happened, and the size is recoverable from upstream
+    // request logs anyway.
+    console.log('📦 Transforming inline Service Worker');
 
     let swCode = code;
 
