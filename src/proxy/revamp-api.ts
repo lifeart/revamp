@@ -578,7 +578,9 @@ async function handleSwInlineRequest(method: string, body: string, clientIp?: st
   }
 
   // `scope` arrives via JSON body and is attacker-controlled; sanitize.
-  console.log('📦 SW Inline transform request: %d bytes (scope: %s)', code.length, sanitizeForLog(scope));
+  // Drop `code.length` from the format: even though it's a number, CodeQL
+  // taint-tracks every property of the attacker-controlled `code` value.
+  console.log('📦 SW Inline transform request (scope: %s)', sanitizeForLog(scope));
 
   try {
     const result = await transformInlineServiceWorker(code, scope);

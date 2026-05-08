@@ -235,9 +235,15 @@ export function getClientConfig(clientIp?: string): ClientConfig {
 export function setClientConfig(config: ClientConfig, clientIp?: string): void {
   const key = clientIp || DEFAULT_CLIENT_KEY;
   clientConfigs.set(key, config);
-  // clientIp comes from socket.remoteAddress / X-Forwarded-For; sanitize so an
-  // attacker can't inject fake log lines via a malformed address string.
-  console.log('[Revamp] Client config updated for %s:', sanitizeForLog(clientIp || 'default'), config);
+  // Both `clientIp` (X-Forwarded-For / socket) and `config` (JSON body)
+  // are attacker-controlled — pass each through `sanitizeForLog` so a
+  // crafted value can't forge a fake log line. JSON-stringifying the
+  // body first keeps a single-argument log shape that CodeQL recognises.
+  console.log(
+    '[Revamp] Client config updated for %s: %s',
+    sanitizeForLog(clientIp || 'default'),
+    sanitizeForLog(JSON.stringify(config))
+  );
 }
 
 /**

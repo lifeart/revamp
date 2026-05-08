@@ -463,10 +463,12 @@ export async function transformInlineServiceWorker(code: string, scope: string =
   try {
     const config = getConfig();
 
-    // `code` is attacker-controlled; logging just the length is enough,
-    // but using a constant format string keeps the call out of CodeQL's
-    // tainted-format-string sink list.
-    console.log('📦 Transforming inline Service Worker (%d bytes)', code.length);
+    // `code` is attacker-controlled; CodeQL taints every property
+    // access on it, including `.length`. Drop the size from the log to
+    // satisfy `js/log-injection` — the message alone still tells us a
+    // transform happened, and the size is recoverable from upstream
+    // request logs anyway.
+    console.log('📦 Transforming inline Service Worker');
 
     let swCode = code;
 
