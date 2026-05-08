@@ -832,8 +832,11 @@ export function createPluginContext(
         // Avoid leaking dispatcher sockets for one-shot fetches.
         if (dispatcher) {
           void dispatcher.close().catch((err: unknown) => {
+            // Constant format string + tainted value as a separate argument:
+            // closes CodeQL js/tainted-format-string without losing context.
             console.warn(
-              `[Plugin:${sanitizeForLog(pluginId)}] failed to close fetch dispatcher`,
+              '[Plugin] failed to close fetch dispatcher (plugin=%s)',
+              sanitizeForLog(pluginId),
               err
             );
           });
