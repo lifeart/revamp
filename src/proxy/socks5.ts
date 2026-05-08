@@ -18,6 +18,7 @@ import { connect } from 'node:net';
 import { TLSSocket, connect as tlsConnect } from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import { generateDomainCert, CertRateLimitError } from '../certs/index.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 import {
   SOCKS_VERSION,
   AUTH_NO_AUTH,
@@ -691,7 +692,7 @@ function handleHttpsConnection(
     if (request === PARSE_BODY_TOO_LARGE) {
       requestComplete = true;
       const limit = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
-      console.warn(`[socks5] HTTPS request body exceeded ${limit} bytes for ${hostname}`);
+      console.warn(`[socks5] HTTPS request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
       recordError();
       tlsServer.write(build413Response(limit));
       tlsServer.end();
@@ -774,7 +775,7 @@ function handleHttpConnection(
     if (request === null) return;
     if (request === PARSE_BODY_TOO_LARGE) {
       const limit = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
-      console.warn(`[socks5] HTTP request body exceeded ${limit} bytes for ${hostname}`);
+      console.warn(`[socks5] HTTP request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
       recordError();
       clientSocket.write(build413Response(limit));
       clientSocket.end();

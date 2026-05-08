@@ -35,10 +35,11 @@ const GRID_ONLY_PROPERTIES: ReadonlyArray<string> = [
   'grid-column-gap',
 ];
 
+// `-` is not a regex metacharacter outside a character class, so the hard-coded
+// property names need no escaping — joining them directly is both correct and
+// avoids a CodeQL "incomplete escaping" false positive about `replace(/-/g, '\\-')`.
 const GRID_ONLY_PROPERTY_PATTERN = new RegExp(
-  `(^|[^-a-z0-9])(${GRID_ONLY_PROPERTIES.map((p) =>
-    p.replace(/-/g, '\\-')
-  ).join('|')})\\s*:`,
+  `(^|[^-a-z0-9])(${GRID_ONLY_PROPERTIES.join('|')})\\s*:`,
   'i'
 );
 

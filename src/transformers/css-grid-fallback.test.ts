@@ -229,7 +229,7 @@ describe('transformGridToFlexbox — Batch I-2 (T5) shape parsing', () => {
 
   beforeEach(() => {
     _resetGridFallbackWarningCache();
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
   it('translates `repeat(3, 1fr)` to a flexbox container', () => {

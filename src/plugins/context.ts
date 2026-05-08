@@ -26,6 +26,7 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import type { LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
 import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici';
+import { sanitizeForLog } from '../logger/sanitize.js';
 
 /**
  * Storage limits per plugin
@@ -832,7 +833,7 @@ export function createPluginContext(
         if (dispatcher) {
           void dispatcher.close().catch((err: unknown) => {
             console.warn(
-              `[Plugin:${pluginId}] failed to close fetch dispatcher`,
+              `[Plugin:${sanitizeForLog(pluginId)}] failed to close fetch dispatcher`,
               err
             );
           });

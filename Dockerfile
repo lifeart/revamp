@@ -16,7 +16,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Copy source files
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.build.json tsconfig.workers.json ./
 COPY src ./src
 
 # Build TypeScript

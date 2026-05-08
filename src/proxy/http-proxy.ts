@@ -29,6 +29,7 @@ import {
   updateConnections,
 } from '../metrics/index.js';
 import { generateDomainCert, CertRateLimitError } from '../certs/index.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
 import {
   shouldCompress,
   acceptsGzip,
@@ -1067,7 +1068,7 @@ export function forwardWebSocketUpgrade(
     });
 
     socket.on('error', (err: Error) => {
-      console.error(`❌ WebSocket client error: ${err.message}`);
+      console.error(`❌ WebSocket client error: ${sanitizeForLog(err.message)}`);
       targetSocket.end();
     });
 
@@ -1131,7 +1132,7 @@ function handleConnect(
     certPair = generateDomainCert(hostname, clientIp);
   } catch (err) {
     if (err instanceof CertRateLimitError) {
-      console.warn(`[http-proxy] cert mint rate limit exceeded for ${clientIp}`);
+      console.warn(`[http-proxy] cert mint rate limit exceeded for ${sanitizeForLog(clientIp)}`);
       recordError();
       clientSocket.end('HTTP/1.1 429 Too Many Requests\r\n\r\n');
       return;
