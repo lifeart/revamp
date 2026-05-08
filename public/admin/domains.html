@@ -152,6 +152,24 @@
         </div>
         <div id="tester-result" class="tester-result hidden"></div>
       </div>
+
+      <!-- Per-Host Activity (T25) -->
+      <div class="card mb-lg" style="margin-top: var(--spacing-lg);">
+        <div class="card-header">
+          <span class="card-title">Per-Host Activity</span>
+          <button class="btn btn-secondary" id="hosts-refresh-btn" type="button">Refresh</button>
+        </div>
+        <p class="text-muted mb-md">
+          Per-host counters for blocks, transforms, and errors, plus the 20 most recent URLs per host.
+          Useful for debugging "why is this site blank on my iPad?"
+        </p>
+        <div id="hosts-list">
+          <div class="text-muted text-center" style="padding: 24px;">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            Loading host activity...
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 

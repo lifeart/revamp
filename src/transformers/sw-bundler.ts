@@ -102,7 +102,7 @@ function fetchUrl(url: string, redirectCount = 0): Promise<FetchResult> {
         'Accept': '*/*',
         'Accept-Encoding': 'identity',
       },
-      rejectUnauthorized: false,
+      rejectUnauthorized: getConfig().allowInsecureUpstream !== true,
       timeout: FETCH_TIMEOUT,
     };
 

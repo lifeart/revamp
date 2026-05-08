@@ -5,7 +5,7 @@
  */
 
 import { pluginLoader } from './loader.js';
-import { pluginRegistry } from './registry.js';
+import { pluginRegistry } from './internal.js';
 import { findPluginEndpoint, getAllPluginMetrics } from './context.js';
 import { hookExecutor } from './hook-executor.js';
 
@@ -393,6 +393,10 @@ export async function handlePluginRequest(
           pluginRegistry.updateConfig(pluginId, config);
           return jsonResponse({ success: true, config });
         } catch (err) {
+          // Surface the parse failure rather than swallowing it (CLAUDE.md:
+          // no silent error swallowing). The 400 response still tells the
+          // client what happened.
+          console.warn('[plugins:api] Invalid JSON body for config update:', err);
           return errorResponse('Invalid JSON body', 400);
         }
       }

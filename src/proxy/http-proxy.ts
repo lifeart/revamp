@@ -15,65 +15,45 @@
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
-import { request as httpRequest } from 'node:http';
-import { request as httpsRequest } from 'node:https';
 import { connect, type Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { URL } from 'node:url';
-import { getEffectiveConfig, getConfig } from '../config/index.js';
-import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
+import { resolveBucketClientIp } from './socks5.js';
+import { getEffectiveConfig, getEffectiveConfigForRequestAsync, getConfig } from '../config/index.js';
 import {
   recordRequest,
   recordBlocked,
-  recordTransform,
-  recordBandwidth,
   recordError,
+  recordHostBlocked,
+  recordHostError,
   updateConnections,
 } from '../metrics/index.js';
-import { generateDomainCert } from '../certs/index.js';
-import { needsImageTransform, transformImage } from '../transformers/image.js';
+import { generateDomainCert, CertRateLimitError } from '../certs/index.js';
 import {
   shouldCompress,
   acceptsGzip,
-  getCharset,
-  getContentType,
-  decompressBody,
   compressGzip,
-  transformContent,
   shouldBlockDomain,
   shouldBlockUrl,
   removeCorsHeaders,
-  buildCorsHeaders,
+  buildScopedCorsHeaders,
 } from './shared.js';
 import {
-  runPreRequestHooks,
-  runPostResponseHooks,
-  type ChainExecutionResult,
-} from '../plugins/hook-executor.js';
-import type {
-  RequestContext,
-  ResponseContext,
-  PreRequestResult,
-  PostResponseResult,
-} from '../plugins/hooks.js';
-import { getProfileForDomain } from '../config/domain-manager.js';
-import { isConfigEndpoint, handleConfigRequest } from './config-endpoint.js';
+  processProxiedResponse,
+  requestWithBody,
+  ResponseBodyTooLargeError,
+  type RequestWithBodyOptions,
+  type ProcessedProxyResponse,
+} from './http-client.js';
+import {
+  applyPreRequestHooks,
+  buildRequestContext,
+  newRequestId,
+} from './proxy-hooks.js';
+import type { RequestContext } from '../plugins/hooks.js';
+import type { DomainProfile } from '../config/domain-rules.js';
 import { isRevampEndpoint, handleRevampRequest } from './revamp-api.js';
-import { shouldLogJsonRequest, logJsonRequest, isJsonContentType } from '../logger/json-request-logger.js';
 import { remoteSwServer, isRemoteSwEndpoint } from './remote-sw-server.js';
-
-// =============================================================================
-// Types
-// =============================================================================
-
-/** Options for making a proxy request */
-interface ProxyRequestOptions {
-  hostname: string;
-  port: number | string;
-  path: string;
-  method: string | undefined;
-  headers: Record<string, string | string[] | undefined>;
-  rejectUnauthorized: boolean;
-}
 
 // =============================================================================
 // Constants
@@ -94,9 +74,9 @@ const HOP_BY_HOP_HEADERS = [
   'proxy-authorization',
   'transfer-encoding',
   'upgrade',
-  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com)
-  // When proxying, the browser's Origin doesn't match what upstream servers expect
-  // The proxy adds its own permissive CORS headers to responses
+  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com).
+  // When proxying, the browser's Origin doesn't match what upstream servers expect.
+  // CORS injection on responses is opt-in per domain profile (T9).
   'origin',
 ] as const;
 
@@ -158,21 +138,52 @@ function readRequestBody(req: IncomingMessage): Promise<string> {
 }
 
 /**
- * Buffer request body for JSON logging (if enabled).
- *
- * @param req - Incoming HTTP request
- * @returns Promise resolving to buffered body or null if logging disabled
+ * Thrown by `bufferRequestBody` when the inbound request body exceeds the
+ * configured `maxRequestBodyBytes`. Callers translate this into a `413`
+ * client response (P1-3).
  */
-async function bufferRequestBodyIfNeeded(req: IncomingMessage): Promise<Buffer | null> {
-  const globalConfig = getConfig();
-  if (!globalConfig.logJsonRequests) {
-    return null;
+export class RequestBodyTooLargeError extends Error {
+  constructor(public readonly limitBytes: number) {
+    super(`Request body exceeds max (${limitBytes} bytes)`);
+    this.name = 'RequestBodyTooLargeError';
   }
+}
 
+/** Default cap on inbound request body size when config doesn't specify. */
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Buffer the entire request body. The legacy implementation only buffered
+ * when JSON logging was enabled and otherwise streamed via `req.pipe`; the
+ * linearised flow buffers unconditionally so the upstream call can be a
+ * single awaited helper (T17). Callers that don't expect a body still get a
+ * zero-length buffer.
+ *
+ * P1-3: previously this concatenated every chunk until `end` with no cap, so
+ * a 1 GB upload would OOM the iPad-class host. We now enforce a config-driven
+ * `maxRequestBodyBytes` (default 50 MB) and reject with
+ * `RequestBodyTooLargeError` so the caller can return 413.
+ */
+async function bufferRequestBody(req: IncomingMessage): Promise<Buffer> {
+  const maxBytes = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
   const chunks: Buffer[] = [];
-  await new Promise<void>((resolve) => {
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  let total = 0;
+  await new Promise<void>((resolve, reject) => {
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        const err = new RequestBodyTooLargeError(maxBytes);
+        // Destroy the underlying stream so we stop receiving — without this
+        // the client may keep uploading megabytes after we've already given
+        // up on the request.
+        req.destroy(err);
+        reject(err);
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve());
+    req.on('error', reject);
   });
   return Buffer.concat(chunks);
 }
@@ -256,21 +267,6 @@ function sanitizeResponseHeaders(
   return headers;
 }
 
-/**
- * Update Content-Type header to UTF-8 charset after transformation.
- *
- * @param headers - Response headers
- */
-function updateCharsetToUtf8(headers: Record<string, string | string[] | undefined>): void {
-  if (!headers['content-type']) return;
-
-  const ct = Array.isArray(headers['content-type'])
-    ? headers['content-type'][0]
-    : headers['content-type'];
-
-  headers['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-}
-
 // =============================================================================
 // Revamp API Handler
 // =============================================================================
@@ -313,8 +309,34 @@ async function handleRevampApiRequest(
 // =============================================================================
 
 /**
+ * Send the blocked response. T20: when the client prefers HTML (i.e. it's a
+ * browser navigation), render a small explanatory page with a link to the
+ * admin panel; otherwise keep the prior machine-friendly 204 status.
+ */
+function sendBlockedResponse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  hostname: string,
+  reason: string
+): void {
+  if (clientAcceptsHtml(req)) {
+    const body = buildBlockedNavigationPage(hostname, reason);
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': String(Buffer.byteLength(body)),
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+    return;
+  }
+  res.writeHead(204);
+  res.end();
+}
+
+/**
  * Check if request should be blocked and send appropriate response.
  *
+ * @param req - Incoming request (used to detect HTML preference)
  * @param res - Server response
  * @param hostname - Target hostname
  * @param targetUrl - Full target URL
@@ -322,6 +344,7 @@ async function handleRevampApiRequest(
  * @returns true if request was blocked
  */
 function checkAndBlockRequest(
+  req: IncomingMessage,
   res: ServerResponse,
   hostname: string,
   targetUrl: string,
@@ -330,16 +353,16 @@ function checkAndBlockRequest(
   if (shouldBlockDomain(hostname, config)) {
     console.log(`🚫 Blocked domain: ${hostname}`);
     recordBlocked();
-    res.writeHead(204);
-    res.end();
+    recordHostBlocked(targetUrl);
+    sendBlockedResponse(req, res, hostname, `Domain blocked by Revamp: ${hostname}`);
     return true;
   }
 
   if (shouldBlockUrl(targetUrl, config)) {
     console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
     recordBlocked();
-    res.writeHead(204);
-    res.end();
+    recordHostBlocked(targetUrl);
+    sendBlockedResponse(req, res, hostname, `Tracking URL blocked by Revamp: ${targetUrl}`);
     return true;
   }
 
@@ -347,62 +370,8 @@ function checkAndBlockRequest(
 }
 
 // =============================================================================
-// Content Transformation
+// Compression
 // =============================================================================
-
-/**
- * Transform response body based on content type.
- *
- * @param body - Response body buffer
- * @param contentType - Content-Type header value
- * @param targetUrl - Request URL
- * @param config - Effective configuration
- * @param clientIp - Client IP for caching
- * @param proxyHeaders - Response headers (may be modified)
- * @returns Transformed body buffer
- */
-async function transformResponseBody(
-  body: Buffer,
-  contentType: string,
-  targetUrl: string,
-  config: ReturnType<typeof getEffectiveConfig>,
-  clientIp: string,
-  proxyHeaders: Record<string, string | string[] | undefined>
-): Promise<Buffer> {
-  // Transform WebP/AVIF images to JPEG for legacy browsers
-  if (needsImageTransform(contentType, targetUrl)) {
-    const imageResult = await transformImage(body, contentType, targetUrl);
-    if (imageResult.transformed) {
-      proxyHeaders['content-type'] = imageResult.contentType;
-      recordTransform('images');
-      return Buffer.from(imageResult.data);
-    }
-    return body;
-  }
-
-  // Transform text content (JS, CSS, HTML)
-  const charset = getCharset(contentType);
-  const detectedType = getContentType(
-    proxyHeaders as Record<string, string | string[] | undefined>,
-    targetUrl
-  );
-
-  // Debug: Log content type detection for JS files
-  const isJsPath = targetUrl.includes('/js/') || targetUrl.includes('.js');
-  if (isJsPath) {
-    console.log(`🔍 Transform Debug: detectedType=${detectedType} contentType=${contentType} url=${targetUrl.substring(0, 80)}...`);
-  }
-
-  if (detectedType !== 'other') {
-    const transformed = await transformContent(body, detectedType, targetUrl, charset, config, clientIp);
-    recordTransform(detectedType);
-    return Buffer.from(transformed);
-  } else if (isJsPath) {
-    console.log(`⚠️ JS not detected: contentType header=${proxyHeaders['content-type']}`);
-  }
-
-  return body;
-}
 
 /**
  * Apply gzip compression if appropriate.
@@ -433,48 +402,6 @@ async function applyCompressionIfNeeded(
 }
 
 // =============================================================================
-// JSON Logging
-// =============================================================================
-
-/**
- * Log JSON request/response if logging is enabled.
- *
- * @param enabled - Whether JSON logging is enabled
- * @param headers - Response headers
- * @param decompressedBody - Decompressed response body (or null)
- * @param clientIp - Client IP
- * @param targetUrl - Request URL
- * @param requestHeaders - Original request headers
- * @param requestBody - Request body (or null)
- */
-function logJsonIfEnabled(
-  enabled: boolean,
-  headers: Record<string, string | string[] | undefined>,
-  decompressedBody: Buffer | null,
-  clientIp: string,
-  targetUrl: string,
-  requestHeaders: IncomingMessage['headers'],
-  requestBody: Buffer | null
-): void {
-  if (!enabled || !decompressedBody) return;
-
-  if (!isJsonContentType(headers['content-type'])) return;
-
-  // Create headers copy without encoding for logging
-  const headersForLogging = { ...headers };
-  delete headersForLogging['content-encoding'];
-
-  logJsonRequest(
-    clientIp,
-    targetUrl,
-    requestHeaders,
-    headersForLogging,
-    decompressedBody,
-    requestBody ?? undefined
-  );
-}
-
-// =============================================================================
 // Error Handling
 // =============================================================================
 
@@ -496,31 +423,275 @@ function sendErrorResponse(
   }
 }
 
+/** TLS error codes/strings that indicate upstream certificate validation failure */
+const TLS_CERT_ERROR_CODES = new Set([
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_CRL',
+  'UNABLE_TO_DECRYPT_CERT_SIGNATURE',
+  'UNABLE_TO_DECRYPT_CRL_SIGNATURE',
+  'UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY',
+  'CERT_SIGNATURE_FAILURE',
+  'CRL_SIGNATURE_FAILURE',
+  'CERT_NOT_YET_VALID',
+  'CERT_HAS_EXPIRED',
+  'CRL_NOT_YET_VALID',
+  'CRL_HAS_EXPIRED',
+  'ERROR_IN_CERT_NOT_BEFORE_FIELD',
+  'ERROR_IN_CERT_NOT_AFTER_FIELD',
+  'ERROR_IN_CRL_LAST_UPDATE_FIELD',
+  'ERROR_IN_CRL_NEXT_UPDATE_FIELD',
+  'OUT_OF_MEM',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_CHAIN_TOO_LONG',
+  'CERT_REVOKED',
+  'INVALID_CA',
+  'PATH_LENGTH_EXCEEDED',
+  'INVALID_PURPOSE',
+  'CERT_UNTRUSTED',
+  'CERT_REJECTED',
+  'HOSTNAME_MISMATCH',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+/**
+ * Detect whether an error originated from upstream TLS certificate validation.
+ *
+ * The TLS error codes set is the precise signal; the message regex is a
+ * narrow fallback for the handful of TLS errors Node surfaces without a
+ * stable `code` (older Node versions, OpenSSL quirks). Tightened from the
+ * earlier loose `/certificate/i` pattern after Round 1 review.
+ */
+function isUpstreamCertError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'string' && TLS_CERT_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const message = (err as { message?: unknown }).message;
+  if (
+    typeof message === 'string' &&
+    /(unable to verify|self-signed|self signed|altname|tls)/i.test(message)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Escape HTML special characters to prevent injection in the error page.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Build a 502 HTML page for upstream certificate validation failure.
+ */
+function buildUpstreamCertFailurePage(hostname: string, reason: string): string {
+  const safeHost = escapeHtml(hostname);
+  const safeReason = escapeHtml(reason);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>502 - Upstream Certificate Failed Validation</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 640px; margin: 2em auto; padding: 0 1em; color: #222; }
+h1 { font-size: 1.4em; }
+code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+.reason { background: #fff7e6; border-left: 4px solid #d97706; padding: 0.6em 1em; margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1>Upstream certificate failed validation</h1>
+<p>Revamp could not securely connect to <code>${safeHost}</code> because the server's TLS certificate did not validate.</p>
+<div class="reason">${safeReason}</div>
+<p>This block is intentional: Revamp re-signs upstream traffic with its own CA, so accepting an invalid upstream certificate would silently launder it into a trusted-looking connection on your device.</p>
+<p>If you knowingly need to bypass this (e.g., development or self-hosted services), set <code>allowInsecureUpstream: true</code> in your Revamp config.</p>
+</body>
+</html>`;
+}
+
+/**
+ * Build a 200 HTML page for blocked navigation requests (T20). Returns 200
+ * (not 4xx) so iOS Safari renders the page rather than its own opaque
+ * "could not connect" overlay; the body explains the block and links to the
+ * admin domain panel where the user can change rules.
+ */
+function buildBlockedNavigationPage(hostname: string, reason: string): string {
+  const safeHost = escapeHtml(hostname);
+  const safeReason = escapeHtml(reason);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Blocked by Revamp - ${safeHost}</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 640px; margin: 2em auto; padding: 0 1em; color: #222; }
+h1 { font-size: 1.4em; }
+code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+.reason { background: #fef2f2; border-left: 4px solid #dc2626; padding: 0.6em 1em; margin: 1em 0; }
+a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>Blocked by Revamp</h1>
+<p>Revamp blocked the request to <code>${safeHost}</code>.</p>
+<div class="reason">${safeReason}</div>
+<p>Edit or disable the matching rule in the <a href="/__revamp__/admin/domains.html">Domain Profiles admin panel</a>.</p>
+</body>
+</html>`;
+}
+
+/**
+ * Build a 502 HTML page for generic upstream errors (T20). Distinct from the
+ * cert-failure variant because the recovery suggestion is different: the
+ * common upstream-error cause we can guide the user toward is a busted
+ * transformation, so we link to the admin panel where JS transform can be
+ * disabled per-domain.
+ */
+function buildUpstreamErrorPage(url: string, reason: string): string {
+  const safeUrl = escapeHtml(url);
+  const safeReason = escapeHtml(reason);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>502 - Upstream Error</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 640px; margin: 2em auto; padding: 0 1em; color: #222; }
+h1 { font-size: 1.4em; }
+code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; word-break: break-all; }
+.reason { background: #fff7e6; border-left: 4px solid #d97706; padding: 0.6em 1em; margin: 1em 0; }
+a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>Upstream error</h1>
+<p>Revamp could not load <code>${safeUrl}</code>.</p>
+<div class="reason">${safeReason}</div>
+<p>If this site loads outside Revamp, try disabling JS transform for this domain in the <a href="/__revamp__/admin/domains.html">Domain Profiles admin panel</a>.</p>
+</body>
+</html>`;
+}
+
+/**
+ * Detect whether the client request prefers an HTML response.
+ */
+function clientAcceptsHtml(req: IncomingMessage): boolean {
+  const accept = req.headers['accept'];
+  const value = Array.isArray(accept) ? accept.join(',') : accept;
+  if (!value) return false;
+  return /text\/html/i.test(value);
+}
+
+/**
+ * Send an upstream-cert-failure 502 response.
+ * HTML is returned when the client accepts text/html, otherwise plain text.
+ */
+function sendUpstreamCertFailure(
+  res: ServerResponse,
+  hostname: string,
+  err: unknown,
+  acceptsHtml: boolean
+): void {
+  if (res.headersSent) return;
+  const reason = err instanceof Error ? err.message : String(err);
+  if (acceptsHtml) {
+    const body = buildUpstreamCertFailurePage(hostname, reason);
+    res.writeHead(502, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': String(Buffer.byteLength(body)),
+    });
+    res.end(body);
+  } else {
+    const body = `502 Bad Gateway: upstream certificate failed validation for ${hostname}: ${reason}`;
+    res.writeHead(502, {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-length': String(Buffer.byteLength(body)),
+    });
+    res.end(body);
+  }
+}
+
+/**
+ * Flatten any thrown value (Error, AggregateError, primitive) to a single
+ * human-readable string. Replaces a duplicated AggregateError-handling block
+ * that previously lived in both the `proxyRequest` rejection path and the
+ * CONNECT handler's catch (T17).
+ */
+function flattenError(err: unknown): string {
+  if (err instanceof AggregateError) {
+    const inner = err.errors.map((e: Error) => e.message || String(e)).join('; ');
+    return `${err.message}: [${inner}]`;
+  }
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
+/**
+ * Send a generic upstream-error 502 response. T20: HTML when client accepts
+ * text/html, plain text otherwise (the plain-text body still embeds the
+ * reason so callers like the body-size-limit path keep their machine-friendly
+ * detail in the response).
+ */
+function sendUpstreamErrorResponse(
+  req: IncomingMessage | null,
+  res: ServerResponse,
+  url: string,
+  reason: string
+): void {
+  if (res.headersSent) return;
+  if (req && clientAcceptsHtml(req)) {
+    const body = buildUpstreamErrorPage(url, reason);
+    res.writeHead(502, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': String(Buffer.byteLength(body)),
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+    return;
+  }
+  const body = `502 Bad Gateway: ${reason}`;
+  res.writeHead(502, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+  });
+  res.end(body);
+}
+
 /**
  * Handle proxy request error.
  *
  * @param err - Error object
+ * @param req - Incoming request (for HTML content-negotiation; nullable for
+ *   call sites that occur before request parsing)
  * @param res - Server response
  * @param context - Error context for logging
+ * @param url - The URL we were trying to proxy, for the HTML page
  */
 function handleProxyError(
   err: unknown,
+  req: IncomingMessage | null,
   res: ServerResponse,
-  context: string
+  context: string,
+  url: string
 ): void {
-  let message: string;
-  if (err instanceof AggregateError) {
-    // AggregateError contains multiple errors (e.g., DNS resolution failures)
-    const errorMessages = err.errors.map((e: Error) => e.message || String(e)).join('; ');
-    message = `${err.message}: [${errorMessages}]`;
-  } else if (err instanceof Error) {
-    message = err.message;
-  } else {
-    message = String(err);
-  }
-  console.error(`❌ ${context}: ${message}`);
+  const reason = flattenError(err);
+  console.error(`❌ ${context}: ${reason}`);
   recordError();
-  sendErrorResponse(res, 502, 'Bad Gateway');
+  recordHostError(url);
+  sendUpstreamErrorResponse(req, res, url, reason);
 }
 
 // =============================================================================
@@ -528,7 +699,205 @@ function handleProxyError(
 // =============================================================================
 
 /**
+ * Outcome of `prepareRequest`. Either `blocked` is true (caller already
+ * sent a response and should return) or the upstream-call inputs are
+ * populated for `executeUpstream`.
+ */
+interface PreparedRequest {
+  blocked: boolean;
+  url: string;
+  options: RequestWithBodyOptions;
+  requestContext: RequestContext;
+  effectiveClientIp: string;
+  effectiveHeaders: Record<string, string | string[] | undefined>;
+  requestBody: Buffer;
+  /** Matched domain profile, used downstream for opt-in CORS injection (T9). */
+  profile: DomainProfile | null;
+}
+
+/**
+ * Phase 1 of `proxyRequest` (T17): build the request context, run the
+ * `request:pre` hook chain, apply built-in domain/URL blocking, and produce
+ * the inputs `executeUpstream` needs. May write a final response and
+ * return `{ blocked: true }`, in which case the caller must return early.
+ */
+async function prepareRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  targetUrl: string,
+  isHttps: boolean,
+  effectiveClientIp: string
+): Promise<PreparedRequest> {
+  const parsedUrl = new URL(targetUrl);
+  const { config, profile } = await getEffectiveConfigForRequestAsync(
+    parsedUrl.hostname,
+    effectiveClientIp
+  );
+  recordRequest();
+
+  const requestContext = buildRequestContext({
+    url: targetUrl,
+    method: req.method || 'GET',
+    headers: req.headers as Record<string, string | string[] | undefined>,
+    clientIp: effectiveClientIp,
+    hostname: parsedUrl.hostname,
+    config,
+    profile,
+    isHttps,
+    requestId: newRequestId(),
+    startTime: Date.now(),
+  });
+
+  const preOutcome = await applyPreRequestHooks(requestContext);
+  if (preOutcome.blocked) {
+    console.log(`🔌 Request blocked by plugin: ${preOutcome.stoppedBy || 'unknown'}`);
+    recordBlocked();
+    recordHostBlocked(targetUrl);
+    const blocked = preOutcome.blockedResponse;
+    if (blocked) {
+      res.writeHead(blocked.statusCode, blocked.headers);
+      res.end(blocked.body);
+    } else {
+      sendBlockedResponse(
+        req,
+        res,
+        parsedUrl.hostname,
+        `Request blocked by plugin: ${preOutcome.stoppedBy || 'unknown'}`
+      );
+    }
+    return blockedSentinel();
+  }
+
+  // Plugin-driven URL/headers modifications surface here.
+  targetUrl = preOutcome.url;
+  Object.assign(req.headers, preOutcome.headers);
+
+  // Re-parse if a plugin rewrote the URL — port and pathname may have
+  // changed and feed directly into the upstream options.
+  const finalUrl = new URL(targetUrl);
+
+  if (checkAndBlockRequest(req, res, finalUrl.hostname, targetUrl, config)) {
+    return blockedSentinel();
+  }
+
+  const globalConfig = getConfig();
+  const requestBody = await bufferRequestBody(req);
+  const headers = prepareProxyHeaders(req, finalUrl, config.spoofUserAgent);
+
+  const options: RequestWithBodyOptions = {
+    hostname: finalUrl.hostname,
+    port: finalUrl.port || (isHttps ? 443 : 80),
+    path: finalUrl.pathname + finalUrl.search,
+    method: req.method || 'GET',
+    headers,
+    rejectUnauthorized: globalConfig.allowInsecureUpstream !== true,
+    secure: isHttps,
+  };
+
+  return {
+    blocked: false,
+    url: targetUrl,
+    options,
+    requestContext,
+    effectiveClientIp,
+    effectiveHeaders: req.headers as Record<string, string | string[] | undefined>,
+    requestBody,
+    profile,
+  };
+}
+
+/** Sentinel for `prepareRequest` short-circuits. */
+function blockedSentinel(): PreparedRequest {
+  return {
+    blocked: true,
+    url: '',
+    options: {
+      hostname: '',
+      port: 0,
+      path: '',
+      method: 'GET',
+      headers: {},
+      secure: false,
+    },
+    requestContext: {} as RequestContext,
+    effectiveClientIp: '',
+    effectiveHeaders: {},
+    requestBody: Buffer.alloc(0),
+    profile: null,
+  };
+}
+
+/**
+ * Phase 2: issue the upstream request and feed the response through
+ * `processProxiedResponse` (transform + post-response hooks).
+ */
+async function executeUpstream(
+  prepared: PreparedRequest
+): Promise<ProcessedProxyResponse> {
+  const raw = await requestWithBody(prepared.options, prepared.requestBody);
+
+  return processProxiedResponse({
+    rawBody: raw.body,
+    upstreamHeaders: raw.headers,
+    upstreamStatusCode: raw.statusCode,
+    upstreamStatusMessage: raw.statusMessage,
+    url: prepared.url,
+    method: prepared.options.method,
+    clientIp: prepared.effectiveClientIp,
+    requestHeaders: prepared.effectiveHeaders,
+    requestBody: prepared.requestBody,
+    runPostResponseHook: true,
+    requestContext: prepared.requestContext,
+  });
+}
+
+/**
+ * Phase 3: apply CORS (T9: opt-in per profile only), no-cache (HTML),
+ * gzip compression, content-length, then write the response to the client.
+ */
+async function sendProcessedResponse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  processed: ProcessedProxyResponse,
+  profile: DomainProfile | null
+): Promise<void> {
+  let body = processed.body;
+  const headers = sanitizeResponseHeaders(processed.headers);
+
+  const acceptEncoding = req.headers['accept-encoding'] as string | undefined;
+  const currentContentType = Array.isArray(headers['content-type'])
+    ? headers['content-type'][0]
+    : (headers['content-type'] || '');
+  body = await applyCompressionIfNeeded(body, currentContentType, acceptEncoding, headers);
+
+  headers['content-length'] = String(body.length);
+
+  // T9: strip whatever CORS headers the upstream advertised (we don't want
+  // to leak them through verbatim) and only re-emit them when the matched
+  // domain profile has explicitly opted in via `corsAllowOrigins`.
+  removeCorsHeaders(headers);
+  const requestOrigin = req.headers['origin'] as string | undefined;
+  const scopedCors = buildScopedCorsHeaders(profile, requestOrigin);
+  if (Object.keys(scopedCors).length > 0) {
+    Object.assign(headers, scopedCors);
+  }
+
+  // Prevent browser caching for HTML so config changes (e.g. polyfill set)
+  // become visible without a hard reload on legacy devices.
+  if (processed.contentType === 'html') {
+    headers['cache-control'] = 'no-cache, must-revalidate';
+    headers['vary'] = 'Accept-Encoding';
+  }
+
+  res.writeHead(processed.statusCode, headers);
+  res.end(body);
+}
+
+/**
  * Proxy an HTTP/HTTPS request with content transformation.
+ *
+ * Linearised in T17 from a 247-line nested-callback implementation into a
+ * sequence of `prepareRequest` → `executeUpstream` → `sendProcessedResponse`.
  *
  * @param req - Incoming client request
  * @param res - Server response
@@ -546,248 +915,173 @@ async function proxyRequest(
   const effectiveClientIp = clientIp || getClientIp(req);
   const parsedUrl = new URL(targetUrl);
 
-  // Handle Revamp API endpoints
   if (isRevampEndpoint(parsedUrl.pathname)) {
     req.url = parsedUrl.pathname + parsedUrl.search;
     const handled = await handleRevampApiRequest(req, res, effectiveClientIp);
     if (handled) return;
   }
 
-  const config = getEffectiveConfig(effectiveClientIp);
-  const { profile } = getProfileForDomain(parsedUrl.hostname);
-  recordRequest();
-
-  // Generate unique request ID
-  const requestId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-  const startTime = Date.now();
-
-  // Execute request:pre hooks
-  const requestContext: RequestContext = {
-    requestId,
-    url: targetUrl,
-    method: req.method || 'GET',
-    headers: { ...req.headers } as Record<string, string | string[] | undefined>,
-    clientIp: effectiveClientIp,
-    hostname: parsedUrl.hostname,
-    config,
-    profile,
-    isHttps,
-    startTime,
-    pluginData: new Map(),
-  };
-
-  const preRequestResult = await runPreRequestHooks(requestContext);
-  if (preRequestResult) {
-    // Check if request was blocked by a plugin
-    if (preRequestResult.value.blocked) {
-      console.log(`🔌 Request blocked by plugin: ${preRequestResult.stoppedBy || 'unknown'}`);
-      recordBlocked();
-      const blockedResponse = preRequestResult.value.blockedResponse;
-      if (blockedResponse) {
-        res.writeHead(blockedResponse.statusCode, blockedResponse.headers);
-        res.end(blockedResponse.body);
-      } else {
-        res.writeHead(204);
-        res.end();
-      }
+  let prepared: PreparedRequest;
+  try {
+    prepared = await prepareRequest(req, res, targetUrl, isHttps, effectiveClientIp);
+  } catch (err) {
+    // P1-3: translate body-size-limit errors into a 413 instead of the
+    // generic 502 path, so clients see "I sent too much" rather than
+    // "upstream broke" — and so the iPad host doesn't keep buffering.
+    if (err instanceof RequestBodyTooLargeError) {
+      console.warn(`[http-proxy] request body exceeds max (${err.limitBytes} bytes)`);
+      recordError();
+      recordHostError(targetUrl);
+      sendErrorResponse(res, 413, 'Payload Too Large');
       return;
     }
-
-    // Apply URL modifications from plugins
-    if (preRequestResult.value.url) {
-      targetUrl = preRequestResult.value.url;
-    }
-
-    // Apply header modifications from plugins
-    if (preRequestResult.value.headers) {
-      Object.assign(req.headers, preRequestResult.value.headers);
-    }
+    handleProxyError(err, req, res, 'Proxy prepare error', targetUrl);
+    return;
   }
+  if (prepared.blocked) return;
 
-  // Check domain/URL blocking
-  if (checkAndBlockRequest(res, parsedUrl.hostname, targetUrl, config)) {
+  let processed: ProcessedProxyResponse;
+  try {
+    processed = await executeUpstream(prepared);
+  } catch (err) {
+    if (isUpstreamCertError(err)) {
+      console.error(
+        `❌ Upstream cert validation failed for ${parsedUrl.hostname}: ${flattenError(err)}`
+      );
+      recordError();
+      sendUpstreamCertFailure(res, parsedUrl.hostname, err, clientAcceptsHtml(req));
+      return;
+    }
+    // P1-3: upstream tried to deliver more bytes than `maxResponseBodyBytes`
+    // allows — surface as 502 with a small explanation so the client knows
+    // it's an upstream-side issue, not a malformed request.
+    if (err instanceof ResponseBodyTooLargeError) {
+      console.warn(
+        `[http-proxy] upstream response exceeds max (${err.limitBytes} bytes) for ${parsedUrl.hostname}`
+      );
+      recordError();
+      recordHostError(targetUrl);
+      sendUpstreamErrorResponse(
+        req,
+        res,
+        targetUrl,
+        `upstream response exceeds maximum allowed size (${err.limitBytes} bytes)`
+      );
+      return;
+    }
+    handleProxyError(err, req, res, 'Proxy request error', targetUrl);
     return;
   }
 
-  // Buffer request body if JSON logging is enabled
-  const globalConfig = getConfig();
-  const jsonLoggingEnabled = globalConfig.logJsonRequests;
-  const requestBody = await bufferRequestBodyIfNeeded(req);
-
-  // Prepare proxy request
-  const requestFn = isHttps ? httpsRequest : httpRequest;
-  const headers = prepareProxyHeaders(req, parsedUrl, config.spoofUserAgent);
-
-  const options: ProxyRequestOptions = {
-    hostname: parsedUrl.hostname,
-    port: parsedUrl.port || (isHttps ? 443 : 80),
-    path: parsedUrl.pathname + parsedUrl.search,
-    method: req.method,
-    headers,
-    rejectUnauthorized: false,
-  };
-
-  return new Promise((resolve, reject) => {
-    const proxyReq = requestFn(options, async (proxyRes) => {
-      try {
-        // Collect response body
-        const chunks: Buffer[] = [];
-        proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
-
-        proxyRes.on('end', async () => {
-          try {
-            let body: Buffer = Buffer.concat(chunks);
-
-            // Decompress response
-            const encoding = proxyRes.headers['content-encoding'] as string | undefined;
-            body = Buffer.from(await decompressBody(body, encoding));
-
-            // Handle redirects
-            let finalStatusCode = proxyRes.statusCode || 200;
-            if (isRedirectStatus(finalStatusCode)) {
-              markAsRedirect(targetUrl);
-            }
-
-            // Transform content (skip for redirects)
-            const rawContentType = proxyRes.headers['content-type'] || '';
-            const contentType = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-
-            // Debug: Log transformation decision for JS files
-            const isJsPath = targetUrl.includes('/js/') || targetUrl.includes('.js') || targetUrl.includes('javascript');
-            if (isJsPath) {
-              console.log(`🔍 JS Debug: URL=${targetUrl.substring(0, 100)}... status=${finalStatusCode} bodyLen=${body.length} contentType=${contentType}`);
-            }
-
-            if (!isRedirectStatus(finalStatusCode) && body.length > 0) {
-              body = await transformResponseBody(
-                body,
-                contentType,
-                targetUrl,
-                config,
-                effectiveClientIp,
-                proxyRes.headers
-              );
-            } else if (isJsPath) {
-              console.log(`⚠️ JS Skipped: isRedirect=${isRedirectStatus(finalStatusCode)} bodyLength=${body.length}`);
-            }
-
-            // Prepare response headers
-            let responseHeaders = sanitizeResponseHeaders(proxyRes.headers);
-
-            // Execute response:post hooks
-            const detectedContentType = getContentType(proxyRes.headers as Record<string, string | string[] | undefined>, targetUrl);
-            const responseContext: ResponseContext = {
-              ...requestContext,
-              statusCode: finalStatusCode,
-              responseHeaders: { ...responseHeaders },
-              body,
-              contentType: detectedContentType,
-              originalSize: Buffer.concat(chunks).length,
-              duration: Date.now() - startTime,
-            };
-
-            const postResponseResult = await runPostResponseHooks(responseContext);
-            if (postResponseResult) {
-              // Apply body modifications from plugins
-              if (postResponseResult.value.body) {
-                body = postResponseResult.value.body;
-              }
-              // Apply header modifications from plugins
-              if (postResponseResult.value.headers) {
-                responseHeaders = { ...responseHeaders, ...postResponseResult.value.headers };
-              }
-              // Apply status code modifications from plugins
-              if (postResponseResult.value.statusCode !== undefined) {
-                finalStatusCode = postResponseResult.value.statusCode;
-              }
-            }
-
-            // Update charset for transformed text content
-            const finalContentType = getContentType(proxyRes.headers as Record<string, string | string[] | undefined>, targetUrl);
-            if (!isRedirectStatus(finalStatusCode) && finalContentType !== 'other' && !needsImageTransform(contentType, targetUrl)) {
-              updateCharsetToUtf8(responseHeaders);
-            }
-
-            // Save decompressed body before compression (for JSON logging)
-            const shouldLog = jsonLoggingEnabled && isJsonContentType(responseHeaders['content-type']);
-            const decompressedBody = shouldLog ? body : null;
-
-            // Apply gzip compression
-            const acceptEncoding = req.headers['accept-encoding'] as string | undefined;
-            const currentContentType = Array.isArray(responseHeaders['content-type'])
-              ? responseHeaders['content-type'][0]
-              : (responseHeaders['content-type'] || '');
-            body = await applyCompressionIfNeeded(body, currentContentType, acceptEncoding, responseHeaders);
-
-            // Update content length
-            responseHeaders['content-length'] = String(body.length);
-
-            // Handle CORS
-            removeCorsHeaders(responseHeaders);
-            const requestOrigin = req.headers['origin'] as string || '*';
-            Object.assign(responseHeaders, buildCorsHeaders(requestOrigin));
-
-            // Prevent browser caching for HTML documents since config changes affect transformations
-            // This ensures users see updated polyfills when they change settings
-            if (finalContentType === 'html') {
-              responseHeaders['cache-control'] = 'no-cache, must-revalidate';
-              responseHeaders['vary'] = 'Accept-Encoding';
-            }
-
-            // Send response
-            res.writeHead(finalStatusCode, responseHeaders);
-            res.end(body);
-
-            // Log JSON requests
-            logJsonIfEnabled(
-              jsonLoggingEnabled,
-              responseHeaders,
-              decompressedBody,
-              effectiveClientIp,
-              targetUrl,
-              req.headers,
-              requestBody
-            );
-
-            // Record bandwidth
-            recordBandwidth(Buffer.concat(chunks).length, body.length);
-            resolve();
-          } catch (err) {
-            handleProxyError(err, res, 'Proxy response processing error');
-            reject(err);
-          }
-        });
-
-        proxyRes.on('error', (err) => {
-          handleProxyError(err, res, 'Proxy response error');
-          reject(err);
-        });
-      } catch (err) {
-        handleProxyError(err, res, 'Proxy error');
-        reject(err);
-      }
-    });
-
-    proxyReq.on('error', (err) => {
-      handleProxyError(err, res, 'Proxy request error');
-      reject(err);
-    });
-
-    // Send request body
-    if (requestBody) {
-      if (requestBody.length > 0) {
-        proxyReq.write(requestBody);
-      }
-      proxyReq.end();
-    } else {
-      req.pipe(proxyReq);
-    }
-  });
+  try {
+    await sendProcessedResponse(req, res, processed, prepared.profile);
+  } catch (err) {
+    handleProxyError(err, req, res, 'Proxy send error', targetUrl);
+  }
 }
 
 // =============================================================================
 // HTTPS CONNECT Handler
 // =============================================================================
+
+/**
+ * Forward an intercepted WebSocket upgrade to the upstream HTTPS server,
+ * honouring the global `allowInsecureUpstream` flag for TLS validation.
+ *
+ * Exported for integration tests; not part of the public API.
+ *
+ * @param httpsReq - Incoming upgrade request (decrypted by the fake HTTPS server)
+ * @param socket - Client-side socket (pre-upgrade)
+ * @param upgradeHead - Initial data sent by the client after the upgrade headers
+ * @param hostname - Upstream hostname
+ * @param port - Upstream port
+ */
+export function forwardWebSocketUpgrade(
+  httpsReq: IncomingMessage,
+  socket: Duplex,
+  upgradeHead: Buffer,
+  hostname: string,
+  port: number
+): void {
+  const targetHost = `${hostname}:${port}`;
+  console.log(`🔌 WebSocket upgrade: wss://${targetHost}${httpsReq.url}`);
+
+  const allowInsecure = getConfig().allowInsecureUpstream === true;
+
+  // Create a direct TLS connection to the target server for WebSocket.
+  // Default to validating the upstream certificate; users may opt in to
+  // skipping validation via `allowInsecureUpstream` (T8).
+  void import('node:tls').then(({ connect: tlsConnect }) => {
+    const targetSocket = tlsConnect(
+      {
+        host: hostname,
+        port,
+        servername: hostname,
+        rejectUnauthorized: !allowInsecure,
+      },
+      () => {
+        // Build the upgrade request to send to the target server
+        const headers = httpsReq.headers;
+        let upgradeRequest = `${httpsReq.method ?? 'GET'} ${httpsReq.url ?? '/'} HTTP/1.1\r\n`;
+        upgradeRequest += `Host: ${targetHost}\r\n`;
+
+        for (const [key, value] of Object.entries(headers)) {
+          if (key.toLowerCase() !== 'host' && value !== undefined) {
+            const headerValue = Array.isArray(value) ? value.join(', ') : value;
+            upgradeRequest += `${key}: ${headerValue}\r\n`;
+          }
+        }
+        upgradeRequest += '\r\n';
+
+        // Send the upgrade request
+        targetSocket.write(upgradeRequest);
+
+        // If there's initial data, send it too
+        if (upgradeHead.length > 0) {
+          targetSocket.write(upgradeHead);
+        }
+
+        // Pipe data between client and target
+        socket.pipe(targetSocket);
+        targetSocket.pipe(socket);
+      }
+    );
+
+    targetSocket.on('error', (err: Error) => {
+      console.error(`❌ WebSocket target error: ${err.message}`);
+      // Surface upstream cert failures as a 502 close frame on the client side
+      // so the client never sees a happy upgrade for a MITM'd upstream.
+      if (!socket.destroyed) {
+        if (isUpstreamCertError(err)) {
+          try {
+            socket.write(
+              `HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n` +
+                `Upstream certificate failed validation for ${hostname}: ${err.message}`
+            );
+          } catch (writeErr) {
+            console.warn('[ws-upgrade] failed to write 502 to client:', writeErr);
+          }
+        }
+        socket.end();
+      }
+    });
+
+    socket.on('error', (err: Error) => {
+      console.error(`❌ WebSocket client error: ${err.message}`);
+      targetSocket.end();
+    });
+
+    socket.on('close', () => {
+      targetSocket.end();
+    });
+
+    targetSocket.on('close', () => {
+      if (!socket.destroyed) {
+        socket.end();
+      }
+    });
+  });
+}
 
 /**
  * Handle CONNECT requests for HTTPS proxying.
@@ -804,11 +1098,22 @@ function handleConnect(
 ): void {
   const [hostname, portStr] = (req.url || '').split(':');
   const port = parseInt(portStr, 10) || 443;
+  // P1-1: when the socket has no remoteAddress `getClientIp` returns ''.
+  // Without `resolveBucketClientIp` `enforceMintRateLimit('')` would
+  // collapse every unknown client into a single shared 30/min bucket —
+  // trivial DoS vector. The shared helper assigns each unknown connection
+  // its own synthetic bucket and logs the fallback.
+  const clientIp = resolveBucketClientIp(getClientIp(req));
 
   // Check domain blocking
   if (shouldBlockDomain(hostname)) {
     console.log(`🚫 Blocked HTTPS: ${hostname}`);
     recordBlocked();
+    recordHostBlocked(`https://${hostname}/`);
+    // T20: a plain 403 over CONNECT can't render HTML — the TLS handshake
+    // hasn't happened yet, so the iPad sees a connection failure either way.
+    // Keep the machine-friendly 403; HTML-aware blocking happens on the
+    // post-CONNECT inner request (proxyRequest path).
     clientSocket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
     return;
   }
@@ -816,8 +1121,26 @@ function handleConnect(
   updateConnections(1);
   console.log(`🔒 HTTPS CONNECT: ${hostname}:${port}`);
 
-  // Generate certificate for TLS interception
-  const certPair = generateDomainCert(hostname);
+  // Generate certificate for TLS interception (rate-limited per client IP).
+  // P1-2: previously the non-rate-limit branch re-threw, which inside this
+  // synchronous `server.on('connect')` handler surfaces as
+  // `uncaughtException` and can crash the process. Log + record + close the
+  // client socket gracefully instead.
+  let certPair: ReturnType<typeof generateDomainCert>;
+  try {
+    certPair = generateDomainCert(hostname, clientIp);
+  } catch (err) {
+    if (err instanceof CertRateLimitError) {
+      console.warn(`[http-proxy] cert mint rate limit exceeded for ${clientIp}`);
+      recordError();
+      clientSocket.end('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+      return;
+    }
+    console.error('[http-proxy] cert mint failed', err);
+    recordError();
+    clientSocket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+    return;
+  }
 
   // Create temporary HTTPS server for this connection
   const fakeServer = createHttpsServer(
@@ -827,18 +1150,9 @@ function handleConnect(
       console.log(`🔐 HTTPS: ${httpsReq.method} ${targetUrl}`);
 
       try {
-        await proxyRequest(httpsReq, httpsRes, targetUrl, true);
+        await proxyRequest(httpsReq, httpsRes, targetUrl, true, clientIp);
       } catch (err) {
-        let message: string;
-        if (err instanceof AggregateError) {
-          const errorMessages = err.errors.map((e: Error) => e.message || String(e)).join('; ');
-          message = `${err.message}: [${errorMessages}]`;
-        } else if (err instanceof Error) {
-          message = err.message;
-        } else {
-          message = String(err);
-        }
-        console.error(`❌ HTTPS proxy error: ${message}`);
+        console.error(`❌ HTTPS proxy error: ${flattenError(err)}`);
       }
     }
   );
@@ -864,61 +1178,7 @@ function handleConnect(
       return;
     }
 
-    const targetHost = `${hostname}:${port}`;
-    console.log(`🔌 WebSocket upgrade: wss://${targetHost}${httpsReq.url}`);
-
-    // Create a direct TLS connection to the target server for WebSocket
-    import('node:tls').then(({ connect: tlsConnect }) => {
-      const targetSocket = tlsConnect({
-        host: hostname,
-        port: port,
-        servername: hostname,
-        rejectUnauthorized: false,
-      }, () => {
-        // Build the upgrade request to send to the target server
-        const headers = httpsReq.headers;
-        let upgradeRequest = `${httpsReq.method} ${httpsReq.url} HTTP/1.1\r\n`;
-        upgradeRequest += `Host: ${targetHost}\r\n`;
-
-        for (const [key, value] of Object.entries(headers)) {
-          if (key.toLowerCase() !== 'host' && value !== undefined) {
-            const headerValue = Array.isArray(value) ? value.join(', ') : value;
-            upgradeRequest += `${key}: ${headerValue}\r\n`;
-          }
-        }
-        upgradeRequest += '\r\n';
-
-        // Send the upgrade request
-        targetSocket.write(upgradeRequest);
-
-        // If there's initial data, send it too
-        if (upgradeHead.length > 0) {
-          targetSocket.write(upgradeHead);
-        }
-
-        // Pipe data between client and target
-        socket.pipe(targetSocket);
-        targetSocket.pipe(socket);
-      });
-
-      targetSocket.on('error', (err) => {
-        console.error(`❌ WebSocket target error: ${err.message}`);
-        socket.end();
-      });
-
-      socket.on('error', (err) => {
-        console.error(`❌ WebSocket client error: ${err.message}`);
-        targetSocket.end();
-      });
-
-      socket.on('close', () => {
-        targetSocket.end();
-      });
-
-      targetSocket.on('close', () => {
-        socket.end();
-      });
-    });
+    forwardWebSocketUpgrade(httpsReq, socket, upgradeHead, hostname, port);
   });
 
   // Listen on random port and connect client

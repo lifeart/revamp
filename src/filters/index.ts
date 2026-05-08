@@ -175,7 +175,7 @@ export function createFilterContext(url: string): FilterContext {
   try {
     domain = new URL(url).hostname;
   } catch {
-    // Invalid URL, use default
+    // Malformed URL — fall back to the catch-all 'unknown' profile.
   }
 
   const { profile } = getProfileForDomain(domain);
@@ -285,6 +285,59 @@ export function getTrackingPatterns(context: FilterContext): TrackingPatterns {
 }
 
 // =============================================================================
+// URL Path Pattern Matching
+// =============================================================================
+
+/**
+ * Match a URL path against a blocklist pattern with word-boundary semantics.
+ *
+ * The naive `path.includes(pattern)` approach produces false positives — e.g.
+ * pattern `/stat` matches `/architect/`, and pattern `/hit` matches
+ * `/health-status/`. This helper requires the pattern to align with a path
+ * boundary (`/` separator or string end) to be considered a match.
+ *
+ * Both `path` and `pattern` are normalized to lowercase. Leading slashes on
+ * the pattern are stripped before comparison so that a pattern of `/metrics`
+ * still matches `/api/v1/metrics` (otherwise the implicit `/` + `/metrics`
+ * concatenation would produce `//metrics` and never match anything).
+ *
+ * @param path - URL path (e.g. `/api/v1/metrics`); should be lowercased by
+ *   the caller for performance, but this function lowercases both sides
+ *   defensively.
+ * @param rawPattern - Blocklist pattern (e.g. `/metrics`, `metrics`, `gtag/js`).
+ */
+export function pathMatchesBlocklistPattern(path: string, rawPattern: string): boolean {
+  const pathLower = path.toLowerCase();
+  const pattern = rawPattern.toLowerCase().replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!pattern) return false;
+
+  return (
+    pathLower === pattern ||
+    pathLower === '/' + pattern ||
+    pathLower.startsWith(pattern + '/') ||
+    pathLower.startsWith('/' + pattern + '/') ||
+    pathLower.endsWith('/' + pattern) ||
+    pathLower.includes('/' + pattern + '/')
+  );
+}
+
+/**
+ * Match a full URL string against a blocklist pattern using path-boundary
+ * semantics. Falls back to `false` when the URL cannot be parsed (callers
+ * must apply their own broader logic for non-URL strings).
+ */
+export function urlMatchesBlocklistPattern(url: string, rawPattern: string): boolean {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    // Malformed URL — treat as non-match; per-URL logging would be too noisy.
+    return false;
+  }
+  return pathMatchesBlocklistPattern(path, rawPattern);
+}
+
+// =============================================================================
 // Domain Blocking
 // =============================================================================
 
@@ -362,12 +415,12 @@ export function shouldBlockUrlWithProfile(
     return false;
   }
 
-  const urlLower = url.toLowerCase();
-
-  // Check global tracking URL patterns
+  // Check global tracking URL patterns using path-boundary matching to avoid
+  // false positives like "/stat" matching "/architect/" or "/hit" matching
+  // "/health-status/". See pathMatchesBlocklistPattern for the rationale.
   if (removeTracking) {
     for (const pattern of trackingUrls) {
-      if (urlLower.includes(pattern.toLowerCase())) {
+      if (urlMatchesBlocklistPattern(url, pattern)) {
         return true;
       }
     }
@@ -383,8 +436,8 @@ export function shouldBlockUrlWithProfile(
           if (regex.test(url)) {
             return rule.action === 'block';
           }
-        } catch {
-          // Invalid regex, skip
+        } catch (err) {
+          console.warn(`[Filters] Invalid tracking url-pattern "${rule.value}":`, err);
         }
       }
     }
@@ -400,8 +453,8 @@ export function shouldBlockUrlWithProfile(
           if (regex.test(url)) {
             return rule.action === 'block';
           }
-        } catch {
-          // Invalid regex, skip
+        } catch (err) {
+          console.warn(`[Filters] Invalid ad url-pattern "${rule.value}":`, err);
         }
       }
     }

@@ -1,0 +1,11 @@
+{
+  "id": "com.revamp.hello-world",
+  "name": "Hello World",
+  "version": "1.0.0",
+  "description": "Example plugin that adds a custom response header to every response",
+  "author": "Revamp",
+  "revampVersion": "^1.0.0",
+  "main": "index.js",
+  "permissions": ["response:modify"],
+  "hooks": ["response:post"]
+}

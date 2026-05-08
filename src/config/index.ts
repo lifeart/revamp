@@ -44,6 +44,7 @@ export interface RevampConfig {
   certDir: string;
   caKeyFile: string;
   caCertFile: string;
+  allowInsecureUpstream?: boolean; // If true, skip upstream TLS certificate validation (dangerous)
 
   // Domain filtering (for future extensibility)
   whitelist: string[];
@@ -57,6 +58,12 @@ export interface RevampConfig {
   // JSON request logging
   logJsonRequests: boolean; // Log application/json requests (disabled by default)
   jsonLogDir: string; // Directory for JSON request logs
+
+  // Body-size limits (P1-3). Both default to 50 MB and are independently
+  // tunable so a host that legitimately receives large downloads but never
+  // accepts large uploads can lift one without the other.
+  maxRequestBodyBytes?: number; // Max accepted inbound request body, in bytes
+  maxResponseBodyBytes?: number; // Max accepted upstream response body, in bytes
 }
 
 // Default configuration targeting iOS 9+ (iPad 2) and iOS 11+
@@ -91,6 +98,7 @@ export const defaultConfig: RevampConfig = {
   certDir: './.revamp-certs',
   caKeyFile: 'ca.key',
   caCertFile: 'ca.crt',
+  allowInsecureUpstream: false,
 
   whitelist: [], // empty = allow all
   blacklist: [],
@@ -147,6 +155,10 @@ export const defaultConfig: RevampConfig = {
   // JSON request logging (disabled by default)
   logJsonRequests: false, // Log application/json requests
   jsonLogDir: './.revamp-json-logs', // Directory for JSON request logs
+
+  // Body-size limits (P1-3): default 50 MB on both sides.
+  maxRequestBodyBytes: 50 * 1024 * 1024,
+  maxResponseBodyBytes: 50 * 1024 * 1024,
 };
 
 // Current active configuration (mutable for runtime changes)

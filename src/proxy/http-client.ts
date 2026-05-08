@@ -1,18 +1,22 @@
 /**
  * HTTP Request Utilities
  *
- * Shared HTTP/HTTPS request functions for proxy implementations.
- * Handles content transformation, decompression, and header manipulation.
+ * Shared HTTP/HTTPS request functions for proxy implementations. Both the
+ * SOCKS5 path (via `makeHttpsRequest` / `makeHttpRequest`) and the direct
+ * HTTP proxy (via `processProxiedResponse`) consume the helpers here so that
+ * plugin hooks, decompression, transformation, and JSON logging behave
+ * identically on both stacks (T12).
  */
 
-import { request as httpRequest, type IncomingMessage } from 'node:http';
+import { request as httpRequest, type IncomingMessage, type IncomingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { getConfig } from '../config/index.js';
+import { getConfig, getEffectiveConfigForRequestAsync } from '../config/index.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
 import { transformImage, needsImageTransform } from '../transformers/image.js';
 import {
   recordTransform,
   recordBandwidth,
+  recordHostTransform,
 } from '../metrics/index.js';
 import {
   getCharset,
@@ -21,22 +25,339 @@ import {
   transformContent,
   SPOOFED_USER_AGENT,
 } from './shared.js';
-import type { HttpResponse, RequestHeaders } from './types.js';
+import type { ContentType, HttpResponse, RequestHeaders } from './types.js';
 import {
   shouldLogJsonRequest,
   logJsonRequest,
 } from '../logger/json-request-logger.js';
+import {
+  applyPreRequestHooks,
+  applyPostResponseHooks,
+  buildRequestContext,
+  buildResponseContext,
+  newRequestId,
+  type PreRequestOutcome,
+  type PostResponseOutcome,
+} from './proxy-hooks.js';
 
 /**
- * Make an HTTPS request to a remote server with transformation support
+ * Raw HTTP response captured from upstream before any processing. Returned
+ * by `requestWithBody` and consumed by `processProxiedResponse`.
+ */
+export interface RawProxyResponse {
+  statusCode: number;
+  statusMessage: string;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+}
+
+/**
+ * Inputs for `processProxiedResponse`. The fields here are the bits both
+ * proxy stacks have at the point an upstream response arrives: the raw
+ * body, the upstream headers, and the request-side context needed to make
+ * caching, JSON logging, and plugin-hook decisions.
+ */
+export interface ProcessProxiedResponseInput {
+  rawBody: Buffer;
+  upstreamHeaders: IncomingHttpHeaders;
+  upstreamStatusCode: number;
+  upstreamStatusMessage: string;
+  url: string;
+  method: string;
+  clientIp?: string;
+  requestHeaders?: Record<string, string | string[] | undefined>;
+  requestBody?: Buffer;
+  /**
+   * Whether to invoke `response:post` plugin hooks. The HTTP proxy passes
+   * the request context separately (it builds richer pre-hook state); the
+   * SOCKS5 path runs hooks directly here.
+   */
+  runPostResponseHook?: boolean;
+  /**
+   * Pre-built request context for `response:post` hooks. Only consulted
+   * when `runPostResponseHook` is `true`.
+   */
+  requestContext?: import('../plugins/hooks.js').RequestContext;
+}
+
+/**
+ * Processed proxied response after decompression, transformation, and
+ * (optionally) `response:post` plugin hooks. Callers send these bytes to
+ * the client; compression and CORS are layered on top by the caller.
+ */
+export interface ProcessedProxyResponse {
+  statusCode: number;
+  statusMessage: string;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+  /** Detected content type after transformation. */
+  contentType: ContentType;
+  /** Body size before transformation (for bandwidth/metrics). */
+  originalSize: number;
+}
+
+/**
+ * Internal helper: decompress + (optionally) transform an upstream response,
+ * then return normalised headers/body. Shared by both proxy stacks (T12).
+ */
+export async function processProxiedResponse(
+  input: ProcessProxiedResponseInput
+): Promise<ProcessedProxyResponse> {
+  const {
+    rawBody,
+    upstreamHeaders,
+    upstreamStatusCode,
+    upstreamStatusMessage,
+    url,
+    method,
+    clientIp,
+    requestHeaders,
+    requestBody,
+    runPostResponseHook,
+    requestContext,
+  } = input;
+
+  // Decompress upstream body if encoded.
+  const encoding = upstreamHeaders['content-encoding'];
+  const encodingStr = Array.isArray(encoding) ? encoding[0] : encoding;
+  let body: Buffer = await decompressBody(rawBody, encodingStr);
+  const wasDecompressed = body !== rawBody;
+
+  const headers: Record<string, string | string[] | undefined> = { ...upstreamHeaders };
+  if (wasDecompressed) {
+    delete headers['content-encoding'];
+  }
+
+  const isRedirect = isRedirectStatus(upstreamStatusCode);
+  if (isRedirect) {
+    markAsRedirect(url);
+  }
+
+  const rawContentType = upstreamHeaders['content-type'] || '';
+  const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+
+  // JSON request logging — must observe pre-transform body so cached
+  // payloads aren't corrupted by the legacy-browser rewrites.
+  if (clientIp && requestHeaders && shouldLogJsonRequest(headers)) {
+    void logJsonRequest(
+      clientIp,
+      url,
+      requestHeaders,
+      headers,
+      body,
+      requestBody
+    );
+  }
+
+  let detectedContentType: ContentType = 'other';
+  const originalSize = body.length;
+
+  if (!isRedirect && body.length > 0) {
+    if (needsImageTransform(contentTypeValue, url)) {
+      const imageResult = await transformImage(body, contentTypeValue, url);
+      if (imageResult.transformed) {
+        body = Buffer.from(imageResult.data);
+        headers['content-type'] = imageResult.contentType;
+        recordTransform('images');
+        recordHostTransform(url, 'images');
+      }
+    } else {
+      const charset = getCharset(contentTypeValue);
+      detectedContentType = getContentType(
+        upstreamHeaders as Record<string, string | string[] | undefined>,
+        url
+      );
+
+      if (detectedContentType !== 'other') {
+        body = Buffer.from(await transformContent(
+          body,
+          detectedContentType,
+          url,
+          charset,
+          undefined,
+          clientIp,
+          method,
+          requestHeaders,
+          upstreamHeaders as Record<string, string | string[] | undefined>
+        ));
+        recordTransform(detectedContentType);
+        recordHostTransform(url, detectedContentType);
+
+        const ct = headers['content-type'];
+        if (ct) {
+          const ctStr = Array.isArray(ct) ? ct[0] : ct;
+          headers['content-type'] = ctStr.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
+        }
+      }
+    }
+  }
+
+  let finalStatus = upstreamStatusCode;
+
+  // Run response:post hooks when the caller opted in. The HTTP proxy
+  // path drives hooks itself; the SOCKS5 path delegates to us so plugins
+  // run on both stacks.
+  if (runPostResponseHook && requestContext) {
+    const responseContext = buildResponseContext({
+      requestContext,
+      statusCode: finalStatus,
+      responseHeaders: headers,
+      body,
+      contentType: detectedContentType,
+      originalSize,
+    });
+    const hookOutcome: PostResponseOutcome = await applyPostResponseHooks(responseContext);
+    body = hookOutcome.body;
+    Object.assign(headers, hookOutcome.headers);
+    finalStatus = hookOutcome.statusCode;
+  }
+
+  recordBandwidth(rawBody.length, body.length);
+
+  return {
+    statusCode: finalStatus,
+    statusMessage: upstreamStatusMessage,
+    headers,
+    body,
+    contentType: detectedContentType,
+    originalSize,
+  };
+}
+
+/**
+ * Thrown when the upstream response body exceeds the configured
+ * `maxResponseBodyBytes`. Callers translate this into a `502 Bad Gateway`
+ * client response (P1-3).
+ */
+export class ResponseBodyTooLargeError extends Error {
+  constructor(public readonly limitBytes: number) {
+    super(`Response body exceeds max (${limitBytes} bytes)`);
+    this.name = 'ResponseBodyTooLargeError';
+  }
+}
+
+/** Default cap on upstream response body size when config doesn't specify. */
+const DEFAULT_MAX_RESPONSE_BODY_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Buffer a Node `IncomingMessage` to a single `Buffer`, resolving when the
+ * stream ends.
  *
- * @param method - HTTP method (GET, POST, etc.)
- * @param hostname - Target hostname
- * @param path - Request path including query string
- * @param headers - Request headers
- * @param body - Request body
- * @param clientIp - Optional client IP for per-client cache separation
- * @returns Promise resolving to HttpResponse with transformed content
+ * P1-3: previously concatenated every chunk with no cap — a malicious or
+ * mis-configured upstream serving 1 GB would OOM the iPad-class host. We
+ * now enforce `maxResponseBodyBytes` (default 50 MB, separately tunable from
+ * the request-side limit so a host that legitimately receives big PDFs but
+ * never accepts big uploads can lift one without the other).
+ */
+function readResponseBody(res: IncomingMessage): Promise<Buffer> {
+  const maxBytes = getConfig().maxResponseBodyBytes ?? DEFAULT_MAX_RESPONSE_BODY_BYTES;
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    res.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        const err = new ResponseBodyTooLargeError(maxBytes);
+        // Destroy the upstream stream so we stop pulling bytes we'll never
+        // use; without this Node keeps buffering until `end`.
+        res.destroy(err);
+        reject(err);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('end', () => resolve(Buffer.concat(chunks)));
+    res.on('error', reject);
+  });
+}
+
+/**
+ * Options for `requestWithBody`. Mirrors the subset of Node `RequestOptions`
+ * that both proxy paths actually populate, plus the `secure` flag picking
+ * between `http:` and `https:`.
+ */
+export interface RequestWithBodyOptions {
+  hostname: string;
+  port: number | string;
+  path: string;
+  method: string;
+  headers: Record<string, string | string[] | undefined>;
+  rejectUnauthorized?: boolean;
+  secure: boolean;
+}
+
+/**
+ * Issue a single HTTP/HTTPS request against an upstream host and return
+ * the raw response (status + headers + buffered body) as a Promise. T17
+ * uses this to replace nested `request(...callback)` callbacks with a
+ * linear `await` flow inside `proxyRequest`.
+ */
+export function requestWithBody(
+  options: RequestWithBodyOptions,
+  body: Buffer | null
+): Promise<RawProxyResponse> {
+  const { secure, ...rest } = options;
+  const fn = secure ? httpsRequest : httpRequest;
+
+  return new Promise<RawProxyResponse>((resolve, reject) => {
+    const req = fn(rest, (res) => {
+      readResponseBody(res)
+        .then((rawBody) => {
+          resolve({
+            statusCode: res.statusCode || 200,
+            statusMessage: res.statusMessage || 'OK',
+            headers: res.headers,
+            body: rawBody,
+          });
+        })
+        .catch(reject);
+    });
+
+    req.on('error', reject);
+
+    if (body && body.length > 0) {
+      req.write(body);
+    }
+    req.end();
+  });
+}
+
+/**
+ * Run `request:pre` hooks for a SOCKS5-style request. Returns the outcome
+ * so the caller can decide whether to short-circuit (blocked) or continue
+ * with possibly-rewritten URL / headers.
+ */
+export async function runPreHooksForSocksRequest(
+  url: string,
+  method: string,
+  hostname: string,
+  headers: Record<string, string | string[] | undefined>,
+  clientIp: string,
+  isHttps: boolean
+): Promise<{ outcome: PreRequestOutcome; requestContext: import('../plugins/hooks.js').RequestContext }> {
+  const { config, profile } = await getEffectiveConfigForRequestAsync(hostname, clientIp);
+  const requestContext = buildRequestContext({
+    url,
+    method,
+    headers,
+    clientIp,
+    hostname,
+    config,
+    profile,
+    isHttps,
+    requestId: newRequestId(),
+    startTime: Date.now(),
+  });
+  const outcome = await applyPreRequestHooks(requestContext);
+  return { outcome, requestContext };
+}
+
+/**
+ * Make an HTTPS request to a remote server with transformation support.
+ *
+ * Plugin hooks: `request:pre` and `response:post` fire on the SOCKS5 path
+ * via this helper (T12). Pass `clientIp` to opt into hooks; without it we
+ * skip hook execution to keep direct-call test cases simple.
  */
 export async function makeHttpsRequest(
   method: string,
@@ -48,11 +369,11 @@ export async function makeHttpsRequest(
 ): Promise<HttpResponse> {
   const config = getConfig();
 
-  // Spoof User-Agent to simulate a modern browser
-  const requestHeaders = { ...headers };
-  if (config.spoofUserAgent && requestHeaders['user-agent']) {
-    requestHeaders['user-agent'] = SPOOFED_USER_AGENT;
-  }
+  // Note: User-Agent spoofing is applied AFTER `request:pre` hooks have run
+  // (Round 1 review fix). Reading `config.spoofUserAgent` from the global
+  // singleton here would ignore per-domain / plugin-overridden values that
+  // `config:resolution` injects into the per-request config.
+  const requestHeaders: Record<string, string | string[] | undefined> = { ...headers };
 
   // Strip cache validation headers for JS/CSS files to ensure we always get
   // the full response body for transformation. Without this, the server may
@@ -65,67 +386,96 @@ export async function makeHttpsRequest(
     delete requestHeaders['if-modified-since'];
   }
 
-  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com)
-  // When proxying, the browser's Origin doesn't match what upstream servers expect
-  // The proxy adds its own permissive CORS headers to responses
+  // Remove Origin header to prevent upstream CORS issues.
   delete requestHeaders['origin'];
 
-  return new Promise((resolve, reject) => {
-    const options = {
+  let url = `https://${hostname}${path}`;
+  let effectiveHeaders = requestHeaders;
+  let requestContext: import('../plugins/hooks.js').RequestContext | undefined;
+
+  if (clientIp) {
+    const pre = await runPreHooksForSocksRequest(
+      url,
+      method,
+      hostname,
+      requestHeaders,
+      clientIp,
+      true
+    );
+    requestContext = pre.requestContext;
+
+    if (pre.outcome.blocked) {
+      const blocked = pre.outcome.blockedResponse;
+      const blockedBody = Buffer.from(blocked?.body ?? '', 'utf-8');
+      return {
+        statusCode: blocked?.statusCode ?? 204,
+        statusMessage: 'No Content',
+        headers: (blocked?.headers ?? {}) as Record<string, string | string[] | undefined>,
+        body: blockedBody,
+      };
+    }
+
+    url = pre.outcome.url;
+    effectiveHeaders = pre.outcome.headers;
+  }
+
+  // Apply UA spoof using the per-request resolved config (post-hooks). When
+  // `clientIp` is supplied, `request:pre` ran and `config:resolution` may
+  // have flipped `spoofUserAgent`; the per-request config in
+  // `requestContext.config` reflects those overrides. Without a clientIp
+  // there are no hooks, so fall back to global config.
+  const effectiveSpoofConfig = requestContext
+    ? requestContext.config
+    : config;
+  if (effectiveSpoofConfig.spoofUserAgent && effectiveHeaders['user-agent']) {
+    // Mutate `effectiveHeaders` rather than allocating a new object so the
+    // hook outcome's reference remains the canonical headers map.
+    effectiveHeaders['user-agent'] = SPOOFED_USER_AGENT;
+  }
+
+  const raw = await requestWithBody(
+    {
       hostname,
       port: 443,
       path,
       method,
       headers: {
-        ...requestHeaders,
-        // Don't request brotli - simpler to handle gzip/deflate
+        ...effectiveHeaders,
+        // Don't request brotli — simpler to handle gzip/deflate.
         'accept-encoding': 'gzip, deflate',
       },
-      rejectUnauthorized: false,
-    };
+      rejectUnauthorized: config.allowInsecureUpstream !== true,
+      secure: true,
+    },
+    body
+  );
 
-    const req = httpsRequest(options, async (res) => {
-      const chunks: Buffer[] = [];
-
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', async () => {
-        try {
-          const response = await processResponse(
-            res,
-            Buffer.concat(chunks),
-            `https://${hostname}${path}`,
-            clientIp,
-            requestHeaders,
-            body
-          );
-          resolve(response);
-        } catch (err) {
-          reject(err);
-        }
-      });
-      res.on('error', reject);
-    });
-
-    req.on('error', reject);
-
-    if (body.length > 0) {
-      req.write(body);
-    }
-    req.end();
+  const processed = await processProxiedResponse({
+    rawBody: raw.body,
+    upstreamHeaders: raw.headers,
+    upstreamStatusCode: raw.statusCode,
+    upstreamStatusMessage: raw.statusMessage,
+    url,
+    method,
+    clientIp,
+    requestHeaders: effectiveHeaders,
+    requestBody: body,
+    runPostResponseHook: !!requestContext,
+    requestContext,
   });
+
+  return {
+    statusCode: processed.statusCode,
+    statusMessage: processed.statusMessage,
+    headers: processed.headers,
+    body: processed.body,
+  };
 }
 
 /**
- * Make an HTTP request to a remote server with transformation support
+ * Make an HTTP request to a remote server with transformation support.
  *
- * @param method - HTTP method (GET, POST, etc.)
- * @param hostname - Target hostname
- * @param port - Target port
- * @param path - Request path including query string
- * @param headers - Request headers
- * @param body - Request body
- * @param clientIp - Optional client IP for per-client cache separation
- * @returns Promise resolving to HttpResponse with transformed content
+ * Mirrors `makeHttpsRequest` for plugin-hook semantics on the SOCKS5 path.
  */
 export async function makeHttpRequest(
   method: string,
@@ -136,9 +486,8 @@ export async function makeHttpRequest(
   body: Buffer,
   clientIp?: string
 ): Promise<HttpResponse> {
-  // Strip cache validation headers for JS/CSS files to ensure we always get
-  // the full response body for transformation.
-  const requestHeaders = { ...headers };
+  const requestHeaders: Record<string, string | string[] | undefined> = { ...headers };
+
   const pathLower = path.toLowerCase();
   if (pathLower.includes('/js/') || pathLower.includes('/_/js/') ||
       pathLower.endsWith('.js') || pathLower.endsWith('.css') ||
@@ -147,152 +496,83 @@ export async function makeHttpRequest(
     delete requestHeaders['if-modified-since'];
   }
 
-  // Remove Origin header to prevent upstream CORS issues (e.g., fonts.gstatic.com)
-  // When proxying, the browser's Origin doesn't match what upstream servers expect
-  // The proxy adds its own permissive CORS headers to responses
   delete requestHeaders['origin'];
 
-  return new Promise((resolve, reject) => {
-    const options = {
+  let url = `http://${hostname}${path}`;
+  let effectiveHeaders = requestHeaders;
+  let requestContext: import('../plugins/hooks.js').RequestContext | undefined;
+
+  if (clientIp) {
+    const pre = await runPreHooksForSocksRequest(
+      url,
+      method,
+      hostname,
+      requestHeaders,
+      clientIp,
+      false
+    );
+    requestContext = pre.requestContext;
+
+    if (pre.outcome.blocked) {
+      const blocked = pre.outcome.blockedResponse;
+      const blockedBody = Buffer.from(blocked?.body ?? '', 'utf-8');
+      return {
+        statusCode: blocked?.statusCode ?? 204,
+        statusMessage: 'No Content',
+        headers: (blocked?.headers ?? {}) as Record<string, string | string[] | undefined>,
+        body: blockedBody,
+      };
+    }
+
+    url = pre.outcome.url;
+    effectiveHeaders = pre.outcome.headers;
+  }
+
+  // Round 1 review fix: apply UA spoof on the SOCKS5 HTTP path too. Was
+  // missing entirely — `makeHttpsRequest` had it but cleartext HTTP requests
+  // through SOCKS5 left the client UA intact. Read `spoofUserAgent` from the
+  // per-request resolved config so plugin overrides via `config:resolution`
+  // apply.
+  const effectiveSpoofConfig = requestContext
+    ? requestContext.config
+    : getConfig();
+  if (effectiveSpoofConfig.spoofUserAgent && effectiveHeaders['user-agent']) {
+    effectiveHeaders['user-agent'] = SPOOFED_USER_AGENT;
+  }
+
+  const raw = await requestWithBody(
+    {
       hostname,
       port,
       path,
       method,
       headers: {
-        ...requestHeaders,
+        ...effectiveHeaders,
         'accept-encoding': 'gzip, deflate',
       },
-    };
+      secure: false,
+    },
+    body
+  );
 
-    const req = httpRequest(options, async (res) => {
-      const chunks: Buffer[] = [];
-
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', async () => {
-        try {
-          const response = await processResponse(
-            res,
-            Buffer.concat(chunks),
-            `http://${hostname}${path}`,
-            clientIp,
-            headers,
-            body
-          );
-          resolve(response);
-        } catch (err) {
-          reject(err);
-        }
-      });
-      res.on('error', reject);
-    });
-
-    req.on('error', reject);
-
-    if (body.length > 0) {
-      req.write(body);
-    }
-    req.end();
+  const processed = await processProxiedResponse({
+    rawBody: raw.body,
+    upstreamHeaders: raw.headers,
+    upstreamStatusCode: raw.statusCode,
+    upstreamStatusMessage: raw.statusMessage,
+    url,
+    method,
+    clientIp,
+    requestHeaders: effectiveHeaders,
+    requestBody: body,
+    runPostResponseHook: !!requestContext,
+    requestContext,
   });
-}
-
-/**
- * Process an HTTP response - decompress and transform content
- *
- * @param res - Node.js IncomingMessage
- * @param rawBody - Raw response body
- * @param targetUrl - Full target URL for logging and transformation
- * @param clientIp - Optional client IP for per-client cache separation
- * @param requestHeaders - Optional request headers for JSON logging
- * @param requestBody - Optional request body for JSON logging
- * @returns Processed HttpResponse
- */
-async function processResponse(
-  res: IncomingMessage,
-  rawBody: Buffer,
-  targetUrl: string,
-  clientIp?: string,
-  requestHeaders?: RequestHeaders,
-  requestBody?: Buffer
-): Promise<HttpResponse> {
-  // Decompress if needed
-  const encoding = res.headers['content-encoding'];
-  const encodingStr = Array.isArray(encoding) ? encoding[0] : encoding;
-  let responseBody: Buffer = await decompressBody(rawBody, encodingStr);
-  const wasDecompressed = responseBody !== rawBody;
-
-  // Copy headers and remove content-encoding if we decompressed
-  const updatedHeaders = { ...res.headers };
-  if (wasDecompressed) {
-    // Decompression succeeded, remove the encoding header
-    delete updatedHeaders['content-encoding'];
-  }
-
-  // Check for redirect responses (301, 302, 303, 307, 308)
-  const statusCode = res.statusCode || 200;
-  const isRedirect = isRedirectStatus(statusCode);
-
-  const rawContentType = res.headers['content-type'] || '';
-  const contentTypeValue = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
-
-  // Mark redirecting URLs so we don't cache them
-  if (isRedirect) {
-    markAsRedirect(targetUrl);
-  }
-
-  // Log JSON requests if enabled (before transformation)
-  if (clientIp && requestHeaders && shouldLogJsonRequest(updatedHeaders)) {
-    logJsonRequest(
-      clientIp,
-      targetUrl,
-      requestHeaders,
-      updatedHeaders,
-      responseBody,
-      requestBody
-    );
-  }
-
-  // Transform content if not a redirect and has content
-  if (!isRedirect && responseBody.length > 0) {
-    // Transform WebP/AVIF images to JPEG for legacy browser compatibility
-    // Check this BEFORE text transformation
-    if (needsImageTransform(contentTypeValue, targetUrl)) {
-      const imageResult = await transformImage(responseBody, contentTypeValue, targetUrl);
-      if (imageResult.transformed) {
-        responseBody = Buffer.from(imageResult.data);
-        updatedHeaders['content-type'] = imageResult.contentType;
-        recordTransform('images');
-      }
-    } else {
-      // Transform text content (JS, CSS, HTML)
-      const charset = getCharset(contentTypeValue);
-      const contentType = getContentType(
-        res.headers as Record<string, string | string[] | undefined>,
-        targetUrl
-      );
-
-      if (contentType !== 'other') {
-        const originalSize = responseBody.length;
-        responseBody = Buffer.from(await transformContent(responseBody, contentType, targetUrl, charset, undefined, clientIp));
-        recordTransform(contentType);
-
-        // Update Content-Type header to UTF-8 since we converted the content
-        if (updatedHeaders['content-type']) {
-          const ct = Array.isArray(updatedHeaders['content-type'])
-            ? updatedHeaders['content-type'][0]
-            : updatedHeaders['content-type'];
-          updatedHeaders['content-type'] = ct.replace(/charset=[^;\s]+/i, 'charset=UTF-8');
-        }
-      }
-    }
-  }
-
-  // Record bandwidth metrics
-  recordBandwidth(rawBody.length, responseBody.length);
 
   return {
-    statusCode: res.statusCode || 200,
-    statusMessage: res.statusMessage || 'OK',
-    headers: updatedHeaders,
-    body: responseBody,
+    statusCode: processed.statusCode,
+    statusMessage: processed.statusMessage,
+    headers: processed.headers,
+    body: processed.body,
   };
 }

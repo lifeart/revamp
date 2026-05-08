@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   transformGridToFlexbox,
   hasGridProperties,
+  parseGridTemplateColumns,
+  _resetGridFallbackWarningCache,
 } from './css-grid-fallback.js';
 
 describe('hasGridProperties', () => {
@@ -30,15 +32,62 @@ describe('hasGridProperties', () => {
     expect(hasGridProperties('.box { grid-area: header; }')).toBe(true);
   });
 
-  it('should detect grid-gap and gap', () => {
+  it('should detect grid-gap (grid-only)', () => {
     expect(hasGridProperties('.box { grid-gap: 10px; }')).toBe(true);
-    expect(hasGridProperties('.box { gap: 10px; }')).toBe(true);
+    expect(hasGridProperties('.box { grid-row-gap: 10px; }')).toBe(true);
+    expect(hasGridProperties('.box { grid-column-gap: 10px; }')).toBe(true);
+  });
+
+  it('should NOT treat standalone `gap` as grid', () => {
+    // gap is shared with flexbox; on its own it does not indicate a grid.
+    expect(hasGridProperties('.box { gap: 10px; }')).toBe(false);
+    expect(hasGridProperties('.box { display: flex; gap: 8px; }')).toBe(false);
+    expect(
+      hasGridProperties('.box { display: flex; gap: 8px; flex-direction: row; }')
+    ).toBe(false);
   });
 
   it('should return false for non-grid CSS', () => {
     expect(hasGridProperties('.box { color: red; }')).toBe(false);
     expect(hasGridProperties('.box { display: flex; }')).toBe(false);
     expect(hasGridProperties('.box { margin: 10px; }')).toBe(false);
+  });
+});
+
+describe('parseGridTemplateColumns', () => {
+  it('parses repeat(N, 1fr) into N equal columns', () => {
+    const r = parseGridTemplateColumns('repeat(3, 1fr)');
+    expect(r).not.toBeNull();
+    expect(r!.columnCount).toBe(3);
+    expect(r!.columnPercents.map((p) => p.toFixed(2))).toEqual([
+      '33.33',
+      '33.33',
+      '33.33',
+    ]);
+  });
+
+  it('parses an explicit fr-only list proportionally', () => {
+    const r = parseGridTemplateColumns('1fr 2fr 1fr');
+    expect(r).not.toBeNull();
+    expect(r!.columnCount).toBe(3);
+    expect(r!.columnPercents.map((p) => p.toFixed(2))).toEqual([
+      '25.00',
+      '50.00',
+      '25.00',
+    ]);
+  });
+
+  it('returns null for mixed fixed/fr lists', () => {
+    expect(parseGridTemplateColumns('200px 1fr 200px')).toBeNull();
+  });
+
+  it('returns null for auto / minmax / named lines / areas', () => {
+    expect(parseGridTemplateColumns('auto 1fr')).toBeNull();
+    expect(parseGridTemplateColumns('minmax(100px, 1fr) 1fr')).toBeNull();
+    expect(parseGridTemplateColumns('[start] 1fr [end]')).toBeNull();
+    expect(parseGridTemplateColumns('repeat(auto-fill, 1fr)')).toBeNull();
+    expect(parseGridTemplateColumns('repeat(3, 100px)')).toBeNull();
+    expect(parseGridTemplateColumns('')).toBeNull();
   });
 });
 
@@ -100,8 +149,12 @@ describe('transformGridToFlexbox', () => {
     expect(result).toContain('-webkit-align-items: center');
   });
 
-  it('should convert grid-column span to flex width', () => {
-    const css = '.item { grid-column: span 6; }';
+  it('should convert grid-column span to flex width when document has a 12-column grid', () => {
+    // Backward-compat path: if any rule in the same stylesheet declares
+    // `repeat(12, 1fr)`, span N rules can opt into the legacy 12-column
+    // assumption even when their parent isn't a structural prefix match.
+    const css =
+      '.grid { display: grid; grid-template-columns: repeat(12, 1fr); } .item { grid-column: span 6; }';
     const result = transformGridToFlexbox(css);
     // span 6 out of 12 columns = 50%
     expect(result).toContain('flex: 0 0 50.00%');
@@ -168,5 +221,128 @@ describe('transformGridToFlexbox', () => {
     expect(result).toContain('grid-template-columns');
     // Flexbox fallback should be added
     expect(result).toContain('display: flex');
+  });
+});
+
+describe('transformGridToFlexbox — Batch I-2 (T5) shape parsing', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    _resetGridFallbackWarningCache();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('translates `repeat(3, 1fr)` to a flexbox container', () => {
+    const css =
+      '.container { display: grid; grid-template-columns: repeat(3, 1fr); }';
+    const result = transformGridToFlexbox(css);
+    expect(result).toContain('display: flex');
+    expect(result).toContain('display: -webkit-flex');
+    expect(result).toContain('flex-wrap: wrap');
+    // The shape must be recognized — no warning emitted.
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('translates explicit fr-only list `1fr 2fr 1fr` to a flexbox container', () => {
+    const css =
+      '.container { display: grid; grid-template-columns: 1fr 2fr 1fr; }';
+    const result = transformGridToFlexbox(css);
+    expect(result).toContain('display: flex');
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Sanity-check the parser produces the documented 25/50/25 split.
+    const parsed = parseGridTemplateColumns('1fr 2fr 1fr');
+    expect(parsed).not.toBeNull();
+    expect(parsed!.columnPercents.map((p) => p.toFixed(2))).toEqual([
+      '25.00',
+      '50.00',
+      '25.00',
+    ]);
+  });
+
+  it('leaves `200px 1fr 200px` rules unchanged (mixed fixed/fr bails)', () => {
+    const css =
+      '.container { display: grid; grid-template-columns: 200px 1fr 200px; }';
+    const result = transformGridToFlexbox(css);
+    expect(result).not.toContain('display: flex');
+    expect(result).not.toContain('-webkit-flex');
+    expect(result).not.toContain('Revamp: Flexbox fallback');
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[css-grid] unsupported grid shape, leaving rule unchanged:',
+      '.container'
+    );
+  });
+
+  it('leaves grid-template-areas rules unchanged (named areas bail)', () => {
+    const css =
+      `.container { display: grid; grid-template-areas: 'header header' 'main side'; }`;
+    const result = transformGridToFlexbox(css);
+    expect(result).not.toContain('display: flex');
+    expect(result).not.toContain('-webkit-flex');
+    expect(result).toContain('grid-template-areas');
+  });
+
+  it('leaves `display: flex; gap: 8px` unchanged (NOT a grid)', () => {
+    const css = '.row { display: flex; gap: 8px; }';
+    const result = transformGridToFlexbox(css);
+    // No grid was detected — no extra display:flex prepended.
+    const flexCount = (result.match(/display:\s*flex/g) ?? []).length;
+    expect(flexCount).toBe(1);
+    expect(result).not.toContain('-webkit-flex');
+    expect(result).not.toContain('Revamp: Flexbox fallback');
+  });
+
+  it('leaves `display: flex; gap: 8px; flex-direction: row` unchanged', () => {
+    const css = '.row { display: flex; gap: 8px; flex-direction: row; }';
+    const result = transformGridToFlexbox(css);
+    const flexCount = (result.match(/display:\s*flex/g) ?? []).length;
+    expect(flexCount).toBe(1);
+    expect(result).not.toContain('-webkit-flex');
+  });
+
+  it('translates parent + child when parent is repeat(12, 1fr) and child is span 6', () => {
+    const css =
+      '.parent { display: grid; grid-template-columns: repeat(12, 1fr); } ' +
+      '.parent .child { grid-column: span 6; }';
+    const result = transformGridToFlexbox(css);
+    // Parent translated.
+    expect(result).toContain('display: flex');
+    expect(result).toContain('flex-wrap: wrap');
+    // Child rewritten as 6/12 = 50%.
+    expect(result).toContain('flex: 0 0 50.00%');
+    expect(result).toContain('-webkit-flex: 0 0 50.00%');
+  });
+
+  it('leaves child span rules untouched when parent bailed (200px 1fr 200px)', () => {
+    const css =
+      '.parent { display: grid; grid-template-columns: 200px 1fr 200px; } ' +
+      '.parent .child { grid-column: span 2; }';
+    const result = transformGridToFlexbox(css);
+    // Parent unchanged.
+    expect(result).not.toContain('display: flex');
+    expect(result).not.toContain('-webkit-flex');
+    // Child unchanged.
+    expect(result).not.toContain('flex: 0 0');
+    // Both selectors should produce a warning.
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[css-grid] unsupported grid shape, leaving rule unchanged:',
+      '.parent'
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[css-grid] unsupported grid shape, leaving rule unchanged:',
+      '.parent .child'
+    );
+  });
+
+  it('dedupes warnings per selector across the same process invocation', () => {
+    // Same selector encountered twice: one warning total (until cache reset).
+    const css =
+      '.bad { display: grid; grid-template-columns: 200px 1fr; } ' +
+      '.bad { grid-template-columns: 200px 1fr; }';
+    transformGridToFlexbox(css);
+    const calls = warnSpy.mock.calls.filter(
+      (c: unknown[]) => c[0] === '[css-grid] unsupported grid shape, leaving rule unchanged:' && c[1] === '.bad'
+    );
+    expect(calls.length).toBe(1);
   });
 });

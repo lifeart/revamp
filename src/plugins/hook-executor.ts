@@ -11,7 +11,7 @@
  * - Timeout protection with configurable limits
  */
 
-import { pluginRegistry } from './registry.js';
+import { pluginRegistry } from './internal.js';
 import type { HookName } from './types.js';
 import type {
   HookTypes,
@@ -434,6 +434,61 @@ class HookExecutor {
         if (result.value !== undefined) {
           // Merge the result into current value
           currentValue = { ...currentValue, ...result.value };
+
+          // T14: propagate body / headers / statusCode mutations into the
+          // context so the next hook in a `response:post` chain observes the
+          // upstream plugin's edits. Without this, plugin B in a 2-plugin
+          // pipeline silently sees the original upstream body even when
+          // plugin A returned a rewritten one.
+          if (hookName === 'response:post') {
+            const responseContext = context as ResponseContext;
+            const merged = currentValue as PostResponseResult;
+            if (merged.body !== undefined) {
+              responseContext.body = merged.body;
+            }
+            if (merged.headers !== undefined) {
+              responseContext.responseHeaders = {
+                ...responseContext.responseHeaders,
+                ...merged.headers,
+              };
+            }
+            if (merged.statusCode !== undefined) {
+              responseContext.statusCode = merged.statusCode;
+            }
+          }
+
+          // Round 1 review fix: same propagation for transform:pre and
+          // transform:post chains. Without this, plugin B in a transform
+          // pipeline observes the upstream content rather than plugin A's
+          // edit, silently dropping every chained transformation.
+          if (hookName === 'transform:pre' || hookName === 'transform:post') {
+            const transformContext = context as TransformContext;
+            const merged = currentValue as
+              | PreTransformResult
+              | PostTransformResult;
+            if (merged.content !== undefined) {
+              transformContext.content = merged.content;
+            }
+          }
+
+          // T40: same propagation for request:pre. Plugin A returning a
+          // rewritten `url` or merged `headers` must be visible to plugin B
+          // through `RequestContext`; otherwise plugin B sees the original
+          // upstream URL/headers and the chain silently drops plugin A's
+          // edits, mirroring the T14 bug for `response:post`.
+          if (hookName === 'request:pre') {
+            const requestContext = context as RequestContext;
+            const merged = currentValue as PreRequestResult;
+            if (merged.url !== undefined) {
+              requestContext.url = merged.url;
+            }
+            if (merged.headers !== undefined) {
+              requestContext.headers = {
+                ...requestContext.headers,
+                ...merged.headers,
+              };
+            }
+          }
         }
       } catch (err) {
         const executionTime = Date.now() - hookStartTime;

@@ -251,12 +251,16 @@ describe('HTTP Proxy Integration Tests', () => {
       expect(response.statusCode).toBe(404);
     });
 
-    it('should add CORS headers', async () => {
+    it('should not inject CORS headers by default (T9)', async () => {
+      // Default posture: no domain profile opted in, so the proxy must not
+      // emit cross-origin permission headers. Otherwise every proxied site
+      // would be cross-origin readable by every other proxied site.
       const response = await makeProxyRequest('GET', `http://127.0.0.1:${targetPort}/`, {
         Origin: 'http://example.com',
       });
       expect(response.statusCode).toBe(200);
-      expect(response.headers['access-control-allow-origin']).toBeDefined();
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
+      expect(response.headers['access-control-allow-credentials']).toBeUndefined();
     });
 
     it('should handle large responses with compression', async () => {
@@ -315,6 +319,87 @@ describe('HTTP Proxy Integration Tests', () => {
     it('should proxy normal domains', async () => {
       const response = await makeProxyRequest('GET', `http://127.0.0.1:${targetPort}/`);
       expect(response.statusCode).toBe(200);
+    });
+  });
+
+  describe('T25 — per-host metrics through unified pipeline', () => {
+    it('records the request URL on the per-host entry after a normal proxy', async () => {
+      resetMetrics();
+      const targetUrl = `http://127.0.0.1:${targetPort}/html`;
+      const response = await makeProxyRequest('GET', targetUrl);
+      expect(response.statusCode).toBe(200);
+
+      const metrics = getMetrics();
+      const entry = metrics.hosts.find((h) => h.host === '127.0.0.1');
+      expect(entry).toBeDefined();
+      expect(entry!.lastUrls).toContain(targetUrl);
+      // /html → text/html content type → recorded as html transform.
+      expect(entry!.transformedHtml).toBeGreaterThan(0);
+    });
+
+    it('records blocked-by-tracking events per host', async () => {
+      resetMetrics();
+      updateConfig({ trackingUrls: ['json'], removeTracking: true });
+
+      await makeProxyRequest('GET', `http://127.0.0.1:${targetPort}/json`, {
+        Accept: 'application/json',
+      });
+
+      const metrics = getMetrics();
+      const entry = metrics.hosts.find((h) => h.host === '127.0.0.1');
+      expect(entry).toBeDefined();
+      expect(entry!.blocked).toBe(1);
+    });
+  });
+
+  describe('T20 — explanatory error pages', () => {
+    it('returns 200 HTML for blocked URL navigation when client accepts text/html', async () => {
+      // Add a path-match pattern to trackingUrls so the URL-blocker fires.
+      updateConfig({ trackingUrls: ['json'], removeTracking: true });
+
+      const response = await makeProxyRequest('GET', `http://127.0.0.1:${targetPort}/json`, {
+        Accept: 'text/html,application/xhtml+xml',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const ct = response.headers['content-type'];
+      expect(Array.isArray(ct) ? ct[0] : ct).toMatch(/text\/html/);
+      expect(response.body).toContain('Blocked by Revamp');
+      expect(response.body).toContain('127.0.0.1');
+      expect(response.body).toContain('/__revamp__/admin/domains.html');
+    });
+
+    it('returns 204 (no content) for blocked URL when client does not accept HTML', async () => {
+      updateConfig({ trackingUrls: ['json'], removeTracking: true });
+
+      const response = await makeProxyRequest('GET', `http://127.0.0.1:${targetPort}/json`, {
+        Accept: 'application/json',
+      });
+
+      expect(response.statusCode).toBe(204);
+    });
+
+    it('returns 502 HTML for upstream errors when client accepts text/html', async () => {
+      // Point at a port that is definitely closed to trigger a connection error.
+      const response = await makeProxyRequest('GET', 'http://127.0.0.1:1/', {
+        Accept: 'text/html',
+      });
+
+      expect(response.statusCode).toBe(502);
+      const ct = response.headers['content-type'];
+      expect(Array.isArray(ct) ? ct[0] : ct).toMatch(/text\/html/);
+      expect(response.body).toContain('Upstream error');
+      expect(response.body).toContain('/__revamp__/admin/domains.html');
+    });
+
+    it('returns plain-text 502 for upstream errors when client does not accept HTML', async () => {
+      const response = await makeProxyRequest('GET', 'http://127.0.0.1:1/', {
+        Accept: 'application/json',
+      });
+
+      expect(response.statusCode).toBe(502);
+      const ct = response.headers['content-type'];
+      expect(Array.isArray(ct) ? ct[0] : ct).not.toMatch(/text\/html/);
     });
   });
 

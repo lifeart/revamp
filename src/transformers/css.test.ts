@@ -275,6 +275,27 @@ describe('resetCssProcessor', () => {
     expect(result2).toContain('display');
     expect(result2).toContain('flex');
   });
+
+  it('should rebuild the processor when targets config changes (T18)', async () => {
+    // Use a CSS feature whose handling depends heavily on browser targets.
+    // :is(...) is transpiled away for old Safari but kept for modern browsers.
+    const code = '.parent :is(.a, .b) { color: red; padding: 10px; margin: 0; }';
+
+    // Step 1: legacy targets (Safari 9). :is() must be transpiled to a
+    // selector list — i.e. the literal substring ":is(" should disappear.
+    updateConfig({ targets: ['safari 9'] });
+    const legacyOut = await transformCss(code);
+    expect(legacyOut.includes(':is(')).toBe(false);
+
+    // Step 2: switch to evergreen targets that natively support :is().
+    // If the processor cache is NOT invalidated, the second call will still
+    // produce legacy output (the bug). After T18, the processor rebuilds and
+    // the modern output should keep :is() intact.
+    updateConfig({ targets: ['last 1 chrome version'] });
+    const modernOut = await transformCss(code);
+    expect(modernOut.includes(':is(')).toBe(true);
+    expect(modernOut).not.toBe(legacyOut);
+  });
 });
 
 describe('transformCss with config parameter', () => {

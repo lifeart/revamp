@@ -111,10 +111,10 @@ docker-compose --profile dev up revamp-dev
 ### Device Setup
 
 1. **Start Revamp** on your computer
-2. **Open the setup page** on your legacy device:
-   - Navigate to `http://YOUR_COMPUTER_IP:8888`
-3. **Install the certificate** and enable trust (see detailed instructions below)
-4. **Configure proxy** in Wi-Fi settings
+2. **Find your local IP**: After `pnpm start`, look at the terminal for `🌐 Your Local IP Address(es): 192.168.x.x`. Use that IP on your iPad.
+3. **Open the setup page** on your legacy device by navigating to `http://<that IP>:8888`
+4. **Install the certificate** and enable trust (see detailed instructions below)
+5. **Configure proxy** in Wi-Fi settings
 
 ## 📱 Detailed Setup
 
@@ -124,12 +124,25 @@ When you start Revamp, a CA certificate is generated at `.revamp-certs/ca.crt`.
 
 **On iOS:**
 
-1. Open `http://YOUR_COMPUTER_IP:8888` in Safari
+The captive portal sniffs your User-Agent and renders the right copy automatically. The two paths:
+
+_iOS 9 / 10.0–10.2 (e.g. iPad 2):_
+
+1. Open `http://<your IP>:8888` in Safari
 2. Tap "Download Certificate"
-3. Go to **Settings → General → VPN & Device Management**
+3. Go to **Settings → General → Profile**
+4. Tap on **Revamp Proxy CA** and tap **Install**
+
+(There is no Trust Settings step on these versions — installing the profile grants trust outright.)
+
+_iOS 10.3+ (including iOS 12.2 hardening):_
+
+1. Open `http://<your IP>:8888` in Safari
+2. Tap "Download Certificate"
+3. Go to **Settings → General → VPN & Device Management** (older iOS: **Settings → General → Profile**)
 4. Install the downloaded profile
 5. Go to **Settings → General → About → Certificate Trust Settings**
-6. Enable full trust for "Revamp Proxy CA"
+6. Enable full trust for **Revamp Proxy CA**
 
 **On macOS:**
 
@@ -144,12 +157,12 @@ When you start Revamp, a CA certificate is generated at `.revamp-certs/ca.crt`.
 
 - **Settings → Wi-Fi → [Your Network] → Configure Proxy**
 - Select **Manual**
-- Server: `YOUR_COMPUTER_IP`
+- Server: your IP, see the `🌐 Your Local IP Address(es)` banner printed by `pnpm start` (also covered in [Device Setup](#device-setup))
 - Port: `1080`
 
 **HTTP Proxy (Alternative):**
 
-- Server: `YOUR_COMPUTER_IP`
+- Server: your IP, see the `🌐 Your Local IP Address(es)` banner printed by `pnpm start` (also covered in [Device Setup](#device-setup))
 - Port: `8080`
 
 ## ⚙️ Configuration
@@ -187,6 +200,14 @@ const server = createRevampServer({
 
   // Performance tuning
   compressionLevel: 4, // gzip level 1-9 (1=fastest, 9=smallest)
+
+  // TLS / upstream certificate validation (T8). Default: validate upstream
+  // TLS certs and surface failures as a 502. Set this to `true` ONLY if you
+  // knowingly need to talk to self-signed dev/staging servers — Revamp
+  // re-signs upstream traffic with its own CA, so accepting an invalid
+  // upstream cert silently launders any Wi-Fi MITM into a green padlock on
+  // the iPad.
+  allowInsecureUpstream: false,
 });
 
 server.start();
@@ -409,8 +430,10 @@ Access real-time statistics at `http://any-proxied-site/__revamp__/metrics`:
 PAC (Proxy Auto-Config) files make device setup easier:
 
 ```bash
-# Get PAC file URL for iOS configuration
-http://YOUR_COMPUTER_IP:8888/__revamp__/pac/socks5
+# Get PAC file URL for iOS configuration (replace <your IP> with the
+# address from the `🌐 Your Local IP Address(es)` banner printed by
+# `pnpm start` — see Device Setup above).
+http://<your IP>:8888/__revamp__/pac/socks5
 ```
 
 Configure iOS: **Settings → Wi-Fi → [Network] → Configure Proxy → Automatic** → Enter PAC URL
@@ -593,7 +616,28 @@ Global Defaults (server-wide fallback)
 | `customAdSelectors` | array | CSS selectors for ad containers |
 | `customTrackingPatterns` | array | Additional tracking script patterns |
 | `customTrackingSelectors` | array | CSS selectors for tracking elements |
+| `corsAllowOrigins` | array | Origins to receive `Access-Control-Allow-Origin` (T9, opt-in) |
+| `corsAllowCredentials` | boolean | Whether to emit `Access-Control-Allow-Credentials: true` (T9) |
 | `enabled` | boolean | Enable/disable this profile |
+
+#### Per-domain CORS injection (opt-in)
+
+By default Revamp does not inject any `Access-Control-Allow-*` headers into proxied responses. Earlier builds added a permissive `Access-Control-Allow-Origin: <client origin>` plus `Access-Control-Allow-Credentials: true` to every response, which made every proxied site cross-origin readable by every other proxied site (T9). To restore that behaviour for a specific domain — for example so a site under your control can fetch resources from another site you proxy — set `corsAllowOrigins` (and optionally `corsAllowCredentials: true`) on a domain profile. Use the literal `"*"` to allow any origin; otherwise list exact client origins. Origin matches are compared verbatim — `corsAllowOrigins: ["https://example.com"]` matches that origin only and does not cover subdomains such as `https://api.example.com`. Requests whose `Origin` does not match the list receive no CORS headers, so the browser correctly blocks the cross-origin read.
+
+> Note: `corsAllowOrigins: ["*"]` cannot be combined with `corsAllowCredentials: true`. The combination is rejected by browsers per the Fetch spec; Re:Vamp will refuse to inject CORS headers in that case to avoid a credential leak.
+
+```bash
+curl -X POST http://any-proxied-site/__revamp__/domains \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Example with CORS",
+    "patterns": [{ "type": "exact", "pattern": "api.example.com" }],
+    "priority": 10,
+    "corsAllowOrigins": ["https://app.example.com"],
+    "corsAllowCredentials": true,
+    "enabled": true
+  }'
+```
 
 ### Multi-Device Support
 
@@ -659,18 +703,25 @@ Plugins are installed in the `.revamp-plugins/` directory. Each plugin has its o
 
 **Available Hooks:**
 
-| Hook | Purpose | Can Modify |
-|------|---------|------------|
-| `request:pre` | Before upstream request | URL, headers, block |
-| `response:post` | After response received | Body, headers, status |
-| `transform:pre` | Before content transform | Content, skip transform |
-| `transform:post` | After content transform | Transformed content |
-| `filter:decision` | Custom blocking logic | Block decision |
-| `config:resolution` | Inject config overrides | Config values |
-| `domain:lifecycle` | Profile CRUD events | (notify only) |
-| `cache:get` | Custom cache backend | Cached data |
-| `cache:set` | Custom cache backend | (notify only) |
-| `metrics:record` | Custom metrics | (notify only) |
+| Hook | Purpose | Can Modify | Required Permission |
+|------|---------|------------|---------------------|
+| `request:pre` | Before upstream request | URL, headers, block | `request:modify` |
+| `response:post` | After response received | Body, headers, status | `response:modify` |
+| `transform:pre` | Before content transform | Content, skip transform | `response:modify` |
+| `transform:post` | After content transform | Transformed content | `response:modify` |
+| `filter:decision` | Custom blocking logic | Block decision | `request:modify` |
+| `config:resolution` | Inject config overrides | Config values | `config:read` |
+| `domain:lifecycle` | Profile CRUD events | (notify only) | `config:read` |
+| `cache:get` | Custom cache backend | Cached data | `cache:read` |
+| `cache:set` | Custom cache backend | (notify only) | `cache:write` |
+| `metrics:record` | Custom metrics | (notify only) | `metrics:write` |
+
+> **Note (T15):** `context.registerHook(name, …)` now throws if the plugin's
+> manifest does not declare the permission required for `name`. This is a
+> breaking change for plugins that previously omitted the corresponding
+> permission. Add the required permission to your `plugin.json` `permissions`
+> array — e.g. a plugin that registers `response:post` must declare
+> `response:modify`. See CHANGELOG for the full migration note.
 
 **Available Permissions:**
 
@@ -693,44 +744,52 @@ Plugins are installed in the `.revamp-plugins/` directory. Each plugin has its o
 
 **Plugin Entry Point (index.js):**
 
-```javascript
-module.exports = {
-  manifest: require('./plugin.json'),
+Revamp is an ESM project. Plugins must use `export default`; the loader at
+`src/plugins/loader.ts` accepts either a default-exported object or a default-
+exported factory function returning a plugin object.
 
+```javascript
+export default {
   async initialize(context) {
-    // Called when plugin is loaded
     context.log('info', 'Plugin initializing...');
   },
 
   async activate(context) {
-    // Register hooks when plugin is activated
     context.registerHook('request:pre', async (request) => {
-      // Example: Block requests to specific domains
       if (request.hostname.includes('blocked.com')) {
-        return { continue: false, value: { blocked: true, reason: 'Custom block' } };
+        return {
+          continue: false,
+          value: { blocked: true, reason: 'Custom block' },
+        };
       }
       return { continue: true };
-    }, 100); // Priority: higher = runs first
+    }, 100);
 
     context.registerHook('response:post', async (response) => {
-      // Example: Add custom header
-      response.headers['x-plugin-processed'] = 'true';
-      return { continue: true, value: response };
+      return {
+        continue: true,
+        value: {
+          headers: {
+            ...response.responseHeaders,
+            'x-plugin-processed': 'true',
+          },
+        },
+      };
     });
   },
 
   async deactivate(context) {
-    // Clean up when plugin is deactivated
     context.unregisterHook('request:pre');
     context.unregisterHook('response:post');
   },
 
   async shutdown(context) {
-    // Called when plugin is unloaded
     context.log('info', 'Plugin shutting down...');
-  }
+  },
 };
 ```
+
+A runnable copy of this pattern lives at `examples/plugins/hello-world/`.
 
 **Plugin Context API:**
 
@@ -743,7 +802,7 @@ interface PluginContext {
   unregisterHook(hookName): void;
 
   // Configuration (requires permissions)
-  getGlobalConfig(): Readonly<RevampConfig>;
+  getConfig(): Readonly<RevampConfig>;
   getEffectiveConfig(clientIp?, domain?): Readonly<RevampConfig>;
   getPluginConfig<T>(): T;
   updatePluginConfig(updates): Promise<void>;
@@ -908,7 +967,7 @@ import {
   runPluginLifecycle,
   assertContinues,
   assertStops,
-} from 'revamp/plugins/testing';
+} from 'revamp/plugin';
 
 // Create a test context with mocked dependencies
 const context = createTestContext({
@@ -969,6 +1028,9 @@ Global Defaults (lowest)
 | `injectPolyfills` | true | Add polyfills |
 | `spoofUserAgent` | true | Spoof User-Agent header |
 | `spoofUserAgentInJs` | true | Override navigator.userAgent |
+| `maxRequestBodyBytes` | 52428800 | Maximum upstream request body size in bytes (default 50 MB). Requests exceeding this are rejected with 413. |
+| `maxResponseBodyBytes` | 52428800 | Maximum upstream response body size in bytes (default 50 MB). Responses exceeding this are returned as 502. |
+| `allowInsecureUpstream` | false | Skip upstream TLS certificate validation. Default `false`. Set to `true` only for development against self-signed upstreams; production proxies should leave this off. |
 
 ## 🧪 Testing
 
@@ -1037,6 +1099,16 @@ The worker pool's main benefit is **keeping the main event loop responsive** dur
 - Enable caching if disabled
 - Consider disabling transformations for specific sites
 - Check available disk space for cache
+
+### Sharp Install Issues
+
+`Cannot find module '@img/sharp-...'` means the platform-specific sharp binary is missing. Quick fixes:
+
+- **macOS Apple Silicon**: run `pnpm rebuild sharp` after install.
+- **Alpine**: ensure `libvips` is available (`apk add vips-dev`) before installing.
+- **Linux glibc/musl mismatch**: reinstall with the right libc, e.g. `pnpm install --config.platform=linux --config.libc=musl`.
+
+For other platforms see sharp's [install matrix](https://sharp.pixelplumbing.com/install).
 
 ## 📦 Dependencies
 

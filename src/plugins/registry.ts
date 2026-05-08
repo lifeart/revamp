@@ -12,7 +12,7 @@ import type {
   RevampPlugin,
   HookName,
 } from './types.js';
-import type { HookTypes, HookRegistration } from './hooks.js';
+import { HOOK_PERMISSION_REQUIREMENTS, type HookTypes, type HookRegistration } from './hooks.js';
 
 /**
  * Events emitted by the plugin registry
@@ -140,7 +140,17 @@ export class PluginRegistry extends EventEmitter {
   }
 
   /**
-   * Register a hook
+   * Register a hook for a plugin.
+   *
+   * T37 — trusted-caller expectations: this method is meant to be invoked by
+   * Revamp's own runtime (`createPluginContext` wraps it) or by tests via the
+   * non-public `./internal.js` re-export. Plugin authors get the
+   * `revamp/plugin` public API, which does NOT expose the registry singleton.
+   *
+   * Defence in depth: even when called directly, we re-run the same
+   * `HOOK_PERMISSION_REQUIREMENTS` check that `createPluginContext` performs,
+   * so a plugin that somehow grabs a registry reference still cannot
+   * register a hook for which it lacks the declared manifest permission.
    */
   registerHook<T extends HookName>(
     pluginId: string,
@@ -154,6 +164,18 @@ export class PluginRegistry extends EventEmitter {
     }
     if (plugin.state !== 'active' && plugin.state !== 'activating') {
       throw new Error(`Plugin ${pluginId} is not active (state: ${plugin.state})`);
+    }
+
+    // T37: defence-in-depth permission check. Mirrors the check inside
+    // `createPluginContext.registerHook`. If the manifest doesn't list the
+    // permission required for this hook, refuse — even if the caller bypassed
+    // the public surface.
+    const required = HOOK_PERMISSION_REQUIREMENTS[hookName];
+    const declaredPermissions = plugin.manifest.permissions ?? [];
+    if (!declaredPermissions.includes(required)) {
+      throw new Error(
+        `Plugin ${pluginId} lacks permission ${required} required for hook ${hookName}`
+      );
     }
 
     if (!this.hooks.has(hookName)) {

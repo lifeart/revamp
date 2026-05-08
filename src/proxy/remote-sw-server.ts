@@ -155,8 +155,8 @@ async function loadWsModule(): Promise<boolean> {
     const wsModule = await import("ws");
     WebSocketServerClass = wsModule.WebSocketServer;
     return true;
-  } catch {
-    console.warn('[Remote SW Server] ws module not available. Install with: npm install ws @types/ws');
+  } catch (err) {
+    console.warn('[Remote SW Server] ws module not available. Install with: npm install ws @types/ws', err);
     return false;
   }
 }
@@ -171,8 +171,8 @@ async function loadPlaywright(): Promise<boolean> {
     const playwright = await import('playwright');
     playwrightChromium = playwright.chromium;
     return true;
-  } catch {
-    console.warn('[Remote SW Server] playwright module not available. Install with: npm install playwright');
+  } catch (err) {
+    console.warn('[Remote SW Server] playwright module not available. Install with: npm install playwright', err);
     return false;
   }
 }
@@ -347,8 +347,8 @@ export class RemoteSwServer {
     if (playwrightBrowser) {
       try {
         await playwrightBrowser.close();
-      } catch {
-        // Ignore
+      } catch (err) {
+        console.warn('[Remote SW Server] failed to close playwright browser on shutdown', err);
       }
       playwrightBrowser = null;
     }
@@ -704,8 +704,8 @@ console.log('[Revamp SW Host] Page loaded for SW context');
     if (client.swPage) {
       try {
         await client.swPage.close();
-      } catch {
-        // Ignore
+      } catch (err) {
+        console.warn('[Remote SW Server] failed to close swPage during cleanup', err);
       }
       client.swPage = null;
     }
@@ -713,8 +713,8 @@ console.log('[Revamp SW Host] Page loaded for SW context');
     if (client.browserContext) {
       try {
         await client.browserContext.close();
-      } catch {
-        // Ignore
+      } catch (err) {
+        console.warn('[Remote SW Server] failed to close browserContext during cleanup', err);
       }
       client.browserContext = null;
     }
@@ -757,7 +757,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
       try {
         await client.swPage!.goto('about:blank', { waitUntil: 'load', timeout: 5000 });
       } catch {
-        // Ignore errors going to about:blank
+        // Best-effort reset; about:blank may be racing with prior navigation.
       }
 
       // Set up a simple HTML page with the correct origin context
@@ -872,7 +872,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
               });
               await new Promise(resolve => setTimeout(resolve, 100));
             } catch {
-              // Continue to next attempt
+              // Retry loop owns final error reporting; swallow per-attempt failure.
             }
           } else {
             // Non-recoverable error

@@ -59,11 +59,13 @@ describe('generateDashboardHtml', () => {
     expect(html).toContain('Local IP');
   });
 
-  it('should include auto-refresh script', () => {
+  it('should include auto-refresh script (T24: fetch+patch, no full reload)', () => {
     const html = generateDashboardHtml();
     expect(html).toContain('<script>');
-    expect(html).toContain('setTimeout');
-    expect(html).toContain('reload()');
+    expect(html).toContain('setInterval');
+    expect(html).toContain("fetch('/__revamp__/metrics/json'");
+    // Negative: must NOT do a full reload (kills scroll on iPad 2 Safari).
+    expect(html).not.toContain('location.reload()');
   });
 
   it('should include navigation links', () => {

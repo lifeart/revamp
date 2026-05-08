@@ -422,10 +422,82 @@
   }
 
   /**
+   * T25: render the per-host activity panel from /__revamp__/metrics/json.
+   * No framework — straight DOM construction in ES5 to keep iPad 2 Safari
+   * compatible.
+   */
+  function renderHosts(hosts) {
+    var container = document.getElementById('hosts-list');
+    if (!container) return;
+
+    if (!hosts || hosts.length === 0) {
+      container.innerHTML = '<p class="text-muted text-center" style="padding: 24px;">' +
+        'No host activity recorded yet. Send some traffic through the proxy and refresh.' +
+        '</p>';
+      return;
+    }
+
+    // Sort: most-active hosts (by total events) first.
+    var sorted = hosts.slice().sort(function(a, b) {
+      var ta = (a.blocked || 0) + (a.transformedJs || 0) + (a.transformedCss || 0) +
+        (a.transformedHtml || 0) + (a.transformedImages || 0) + (a.errors || 0);
+      var tb = (b.blocked || 0) + (b.transformedJs || 0) + (b.transformedCss || 0) +
+        (b.transformedHtml || 0) + (b.transformedImages || 0) + (b.errors || 0);
+      return tb - ta;
+    });
+
+    var html = '';
+    for (var i = 0; i < sorted.length; i++) {
+      var h = sorted[i];
+      var urls = h.lastUrls || [];
+      var urlList = '';
+      if (urls.length === 0) {
+        urlList = '<li class="text-muted">(no URLs recorded)</li>';
+      } else {
+        for (var j = 0; j < urls.length; j++) {
+          urlList += '<li><code>' + UI.escapeHtml(urls[j]) + '</code></li>';
+        }
+      }
+      html += '<details style="border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: var(--spacing-md); margin-bottom: var(--spacing-sm);">' +
+        '<summary style="cursor: pointer; display: flex; flex-wrap: wrap; gap: var(--spacing-sm); align-items: center;">' +
+        '<strong>' + UI.escapeHtml(h.host) + '</strong>' +
+        '<span class="badge" title="Blocked">blk ' + (h.blocked || 0) + '</span>' +
+        '<span class="badge badge-primary" title="JS transformed">js ' + (h.transformedJs || 0) + '</span>' +
+        '<span class="badge badge-primary" title="CSS transformed">css ' + (h.transformedCss || 0) + '</span>' +
+        '<span class="badge badge-primary" title="HTML transformed">html ' + (h.transformedHtml || 0) + '</span>' +
+        '<span class="badge" title="Images transformed">img ' + (h.transformedImages || 0) + '</span>' +
+        '<span class="badge badge-error" title="Errors">err ' + (h.errors || 0) + '</span>' +
+        '</summary>' +
+        '<div style="margin-top: var(--spacing-md);">' +
+        '<div class="text-muted" style="font-size: 0.85rem; margin-bottom: var(--spacing-xs);">Recent URLs (newest first):</div>' +
+        '<ul style="list-style: none; padding: 0; margin: 0; max-height: 240px; overflow: auto;">' + urlList + '</ul>' +
+        '</div>' +
+        '</details>';
+    }
+    container.innerHTML = html;
+  }
+
+  function loadHosts() {
+    if (!window.fetch) return;
+    fetch('/__revamp__/metrics/json', { headers: { 'Accept': 'application/json' } })
+      .then(function(r) { return r.json(); })
+      .then(function(data) { renderHosts(data && data.hosts); })
+      .catch(function(err) {
+        console.warn('[domains] failed to load host metrics', err);
+        var container = document.getElementById('hosts-list');
+        if (container) {
+          container.innerHTML = '<p class="text-muted text-center" style="padding: 24px;">' +
+            'Failed to load host activity.</p>';
+        }
+      });
+  }
+
+  /**
    * Initialize
    */
   function init() {
     loadProfiles();
+    loadHosts();
 
     // Create button
     var createBtn = document.getElementById('create-profile-btn');
@@ -451,6 +523,11 @@
       testInput.addEventListener('keypress', function(e) {
         if (e.key === 'Enter') testDomain();
       });
+    }
+
+    var hostsRefreshBtn = document.getElementById('hosts-refresh-btn');
+    if (hostsRefreshBtn) {
+      hostsRefreshBtn.addEventListener('click', loadHosts);
     }
   }
 

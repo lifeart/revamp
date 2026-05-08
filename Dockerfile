@@ -2,12 +2,12 @@
 # Multi-stage build for optimal image size
 
 # Build stage
-FROM node:25-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm@9.15.9
+# Install pnpm via corepack (version pinned by package.json#packageManager)
+RUN corepack enable
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
@@ -23,12 +23,12 @@ COPY src ./src
 RUN pnpm build
 
 # Production stage
-FROM node:25-alpine AS production
+FROM node:24-alpine AS production
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm@9.15.9
+# Install pnpm via corepack (version pinned by package.json#packageManager)
+RUN corepack enable
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./

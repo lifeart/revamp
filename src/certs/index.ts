@@ -6,34 +6,51 @@
  */
 
 import forge from 'node-forge';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { getConfig } from '../config/index.js';
-
-// =============================================================================
-// Types
-// =============================================================================
-
-/**
- * Certificate key-pair (PEM format)
- */
-interface CertificatePair {
-  key: string;
-  cert: string;
-}
+import {
+  CERT_CACHE_TTL_MS,
+  KEY_FILE_MODE,
+  POSIX_PLATFORMS,
+  RATE_LIMIT_MAX,
+  RATE_LIMIT_WINDOW_MS,
+  certCache,
+  mintTimestampsByIp,
+  state,
+} from './internals.js';
+import type { CertificatePair } from './types.js';
 
 // =============================================================================
 // State
 // =============================================================================
-
-/** Cache for generated domain certificates */
-const certCache = new Map<string, CertificatePair>();
 
 /** CA private key (loaded on first use) */
 let caKey: forge.pki.rsa.PrivateKey | null = null;
 
 /** CA certificate (loaded on first use) */
 let caCert: forge.pki.Certificate | null = null;
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+/**
+ * Thrown when a client exceeds the cert minting rate limit.
+ */
+export class CertRateLimitError extends Error {
+  constructor(public readonly clientIp: string) {
+    super(`Cert minting rate limit exceeded for ${clientIp}`);
+    this.name = 'CertRateLimitError';
+  }
+}
 
 // =============================================================================
 // Utility Functions
@@ -46,6 +63,122 @@ function ensureCertDir(): void {
   const config = getConfig();
   if (!existsSync(config.certDir)) {
     mkdirSync(config.certDir, { recursive: true });
+  }
+}
+
+function isPosix(): boolean {
+  return POSIX_PLATFORMS.has(process.platform);
+}
+
+/**
+ * Write a private key file with restrictive permissions (0600).
+ * On POSIX, verifies the mode after write and re-applies chmod if necessary.
+ */
+function writeKeyFileSecure(path: string, contents: string): void {
+  writeFileSync(path, contents, { mode: KEY_FILE_MODE });
+  if (!isPosix()) {
+    return;
+  }
+  const observed = statSync(path).mode & 0o777;
+  if (observed !== KEY_FILE_MODE) {
+    chmodSync(path, KEY_FILE_MODE);
+  }
+}
+
+/**
+ * Prune entries with an `expiresAt` <= now.
+ *
+ * NOTE: Map insertion order matches recency-of-touch (we re-insert on `get`),
+ * but `expiresAt` is refreshed on touch too — so cycling old + new entries
+ * still keeps Map-order roughly aligned with expiry order. We deliberately
+ * iterate the whole Map (no early break) to stay correct even if that
+ * invariant ever drifts.
+ */
+function pruneExpiredCacheEntries(now: number): void {
+  for (const [key, entry] of certCache) {
+    if (entry.expiresAt <= now) {
+      certCache.delete(key);
+    }
+  }
+}
+
+function getCachedCert(domain: string): CertificatePair | null {
+  const entry = certCache.get(domain);
+  if (!entry) return null;
+  const now = Date.now();
+  if (entry.expiresAt <= now) {
+    certCache.delete(domain);
+    return null;
+  }
+  // Refresh TTL on touch (extend lifetime on use) and re-insert to keep
+  // recency-of-touch ordering for LRU eviction. Without the refresh, an
+  // entry could sit at the tail with a stale expiry while still being
+  // actively used — see code-review round 1, P1 #5.
+  entry.expiresAt = now + CERT_CACHE_TTL_MS;
+  certCache.delete(domain);
+  certCache.set(domain, entry);
+  return entry.pair;
+}
+
+function setCachedCert(domain: string, pair: CertificatePair): void {
+  const now = Date.now();
+  pruneExpiredCacheEntries(now);
+  if (certCache.has(domain)) {
+    certCache.delete(domain);
+  }
+  certCache.set(domain, { pair, expiresAt: now + CERT_CACHE_TTL_MS });
+  while (certCache.size > state.certCacheMax) {
+    const oldestKey = certCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    certCache.delete(oldestKey);
+  }
+}
+
+/**
+ * Drop entries from `mintTimestampsByIp` whose newest timestamp is outside
+ * the rate-limit window — i.e. clients that have been quiet long enough that
+ * their previous mints can no longer count against the limit.
+ */
+function gcStaleMintTimestamps(now: number): void {
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  for (const [ip, timestamps] of mintTimestampsByIp) {
+    if (timestamps.length === 0) {
+      mintTimestampsByIp.delete(ip);
+      continue;
+    }
+    const newest = timestamps[timestamps.length - 1];
+    if (newest <= windowStart) {
+      mintTimestampsByIp.delete(ip);
+    }
+  }
+}
+
+/**
+ * Enforce a sliding-window rate limit on cert minting per client IP.
+ * Throws CertRateLimitError when the limit is exceeded.
+ */
+function enforceMintRateLimit(clientIp: string): void {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  const existing = mintTimestampsByIp.get(clientIp) ?? [];
+  const recent = existing.filter((ts) => ts > windowStart);
+  if (recent.length >= RATE_LIMIT_MAX) {
+    mintTimestampsByIp.set(clientIp, recent);
+    throw new CertRateLimitError(clientIp);
+  }
+  recent.push(now);
+  if (recent.length === 0) {
+    // Defensive: if we somehow ended up empty, drop the IP entirely.
+    mintTimestampsByIp.delete(clientIp);
+  } else {
+    mintTimestampsByIp.set(clientIp, recent);
+  }
+
+  // Periodic GC: every Nth successful mint, prune entries whose newest
+  // timestamp is older than the rate-limit window. Cheap amortised cost.
+  state.mintCounter++;
+  if (state.mintCounter % state.mintGcInterval === 0) {
+    gcStaleMintTimestamps(now);
   }
 }
 
@@ -73,6 +206,13 @@ export function generateCA(): CertificatePair {
 
     caKey = forge.pki.privateKeyFromPem(keyPem);
     caCert = forge.pki.certificateFromPem(certPem);
+
+    if (isPosix()) {
+      const observed = statSync(caKeyPath).mode & 0o777;
+      if (observed !== KEY_FILE_MODE) {
+        chmodSync(caKeyPath, KEY_FILE_MODE);
+      }
+    }
 
     return { key: keyPem, cert: certPem };
   }
@@ -123,8 +263,8 @@ export function generateCA(): CertificatePair {
   const keyPem = forge.pki.privateKeyToPem(keys.privateKey);
   const certPem = forge.pki.certificateToPem(cert);
 
-  // Save to disk
-  writeFileSync(caKeyPath, keyPem);
+  // Save to disk - private key with restrictive 0600 permissions
+  writeKeyFileSecure(caKeyPath, keyPem);
   writeFileSync(caCertPath, certPem);
 
   caKey = keys.privateKey;
@@ -142,16 +282,21 @@ export function generateCA(): CertificatePair {
 
 /**
  * Generate a certificate for a specific domain, signed by our CA.
- * Results are cached for performance.
+ * Results are cached (LRU, TTL-bounded) for performance.
  *
  * @param domain - Domain name to generate certificate for
+ * @param clientIp - Optional client IP for rate limiting (omit to bypass)
  * @returns Certificate key-pair in PEM format
+ * @throws {CertRateLimitError} when the client exceeds the mint rate limit
  */
-export function generateDomainCert(domain: string): CertificatePair {
-  // Check cache first
-  const cached = certCache.get(domain);
+export function generateDomainCert(domain: string, clientIp?: string): CertificatePair {
+  const cached = getCachedCert(domain);
   if (cached) {
     return cached;
+  }
+
+  if (clientIp) {
+    enforceMintRateLimit(clientIp);
   }
 
   // Ensure CA is loaded
@@ -212,8 +357,10 @@ export function generateDomainCert(domain: string): CertificatePair {
     cert: forge.pki.certificateToPem(cert),
   };
 
-  // Cache the certificate
-  certCache.set(domain, result);
+  // Per-domain certificates intentionally never touch disk: they are
+  // ephemeral, cached in-memory, and rotated on restart. The threat model
+  // for T7 is "CA private key on disk is sensitive" — see CHANGELOG.
+  setCachedCert(domain, result);
 
   return result;
 }
@@ -241,8 +388,16 @@ export function getCACert(): string {
 }
 
 /**
- * Clear the certificate cache
+ * Clear the certificate cache.
  */
 export function clearCertCache(): void {
   certCache.clear();
+}
+
+/**
+ * Reset all rate-limit windows (test/utility helper).
+ */
+export function resetCertRateLimits(): void {
+  mintTimestampsByIp.clear();
+  state.mintCounter = 0;
 }

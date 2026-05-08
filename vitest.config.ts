@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'examples/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/dist/**'],
     testTimeout: 30000,
     // Build before running tests to ensure worker files exist
@@ -24,6 +24,12 @@ export default defineConfig({
         'src/transformers/js-worker.ts',
         'src/portal/index.ts',
       ],
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        statements: 70,
+        branches: 60,
+      },
     },
   },
 });

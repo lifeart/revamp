@@ -1,15 +1,14 @@
 /**
- * Symbol polyfill for Safari 9
+ * Symbol is intentionally NOT polyfilled.
+ *
+ * The previous "polyfill" returned a string of the form `'__symbol_<random>'`
+ * which broke `typeof x === 'symbol'`, `Symbol.iterator`, every `for..of`
+ * over a Map/Set, and `Object.getOwnPropertySymbols`. Corrupt iteration
+ * semantics are worse than the natural Safari 9 absence — code paths that
+ * legitimately require Symbol should fail loudly so the user (or a feature
+ * detect) can fall back, rather than silently iterating wrong values.
+ *
+ * If you need Symbol on the iPad, integrate `core-js/es/symbol`. Until then,
+ * this export is an empty string so the polyfill bundle stays well-formed.
  */
-export const symbolPolyfill = `
-  // Symbol polyfill (basic, for Safari 9)
-  if (typeof Symbol === 'undefined') {
-    window.Symbol = function(desc) {
-      return '__symbol_' + (desc || '') + '_' + Math.random().toString(36).slice(2);
-    };
-    Symbol.iterator = Symbol('iterator');
-    Symbol.toStringTag = Symbol('toStringTag');
-    Symbol.for = function(key) { return '__symbol_for_' + key; };
-    Symbol.keyFor = function(sym) { return sym.replace('__symbol_for_', ''); };
-  }
-`;
+export const symbolPolyfill = '';

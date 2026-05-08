@@ -141,28 +141,28 @@ export function generateDashboardHtml(): string {
     <div class="grid">
       <div class="card">
         <div class="card-title">⏱️ Uptime</div>
-        <div class="card-value highlight">${formatDuration(metrics.uptime)}</div>
+        <div class="card-value highlight" id="m-uptime">${formatDuration(metrics.uptime)}</div>
         <div class="card-subtitle">Since ${new Date(metrics.startTime).toLocaleString()}</div>
       </div>
 
       <div class="card">
         <div class="card-title">📡 Total Requests</div>
-        <div class="card-value">${metrics.requests.total.toLocaleString()}</div>
-        <div class="card-subtitle">${metrics.activeConnections} active connections</div>
+        <div class="card-value" id="m-total-requests">${metrics.requests.total.toLocaleString()}</div>
+        <div class="card-subtitle" id="m-active-connections">${metrics.activeConnections} active connections</div>
       </div>
 
       <div class="card">
         <div class="card-title">💾 Cache Hit Rate</div>
-        <div class="card-value ${metrics.cacheHitRate > 50 ? 'success' : 'warning'}">${metrics.cacheHitRate.toFixed(1)}%</div>
+        <div class="card-value ${metrics.cacheHitRate > 50 ? 'success' : 'warning'}" id="m-cache-rate">${metrics.cacheHitRate.toFixed(1)}%</div>
         <div class="progress-bar">
-          <div class="progress-fill" style="width: ${metrics.cacheHitRate}%"></div>
+          <div class="progress-fill" id="m-cache-progress" style="width: ${metrics.cacheHitRate}%"></div>
         </div>
-        <div class="card-subtitle">${metrics.requests.cached.toLocaleString()} cached requests</div>
+        <div class="card-subtitle" id="m-cache-count">${metrics.requests.cached.toLocaleString()} cached requests</div>
       </div>
 
       <div class="card">
         <div class="card-title">🚫 Blocked Requests</div>
-        <div class="card-value ${metrics.requests.blocked > 0 ? 'success' : ''}">${metrics.requests.blocked.toLocaleString()}</div>
+        <div class="card-value ${metrics.requests.blocked > 0 ? 'success' : ''}" id="m-blocked">${metrics.requests.blocked.toLocaleString()}</div>
         <div class="card-subtitle">Ads & trackers blocked</div>
       </div>
     </div>
@@ -172,19 +172,19 @@ export function generateDashboardHtml(): string {
         <div class="card-title">🔄 Transformations</div>
         <div class="stat-row">
           <span class="stat-label">JavaScript</span>
-          <span class="stat-value">${metrics.transforms.js.toLocaleString()}</span>
+          <span class="stat-value" id="m-tx-js">${metrics.transforms.js.toLocaleString()}</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">CSS</span>
-          <span class="stat-value">${metrics.transforms.css.toLocaleString()}</span>
+          <span class="stat-value" id="m-tx-css">${metrics.transforms.css.toLocaleString()}</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">HTML</span>
-          <span class="stat-value">${metrics.transforms.html.toLocaleString()}</span>
+          <span class="stat-value" id="m-tx-html">${metrics.transforms.html.toLocaleString()}</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">Images</span>
-          <span class="stat-value">${metrics.transforms.images.toLocaleString()}</span>
+          <span class="stat-value" id="m-tx-images">${metrics.transforms.images.toLocaleString()}</span>
         </div>
       </div>
 
@@ -192,15 +192,15 @@ export function generateDashboardHtml(): string {
         <div class="card-title">📊 Bandwidth</div>
         <div class="stat-row">
           <span class="stat-label">Downloaded</span>
-          <span class="stat-value">${formatBytes(metrics.bandwidth.totalBytesIn)}</span>
+          <span class="stat-value" id="m-bw-in">${formatBytes(metrics.bandwidth.totalBytesIn)}</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">Sent to Client</span>
-          <span class="stat-value">${formatBytes(metrics.bandwidth.totalBytesOut)}</span>
+          <span class="stat-value" id="m-bw-out">${formatBytes(metrics.bandwidth.totalBytesOut)}</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">Saved</span>
-          <span class="stat-value ${metrics.bandwidth.savedBytes > 0 ? 'success' : 'warning'}">${formatBytes(metrics.bandwidth.savedBytes)}</span>
+          <span class="stat-value ${metrics.bandwidth.savedBytes > 0 ? 'success' : 'warning'}" id="m-bw-saved">${formatBytes(metrics.bandwidth.savedBytes)}</span>
         </div>
       </div>
 
@@ -220,11 +220,11 @@ export function generateDashboardHtml(): string {
         </div>
         <div class="stat-row">
           <span class="stat-label">Peak Connections</span>
-          <span class="stat-value">${metrics.peakConnections}</span>
+          <span class="stat-value" id="m-peak">${metrics.peakConnections}</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">Errors</span>
-          <span class="stat-value ${metrics.errors > 0 ? 'error' : ''}">${metrics.errors}</span>
+          <span class="stat-value ${metrics.errors > 0 ? 'error' : ''}" id="m-errors">${metrics.errors}</span>
         </div>
       </div>
     </div>
@@ -244,10 +244,79 @@ export function generateDashboardHtml(): string {
   </div>
 
   <script>
-    // Auto-refresh every 5 seconds
-    setTimeout(function() {
-      location.reload();
-    }, 5000);
+    // T24: fetch+patch (no full reload — kills scroll on iPad 2 Safari).
+    // ES5-compatible IIFE; canonical scale: API returns 0..100, rendered as-is.
+    (function () {
+      function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        var k = 1024;
+        var sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+        return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+      }
+
+      function formatDuration(ms) {
+        var seconds = Math.floor(ms / 1000);
+        var minutes = Math.floor(seconds / 60);
+        var hours = Math.floor(minutes / 60);
+        var days = Math.floor(hours / 24);
+        if (days > 0) return days + 'd ' + (hours % 24) + 'h ' + (minutes % 60) + 'm';
+        if (hours > 0) return hours + 'h ' + (minutes % 60) + 'm ' + (seconds % 60) + 's';
+        if (minutes > 0) return minutes + 'm ' + (seconds % 60) + 's';
+        return seconds + 's';
+      }
+
+      function setText(id, text) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = text;
+      }
+
+      function setStyle(id, prop, value) {
+        var el = document.getElementById(id);
+        if (el) el.style[prop] = value;
+      }
+
+      function patch(data) {
+        var requests = data.requests || {};
+        var transforms = data.transforms || {};
+        var bandwidth = data.bandwidth || {};
+
+        setText('m-uptime', formatDuration(data.uptime || 0));
+        setText('m-total-requests', (requests.total || 0).toLocaleString());
+        setText('m-active-connections', (data.activeConnections || 0) + ' active connections');
+
+        var hitRate = data.cacheHitRate || 0;
+        setText('m-cache-rate', hitRate.toFixed(1) + '%');
+        setStyle('m-cache-progress', 'width', hitRate + '%');
+        setText('m-cache-count', (requests.cached || 0).toLocaleString() + ' cached requests');
+
+        setText('m-blocked', (requests.blocked || 0).toLocaleString());
+        setText('m-tx-js', (transforms.js || 0).toLocaleString());
+        setText('m-tx-css', (transforms.css || 0).toLocaleString());
+        setText('m-tx-html', (transforms.html || 0).toLocaleString());
+        setText('m-tx-images', (transforms.images || 0).toLocaleString());
+
+        setText('m-bw-in', formatBytes(bandwidth.totalBytesIn || 0));
+        setText('m-bw-out', formatBytes(bandwidth.totalBytesOut || 0));
+        setText('m-bw-saved', formatBytes(bandwidth.savedBytes || 0));
+
+        setText('m-peak', (data.peakConnections || 0));
+        setText('m-errors', (data.errors || 0));
+      }
+
+      function refresh() {
+        if (typeof fetch !== 'function') return;
+        fetch('/__revamp__/metrics/json', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json(); })
+          .then(patch)
+          .catch(function (err) {
+            console.warn('[metrics-dashboard] refresh failed', err);
+          });
+      }
+
+      refresh();
+      setInterval(refresh, 5000);
+    })();
   </script>
 </body>
 </html>`;

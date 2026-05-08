@@ -20,12 +20,20 @@ import {
   buildCorsPreflightResponse,
   buildCorsHeadersString,
   removeCorsHeaders,
+  resolveCorsAllowOrigin,
+  buildScopedCorsHeaders,
+  buildScopedCorsHeadersString,
+  buildScopedCorsPreflightResponse,
   filterResponseHeaders,
   transformContent,
   compressGzip,
 } from './shared.js';
 import { resetConfig, updateConfig, type RevampConfig } from '../config/index.js';
+import { clearCache } from '../cache/index.js';
 import { gzipSync, brotliCompressSync, deflateSync, gunzipSync } from 'node:zlib';
+import { mkdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 describe('CORS Constants', () => {
   it('should have correct allowed methods', () => {
@@ -391,18 +399,31 @@ describe('shouldBlockDomain', () => {
 describe('shouldBlockUrl', () => {
   const mockConfig = {
     removeTracking: true,
-    trackingUrls: ['/analytics.js', '/gtag/js', 'utm_source=', '/metrics'],
+    trackingUrls: ['/analytics.js', '/gtag/js', '/metrics', '/stat', '/hit'],
   } as unknown as RevampConfig;
 
-  it('should block URLs matching tracking patterns', () => {
+  it('should block URLs matching tracking patterns by exact path', () => {
     expect(shouldBlockUrl('https://example.com/analytics.js', mockConfig)).toBe(true);
+    expect(shouldBlockUrl('https://example.com/metrics', mockConfig)).toBe(true);
+  });
+
+  it('should block URLs where pattern is a prefix path segment', () => {
     expect(shouldBlockUrl('https://example.com/gtag/js?id=123', mockConfig)).toBe(true);
-    expect(shouldBlockUrl('https://example.com/page?utm_source=google', mockConfig)).toBe(true);
+    expect(shouldBlockUrl('https://example.com/stat/click?id=1', mockConfig)).toBe(true);
   });
 
   it('should not block regular URLs', () => {
     expect(shouldBlockUrl('https://example.com/app.js', mockConfig)).toBe(false);
     expect(shouldBlockUrl('https://example.com/page', mockConfig)).toBe(false);
+  });
+
+  it('should not produce false positives via substring overlap (T19)', () => {
+    // /stat must NOT match /architect/...
+    expect(shouldBlockUrl('https://example.com/architect/page', mockConfig)).toBe(false);
+    // /hit must NOT match /health-status/...
+    expect(shouldBlockUrl('https://example.com/health-status/check', mockConfig)).toBe(false);
+    // /metrics must NOT match /metricstore/...
+    expect(shouldBlockUrl('https://example.com/metricstore/x', mockConfig)).toBe(false);
   });
 
   it('should be case-insensitive', () => {
@@ -534,6 +555,246 @@ describe('removeCorsHeaders', () => {
     expect(headers['access-control-expose-headers']).toBeUndefined();
     expect(headers['access-control-allow-credentials']).toBeUndefined();
     expect(headers['access-control-max-age']).toBeUndefined();
+  });
+});
+
+describe('resolveCorsAllowOrigin (T9)', () => {
+  it('returns null when profile is null (default off)', () => {
+    expect(resolveCorsAllowOrigin(null, 'https://example.com')).toBeNull();
+  });
+
+  it('returns null when profile lacks corsAllowOrigins', () => {
+    expect(resolveCorsAllowOrigin({}, 'https://example.com')).toBeNull();
+  });
+
+  it('returns null when corsAllowOrigins is empty', () => {
+    expect(resolveCorsAllowOrigin({ corsAllowOrigins: [] }, 'https://example.com')).toBeNull();
+  });
+
+  it('returns origin when explicitly listed', () => {
+    expect(
+      resolveCorsAllowOrigin(
+        { corsAllowOrigins: ['https://example.com'] },
+        'https://example.com'
+      )
+    ).toBe('https://example.com');
+  });
+
+  it('returns null when origin is not in allow list', () => {
+    expect(
+      resolveCorsAllowOrigin(
+        { corsAllowOrigins: ['https://allowed.example'] },
+        'https://attacker.example'
+      )
+    ).toBeNull();
+  });
+
+  it('reflects request origin when allow list contains "*"', () => {
+    expect(
+      resolveCorsAllowOrigin(
+        { corsAllowOrigins: ['*'] },
+        'https://anything.example'
+      )
+    ).toBe('https://anything.example');
+  });
+
+  it('returns "*" when allow list contains "*" and request has no origin', () => {
+    expect(resolveCorsAllowOrigin({ corsAllowOrigins: ['*'] }, undefined)).toBe('*');
+  });
+
+  it('returns null when no request origin and allow list does not include "*"', () => {
+    expect(
+      resolveCorsAllowOrigin({ corsAllowOrigins: ['https://example.com'] }, undefined)
+    ).toBeNull();
+  });
+});
+
+describe('buildScopedCorsHeaders (T9)', () => {
+  it('returns empty object by default (profile null)', () => {
+    expect(buildScopedCorsHeaders(null, 'https://example.com')).toEqual({});
+  });
+
+  it('returns empty object when corsAllowOrigins is absent', () => {
+    expect(buildScopedCorsHeaders({}, 'https://example.com')).toEqual({});
+  });
+
+  it('emits ACAO when origin matches profile allow list', () => {
+    const headers = buildScopedCorsHeaders(
+      { corsAllowOrigins: ['https://example.com'] },
+      'https://example.com'
+    );
+    expect(headers['access-control-allow-origin']).toBe('https://example.com');
+    expect(headers['access-control-allow-methods']).toBe(CORS_ALLOWED_METHODS);
+    expect(headers['access-control-allow-headers']).toBe(CORS_ALLOWED_HEADERS);
+    expect(headers['access-control-expose-headers']).toBe(CORS_EXPOSE_HEADERS);
+  });
+
+  it('does not emit headers when origin does not match', () => {
+    const headers = buildScopedCorsHeaders(
+      { corsAllowOrigins: ['https://example.com'] },
+      'https://attacker.example'
+    );
+    expect(headers).toEqual({});
+  });
+
+  it('does not emit credentials unless explicitly opted in', () => {
+    const headers = buildScopedCorsHeaders(
+      { corsAllowOrigins: ['https://example.com'] },
+      'https://example.com'
+    );
+    expect(headers['access-control-allow-credentials']).toBeUndefined();
+  });
+
+  it('emits credentials only when corsAllowCredentials is true', () => {
+    const headers = buildScopedCorsHeaders(
+      {
+        corsAllowOrigins: ['https://example.com'],
+        corsAllowCredentials: true,
+      },
+      'https://example.com'
+    );
+    expect(headers['access-control-allow-credentials']).toBe('true');
+  });
+});
+
+describe('buildScopedCorsHeadersString (T9)', () => {
+  it('returns empty string by default', () => {
+    expect(buildScopedCorsHeadersString(null, 'https://example.com')).toBe('');
+  });
+
+  it('emits headers when origin matches', () => {
+    const headersStr = buildScopedCorsHeadersString(
+      { corsAllowOrigins: ['https://example.com'] },
+      'https://example.com'
+    );
+    expect(headersStr).toContain('Access-Control-Allow-Origin: https://example.com\r\n');
+    expect(headersStr).not.toContain('Access-Control-Allow-Credentials');
+  });
+
+  it('opts in credentials when configured', () => {
+    const headersStr = buildScopedCorsHeadersString(
+      {
+        corsAllowOrigins: ['https://example.com'],
+        corsAllowCredentials: true,
+      },
+      'https://example.com'
+    );
+    expect(headersStr).toContain('Access-Control-Allow-Credentials: true\r\n');
+  });
+});
+
+describe('buildScopedCorsPreflightResponse (T9)', () => {
+  it('returns null when profile has not opted in', () => {
+    expect(buildScopedCorsPreflightResponse(null, 'https://example.com')).toBeNull();
+  });
+
+  it('returns 204 preflight when origin matches', () => {
+    const response = buildScopedCorsPreflightResponse(
+      { corsAllowOrigins: ['https://example.com'] },
+      'https://example.com'
+    );
+    expect(response).not.toBeNull();
+    expect(response).toContain('HTTP/1.1 204 No Content\r\n');
+    expect(response).toContain('Access-Control-Allow-Origin: https://example.com\r\n');
+    expect(response).toContain('Access-Control-Max-Age: 86400\r\n');
+  });
+
+  it('omits credentials in preflight unless explicitly opted in', () => {
+    const response = buildScopedCorsPreflightResponse(
+      { corsAllowOrigins: ['https://example.com'] },
+      'https://example.com'
+    );
+    expect(response).not.toContain('Access-Control-Allow-Credentials');
+  });
+});
+
+describe('CORS wildcard + credentials misconfig collapses to OFF (T9 P1-G1)', () => {
+  const originalWarn = console.warn;
+  let warnCalls: unknown[][] = [];
+
+  beforeEach(() => {
+    warnCalls = [];
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+  });
+
+  afterEach(() => {
+    console.warn = originalWarn;
+  });
+
+  it('resolveCorsAllowOrigin returns null when "*" + credentials and warns', () => {
+    const result = resolveCorsAllowOrigin(
+      { corsAllowOrigins: ['*'], corsAllowCredentials: true },
+      'https://attacker.example'
+    );
+    expect(result).toBeNull();
+    expect(warnCalls.length).toBe(1);
+    expect(warnCalls[0]?.[0]).toContain('[cors]');
+  });
+
+  it('resolveCorsAllowOrigin still returns null on misconfig when no request origin', () => {
+    const result = resolveCorsAllowOrigin(
+      { corsAllowOrigins: ['*'], corsAllowCredentials: true },
+      undefined
+    );
+    expect(result).toBeNull();
+  });
+
+  it('buildScopedCorsHeaders emits NO Access-Control-Allow-* headers under misconfig', () => {
+    const headers = buildScopedCorsHeaders(
+      { corsAllowOrigins: ['*'], corsAllowCredentials: true },
+      'https://attacker.example'
+    );
+    expect(headers).toEqual({});
+    expect(headers['access-control-allow-origin']).toBeUndefined();
+    expect(headers['access-control-allow-credentials']).toBeUndefined();
+    expect(headers['access-control-allow-methods']).toBeUndefined();
+    expect(headers['access-control-allow-headers']).toBeUndefined();
+    expect(headers['access-control-expose-headers']).toBeUndefined();
+  });
+
+  it('buildScopedCorsHeadersString emits NO Access-Control-Allow-* under misconfig', () => {
+    const result = buildScopedCorsHeadersString(
+      { corsAllowOrigins: ['*'], corsAllowCredentials: true },
+      'https://attacker.example'
+    );
+    expect(result).toBe('');
+    expect(result).not.toContain('Access-Control-Allow-Origin');
+    expect(result).not.toContain('Access-Control-Allow-Credentials');
+    expect(result).not.toContain('Access-Control-Allow-Methods');
+    expect(result).not.toContain('Access-Control-Allow-Headers');
+  });
+
+  it('buildScopedCorsPreflightResponse returns null under misconfig (no permissive preflight)', () => {
+    const response = buildScopedCorsPreflightResponse(
+      { corsAllowOrigins: ['*'], corsAllowCredentials: true },
+      'https://attacker.example'
+    );
+    expect(response).toBeNull();
+  });
+
+  it('still works correctly when "*" is used without credentials', () => {
+    const headers = buildScopedCorsHeaders(
+      { corsAllowOrigins: ['*'], corsAllowCredentials: false },
+      'https://anything.example'
+    );
+    expect(headers['access-control-allow-origin']).toBe('https://anything.example');
+    expect(headers['access-control-allow-credentials']).toBeUndefined();
+    expect(warnCalls.length).toBe(0);
+  });
+
+  it('still works correctly with explicit origin + credentials (no wildcard)', () => {
+    const headers = buildScopedCorsHeaders(
+      {
+        corsAllowOrigins: ['https://app.example.com'],
+        corsAllowCredentials: true,
+      },
+      'https://app.example.com'
+    );
+    expect(headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(headers['access-control-allow-credentials']).toBe('true');
+    expect(warnCalls.length).toBe(0);
   });
 });
 
@@ -708,6 +969,129 @@ describe('transformContent', () => {
     const result = await transformContent(buffer, 'html', 'https://example.com/fragment.html');
     // Should return original since isHtmlDocument returns false
     expect(result.toString()).toContain('Fragment');
+  });
+});
+
+describe('transformContent cache isolation by cookie (T4 end-to-end)', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-transform-cache-test-' + Date.now());
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheTTL: 3600,
+      cacheDir: testCacheDir,
+      transformHtml: true,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should NOT serve user A html to user B when only the cookie differs (NAT leak repro)', async () => {
+    // Two distinct authenticated users sharing one NAT'd client IP. Without
+    // the cookie/auth fingerprint being threaded through transformContent's
+    // cache lookup, user B would receive user A's privately-rendered HTML.
+    const url = 'https://example.com/dashboard';
+    const sharedClientIp = '198.51.100.42';
+    const userAHtml = '<!DOCTYPE html><html><body><p>Alice secret dashboard</p></body></html>';
+    const userBHtml = '<!DOCTYPE html><html><body><p>Bob secret dashboard</p></body></html>';
+
+    const userAHeaders = { cookie: 'session=alice-abc; csrftoken=aaa' };
+    const userBHeaders = { cookie: 'auth=bob-bearer; sid=bbb' };
+
+    // User A's response is transformed and cached against their cookie shape.
+    const aResult = await transformContent(
+      Buffer.from(userAHtml),
+      'html',
+      url,
+      'utf-8',
+      undefined,
+      sharedClientIp,
+      'GET',
+      userAHeaders
+    );
+    expect(aResult.toString()).toContain('Alice');
+
+    // User B hits the same URL through the same NAT'd IP with different
+    // cookies. They MUST miss A's cache and see their own (different) body
+    // — this exercises the path that was previously unreachable in prod.
+    const bResult = await transformContent(
+      Buffer.from(userBHtml),
+      'html',
+      url,
+      'utf-8',
+      undefined,
+      sharedClientIp,
+      'GET',
+      userBHeaders
+    );
+    expect(bResult.toString()).toContain('Bob');
+    expect(bResult.toString()).not.toContain('Alice');
+
+    // User A re-requests with their own cookies — should still get their body.
+    const aReplay = await transformContent(
+      Buffer.from('IGNORED IF CACHED'),
+      'html',
+      url,
+      'utf-8',
+      undefined,
+      sharedClientIp,
+      'GET',
+      userAHeaders
+    );
+    expect(aReplay.toString()).toContain('Alice');
+  });
+
+  it('should NOT cache when upstream sets Cache-Control: private', async () => {
+    // Even if all key components match, an origin marking the response
+    // private must keep it out of Revamp's shared cache.
+    const url = 'https://example.com/private-fragment';
+    const html = '<!DOCTYPE html><html><body><p>private body</p></body></html>';
+    const sharedClientIp = '198.51.100.99';
+    const headers = { cookie: 'session=charlie' };
+
+    await transformContent(
+      Buffer.from(html),
+      'html',
+      url,
+      'utf-8',
+      undefined,
+      sharedClientIp,
+      'GET',
+      headers,
+      { 'cache-control': 'private, max-age=600' }
+    );
+
+    // Replay with same identity but a deliberately-different body. If the
+    // first call had cached, this would return the first body; if it didn't
+    // cache, we'll see the new body. The latter is correct.
+    const replay = await transformContent(
+      Buffer.from('<!DOCTYPE html><html><body><p>different body</p></body></html>'),
+      'html',
+      url,
+      'utf-8',
+      undefined,
+      sharedClientIp,
+      'GET',
+      headers,
+      { 'cache-control': 'private, max-age=600' }
+    );
+    expect(replay.toString()).toContain('different body');
+    expect(replay.toString()).not.toContain('private body');
   });
 });
 

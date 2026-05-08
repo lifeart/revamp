@@ -5,8 +5,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createPluginContext, cleanupPluginResources } from './context.js';
+import {
+  createPluginContext,
+  cleanupPluginResources,
+  __ssrfTesting,
+} from './context.js';
 import type { PluginPermission } from './types.js';
+import type { LookupAddress } from 'node:dns';
 
 describe('Plugin Context Security', () => {
   const testPluginId = 'com.test.security-plugin';
@@ -44,11 +49,11 @@ describe('Plugin Context Security', () => {
       );
 
       await expect(context.fetch('http://127.0.0.1/api')).rejects.toThrow(
-        'Fetch blocked: Localhost URLs are not allowed'
+        /Fetch blocked: (Localhost URLs|Loopback IP range)/
       );
 
       await expect(context.fetch('http://0.0.0.0/api')).rejects.toThrow(
-        'Fetch blocked: Localhost URLs are not allowed'
+        /Fetch blocked: (Localhost URLs|Loopback IP range)/
       );
 
       await expect(context.fetch('http://test.localhost/api')).rejects.toThrow(
@@ -91,16 +96,16 @@ describe('Plugin Context Security', () => {
       const context = createPluginContext(testPluginId, allPermissions);
 
       await expect(context.fetch('http://169.254.0.1/api')).rejects.toThrow(
-        'Fetch blocked: Link-local IP range not allowed'
+        /Fetch blocked: Link-local IP range/
       );
     });
 
     it('should block cloud metadata endpoints', async () => {
       const context = createPluginContext(testPluginId, allPermissions);
 
-      // AWS/GCP metadata
+      // AWS/GCP metadata IP — caught by stricter link-local IP check before reaching the cloud-metadata heuristic
       await expect(context.fetch('http://169.254.169.254/latest/meta-data')).rejects.toThrow(
-        'Fetch blocked: Cloud metadata endpoints not allowed'
+        /Fetch blocked: (Link-local IP range|Cloud metadata endpoints)/
       );
 
       // Google metadata
@@ -301,5 +306,164 @@ describe('Plugin Context Security', () => {
         "does not have permission 'storage:write'"
       );
     });
+  });
+
+  describe('Hook Registration Permission Enforcement (T15)', () => {
+    it('should reject response:post registration when plugin has no permissions', () => {
+      const context = createPluginContext(testPluginId, []);
+
+      expect(() =>
+        context.registerHook('response:post', () => Promise.resolve({ continue: true as const }))
+      ).toThrow(
+        `Plugin ${testPluginId} lacks permission response:modify required for hook response:post`
+      );
+    });
+
+    it('should reject request:pre registration without request:modify', () => {
+      const context = createPluginContext(testPluginId, ['response:modify']);
+
+      expect(() =>
+        context.registerHook('request:pre', () => Promise.resolve({ continue: true as const }))
+      ).toThrow(
+        `Plugin ${testPluginId} lacks permission request:modify required for hook request:pre`
+      );
+    });
+
+    it('should reject config:resolution registration without config:read', () => {
+      const context = createPluginContext(testPluginId, []);
+
+      expect(() =>
+        context.registerHook('config:resolution', () =>
+          Promise.resolve({ continue: true as const })
+        )
+      ).toThrow(
+        `Plugin ${testPluginId} lacks permission config:read required for hook config:resolution`
+      );
+    });
+
+    it('should reject cache:get without cache:read', () => {
+      const context = createPluginContext(testPluginId, ['cache:write']);
+
+      expect(() =>
+        context.registerHook('cache:get', () => Promise.resolve({ continue: true as const }))
+      ).toThrow(
+        `Plugin ${testPluginId} lacks permission cache:read required for hook cache:get`
+      );
+    });
+
+    it('should reject metrics:record without metrics:write', () => {
+      const context = createPluginContext(testPluginId, ['metrics:read']);
+
+      expect(() =>
+        context.registerHook('metrics:record', () => Promise.resolve())
+      ).toThrow(
+        `Plugin ${testPluginId} lacks permission metrics:write required for hook metrics:record`
+      );
+    });
+  });
+});
+
+describe('SSRF DNS rebinding (T39 P1-2)', () => {
+  // Restore the real resolver after each test so we never leak the stub.
+  afterEach(() => {
+    __ssrfTesting.setResolver(null);
+  });
+
+  function stub(addresses: LookupAddress[]): void {
+    __ssrfTesting.setResolver(() => Promise.resolve(addresses));
+  }
+
+  it('rejects when resolver returns 127.0.0.1', async () => {
+    stub([{ address: '127.0.0.1', family: 4 }]);
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('rebind.example')
+    ).rejects.toThrow(/Loopback IP range/);
+  });
+
+  it('rejects when resolver returns ::1', async () => {
+    stub([{ address: '::1', family: 6 }]);
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('rebind.example')
+    ).rejects.toThrow(/IPv6 loopback/);
+  });
+
+  it('rejects when resolver returns ::ffff:169.254.169.254 (IPv4-mapped link-local)', async () => {
+    stub([{ address: '::ffff:169.254.169.254', family: 6 }]);
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('rebind.example')
+    ).rejects.toThrow(/IPv4-mapped IPv6 -> Link-local/);
+  });
+
+  it('rejects when resolver returns fe80::1 (IPv6 link-local)', async () => {
+    stub([{ address: 'fe80::1', family: 6 }]);
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('rebind.example')
+    ).rejects.toThrow(/IPv6 link-local/);
+  });
+
+  it('rejects when resolver returns fc00::1 (IPv6 ULA)', async () => {
+    stub([{ address: 'fc00::1', family: 6 }]);
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('rebind.example')
+    ).rejects.toThrow(/IPv6 ULA/);
+  });
+
+  it('rejects DNS rebinding: pre-check returns public IP, post-check returns 127.0.0.1', async () => {
+    // Simulate the classic DNS rebinding race: the resolver hands back a
+    // public IP first (so the pre-check passes), then a private IP on a
+    // subsequent lookup. With pinned lookup, the second call would either
+    // be rejected by the pre-check (this test) or short-circuited by the
+    // pinned dispatcher (covered by integration). Here we exercise the
+    // rejection path: validation must trip on the second lookup.
+    let callCount = 0;
+    __ssrfTesting.setResolver(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve([{ address: '8.8.8.8', family: 4 }] as LookupAddress[]);
+      }
+      return Promise.resolve([{ address: '127.0.0.1', family: 4 }] as LookupAddress[]);
+    });
+
+    // First call: passes (public IP).
+    const safe = await __ssrfTesting.assertResolvedHostSafe('rebind.example');
+    expect(safe).not.toBeNull();
+    expect(safe![0].address).toBe('8.8.8.8');
+
+    // Second call: would have been rebound to 127.0.0.1 — the validator
+    // must reject. This proves the assertion catches rebinding even when
+    // the dispatcher pin (the actual TOCTOU close) is bypassed.
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('rebind.example')
+    ).rejects.toThrow(/Loopback IP range/);
+  });
+
+  it('returns the validated addresses for caller to pin into Undici dispatcher', async () => {
+    // The pinning contract: assertResolvedHostSafe returns the list of safe
+    // addresses, so fetch() can build a dispatcher that bypasses the
+    // resolver entirely. This is what closes the TOCTOU rebinding window.
+    stub([
+      { address: '8.8.8.8', family: 4 },
+      { address: '8.8.4.4', family: 4 },
+    ]);
+    const result = await __ssrfTesting.assertResolvedHostSafe('public.example');
+    expect(result).toEqual([
+      { address: '8.8.8.8', family: 4 },
+      { address: '8.8.4.4', family: 4 },
+    ]);
+  });
+
+  it('returns null for literal IP hostnames (no DNS work needed)', async () => {
+    // Literal IPs have already been classified by the URL-parser path;
+    // there's no resolver call to pin, so we return null and let Undici
+    // dial the literal directly.
+    const result = await __ssrfTesting.assertResolvedHostSafe('1.1.1.1');
+    expect(result).toBeNull();
+  });
+
+  it('rejects when resolver returns no addresses', async () => {
+    stub([]);
+    await expect(
+      __ssrfTesting.assertResolvedHostSafe('empty.example')
+    ).rejects.toThrow(/returned no addresses/);
   });
 });

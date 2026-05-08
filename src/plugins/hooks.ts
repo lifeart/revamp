@@ -11,7 +11,32 @@
 import type { RevampConfig } from '../config/index.js';
 import type { DomainProfile } from '../config/domain-rules.js';
 import type { ContentType } from '../proxy/types.js';
-import type { HookName } from './types.js';
+import type { HookName, PluginPermission } from './types.js';
+
+/**
+ * T15 (canonical): required permission for each hook name. A plugin must
+ * declare the mapped permission in its manifest; otherwise `registerHook`
+ * throws. Without this, a plugin with zero declared permissions could
+ * register `response:post` and rewrite every proxied response body.
+ *
+ * This is the single source of truth — both `createPluginContext` (production)
+ * and `createTestContext` (test harness) import from here so the two surfaces
+ * cannot drift. Round 1 review flagged the previous duplicate definitions.
+ */
+export const HOOK_PERMISSION_REQUIREMENTS: Readonly<
+  Record<HookName, PluginPermission>
+> = {
+  'request:pre': 'request:modify',
+  'response:post': 'response:modify',
+  'transform:pre': 'response:modify',
+  'transform:post': 'response:modify',
+  'filter:decision': 'request:modify',
+  'config:resolution': 'config:read',
+  'domain:lifecycle': 'config:read',
+  'cache:get': 'cache:read',
+  'cache:set': 'cache:write',
+  'metrics:record': 'metrics:write',
+};
 
 /**
  * Request context passed to request hooks

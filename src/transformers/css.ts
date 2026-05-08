@@ -11,6 +11,8 @@ import { hasDarkModeQueries, stripAllDarkModeCSS } from './dark-mode-strip.js';
 
 // PostCSS processor instance (cached)
 let processor: ReturnType<typeof postcss> | null = null;
+// Targets used to build the cached processor; used to invalidate when config.targets changes
+let processorTargets: string | null = null;
 
 /**
  * Custom PostCSS plugin to add webkit prefixes for flexbox and grid
@@ -81,11 +83,20 @@ const webkitFlexGridPlugin: Plugin = {
 webkitFlexGridPlugin.postcssPlugin = 'webkit-flex-grid';
 
 function getProcessor(): ReturnType<typeof postcss> {
-  if (processor) {
+  const config = getConfig();
+  const targetsKey = config.targets.join(', ');
+
+  if (processor && processorTargets === targetsKey) {
     return processor;
   }
 
-  const config = getConfig();
+  // Targets changed (or first run) — rebuild the processor so new browser
+  // compatibility settings actually take effect.
+  if (processor && processorTargets !== targetsKey) {
+    resetCssProcessor();
+  }
+
+  processorTargets = targetsKey;
 
   processor = postcss([
     // First apply our webkit flexbox/grid prefixes
@@ -93,7 +104,7 @@ function getProcessor(): ReturnType<typeof postcss> {
     // Then apply postcss-preset-env for other transformations
     postcssPresetEnv({
       // iOS 9 compatible features
-      browsers: config.targets.join(', '),
+      browsers: targetsKey,
       // Stage 2 features are reasonably stable
       stage: 2,
       features: {
@@ -243,4 +254,5 @@ export function needsCssTransform(code: string): boolean {
  */
 export function resetCssProcessor(): void {
   processor = null;
+  processorTargets = null;
 }

@@ -23,6 +23,22 @@ export interface BandwidthMetrics {
   savedBytes: number;
 }
 
+/**
+ * T25: per-host counters surfaced in the admin domain panel so users can
+ * answer "why is this site blank on my iPad?" without reading server logs.
+ */
+export interface HostMetrics {
+  host: string;
+  blocked: number;
+  transformedJs: number;
+  transformedCss: number;
+  transformedHtml: number;
+  transformedImages: number;
+  errors: number;
+  /** Cap-20 ring buffer of most recent URLs (newest first). */
+  lastUrls: string[];
+}
+
 export interface ProxyMetrics {
   startTime: number;
   uptime: number;
@@ -34,6 +50,8 @@ export interface ProxyMetrics {
   errors: number;
   activeConnections: number;
   peakConnections: number;
+  /** T25: per-host breakdown. Keyed by hostname. */
+  hosts: HostMetrics[];
 }
 
 // Metrics storage
@@ -60,6 +78,120 @@ const metrics = {
   activeConnections: 0,
   peakConnections: 0
 };
+
+/** Maximum number of URLs to retain per host (newest first). */
+const HOST_LAST_URLS_CAP = 20;
+
+/**
+ * Maximum number of distinct hosts to retain. Prevents unbounded growth on
+ * CDN-heavy sites with thousands of subdomains, or under attack from a
+ * client hitting `<random>.example.com`. Each entry is ~520B + up to 20
+ * URL strings, so 500 caps the per-host map at a few MB worst case.
+ */
+const HOST_METRICS_CAP = 500;
+
+/** T25: per-host counters. Keyed by hostname (lowercase, no port). */
+const hostMetrics = new Map<string, HostMetrics>();
+
+/**
+ * Extract a normalised hostname from a URL string. Returns null when the
+ * input is not a parseable absolute URL — in that case the caller skips the
+ * per-host record (the global counters still increment).
+ */
+function extractHost(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get-or-create the per-host record. Hidden from callers; they go through
+ * `recordHost*` helpers below so the call sites stay obvious.
+ *
+ * LRU semantics: existing entries are deleted and re-set so the host moves
+ * to the tail (Map iteration order is insertion order). When the map
+ * exceeds `HOST_METRICS_CAP`, the oldest (head) entry is evicted. This
+ * keeps the working set bounded under attack or CDN sprawl without
+ * starving legitimate hosts.
+ */
+function getHostEntry(host: string): HostMetrics {
+  const existing = hostMetrics.get(host);
+  if (existing) {
+    // Touch: move to most-recent position by re-inserting.
+    hostMetrics.delete(host);
+    hostMetrics.set(host, existing);
+    return existing;
+  }
+  const entry: HostMetrics = {
+    host,
+    blocked: 0,
+    transformedJs: 0,
+    transformedCss: 0,
+    transformedHtml: 0,
+    transformedImages: 0,
+    errors: 0,
+    lastUrls: [],
+  };
+  hostMetrics.set(host, entry);
+  if (hostMetrics.size > HOST_METRICS_CAP) {
+    // Evict oldest (first-iterated key in insertion order).
+    const oldest = hostMetrics.keys().next().value;
+    if (oldest !== undefined) hostMetrics.delete(oldest);
+  }
+  return entry;
+}
+
+function pushHostUrl(entry: HostMetrics, url: string): void {
+  // De-dupe consecutive identical URLs (avoids filling the ring with the
+  // same favicon hit on a refresh).
+  if (entry.lastUrls[0] === url) return;
+  entry.lastUrls.unshift(url);
+  if (entry.lastUrls.length > HOST_LAST_URLS_CAP) {
+    entry.lastUrls.length = HOST_LAST_URLS_CAP;
+  }
+}
+
+/**
+ * T25: record a blocked event with its source URL.
+ */
+export function recordHostBlocked(url: string | undefined): void {
+  const host = extractHost(url);
+  if (!host) return;
+  const entry = getHostEntry(host);
+  entry.blocked++;
+  if (url) pushHostUrl(entry, url);
+}
+
+/**
+ * T25: record a transform event for a specific host.
+ */
+export function recordHostTransform(
+  url: string | undefined,
+  type: 'js' | 'css' | 'html' | 'images'
+): void {
+  const host = extractHost(url);
+  if (!host) return;
+  const entry = getHostEntry(host);
+  if (type === 'js') entry.transformedJs++;
+  else if (type === 'css') entry.transformedCss++;
+  else if (type === 'html') entry.transformedHtml++;
+  else entry.transformedImages++;
+  if (url) pushHostUrl(entry, url);
+}
+
+/**
+ * T25: record an error for a specific host.
+ */
+export function recordHostError(url: string | undefined): void {
+  const host = extractHost(url);
+  if (!host) return;
+  const entry = getHostEntry(host);
+  entry.errors++;
+  if (url) pushHostUrl(entry, url);
+}
 
 /**
  * Record a new request
@@ -133,6 +265,14 @@ export function getMetrics(): ProxyMetrics {
     ? (metrics.requests.transformed / metrics.requests.total) * 100
     : 0;
 
+  const hosts: HostMetrics[] = [];
+  for (const entry of hostMetrics.values()) {
+    hosts.push({
+      ...entry,
+      lastUrls: entry.lastUrls.slice(),
+    });
+  }
+
   return {
     startTime: metrics.startTime,
     uptime,
@@ -143,8 +283,20 @@ export function getMetrics(): ProxyMetrics {
     transformRate,
     errors: metrics.errors,
     activeConnections: metrics.activeConnections,
-    peakConnections: metrics.peakConnections
+    peakConnections: metrics.peakConnections,
+    hosts,
   };
+}
+
+/**
+ * Get the per-host metrics for one specific host. Returns null when the
+ * host has not been recorded yet. Exported for the admin domain panel
+ * (T25) which renders one entry per profile.
+ */
+export function getHostMetrics(host: string): HostMetrics | null {
+  const entry = hostMetrics.get(host.toLowerCase());
+  if (!entry) return null;
+  return { ...entry, lastUrls: entry.lastUrls.slice() };
 }
 
 /**
@@ -166,6 +318,7 @@ export function resetMetrics(): void {
   metrics.errors = 0;
   metrics.activeConnections = 0;
   metrics.peakConnections = 0;
+  hostMetrics.clear();
 }
 
 /**

@@ -76,6 +76,24 @@ export interface DomainProfile {
   customAdSelectors?: string[];
   /** Custom tracking pixel CSS selectors */
   customTrackingSelectors?: string[];
+  /**
+   * Origins that should receive `Access-Control-Allow-Origin` injection on
+   * proxied responses for this profile (T9). Default behaviour with this
+   * field absent is "no CORS injection" — Revamp will not add cross-origin
+   * permission headers to upstream responses, preventing one proxied site
+   * from being readable by every other proxied site.
+   *
+   * Use the literal string `'*'` to allow any origin; otherwise list the
+   * specific client origins you trust.
+   */
+  corsAllowOrigins?: string[];
+  /**
+   * Whether to emit `Access-Control-Allow-Credentials: true` alongside
+   * `corsAllowOrigins` (T9). Off unless explicitly enabled — credentials
+   * mode requires conscious opt-in because it lets the browser send cookies
+   * and HTTP auth cross-origin.
+   */
+  corsAllowCredentials?: boolean;
   /** Whether this profile is enabled */
   enabled: boolean;
   /** Creation timestamp */
