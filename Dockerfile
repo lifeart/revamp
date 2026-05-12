@@ -2,7 +2,7 @@
 # Multi-stage build for optimal image size
 
 # Build stage
-FROM node:24-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ COPY src ./src
 RUN pnpm build
 
 # Production stage
-FROM node:24-alpine AS production
+FROM node:26-alpine AS production
 
 WORKDIR /app
 

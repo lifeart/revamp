@@ -1,7 +1,7 @@
 # Revamp Development Environment
 # Includes all development dependencies and hot-reload
 
-FROM node:24-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
