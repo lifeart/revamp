@@ -1,0 +1,16 @@
+{
+  "id": "com.revamp.request-timer",
+  "name": "Request Timer",
+  "version": "1.0.0",
+  "description": "Times every proxied request via shared per-request plugin data and exposes aggregate stats on a custom API endpoint",
+  "author": "Revamp",
+  "revampVersion": "1.0.0",
+  "main": "index.js",
+  "permissions": [
+    "request:modify",
+    "response:modify",
+    "metrics:write",
+    "api:register"
+  ],
+  "hooks": ["request:pre", "response:post"]
+}

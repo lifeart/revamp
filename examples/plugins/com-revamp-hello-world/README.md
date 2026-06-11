@@ -24,5 +24,5 @@ header value is `world`; override it through the plugin's config:
 ## Run the test
 
 ```bash
-pnpm exec vitest run examples/plugins/hello-world/index.test.ts
+pnpm exec vitest run examples/plugins/com-revamp-hello-world/index.test.ts
 ```
