@@ -15,6 +15,23 @@
 
 Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern websites work again!
 
+## 📑 Table of Contents
+
+- [Features](#-features)
+- [Quick Start](#-quick-start) — [Docker](#docker) · [Device Setup](#device-setup)
+- [Detailed Setup](#-detailed-setup) — certificate install & proxy config
+- [Configuration](#-configuration) — [CLI Options](#cli-options) · [Embedding](#embedding) · [Runtime API](#runtime-configuration-api)
+- [Architecture](#-architecture) — request lifecycle, registry, worker pools, cache
+- [Project Structure](#-project-structure)
+- [API Endpoints](#-api-endpoints)
+- [Domain Profiles](#-domain-profiles) — per-domain rules & CORS
+- [Multi-Device Support](#-multi-device-support)
+- [Plugin System](#-plugin-system) — hooks, permissions, transformers, testing
+- [Testing](#-testing)
+- [Troubleshooting](#-troubleshooting)
+- [Dependencies](#-dependencies)
+- [Contributing](#-contributing)
+
 ## ✨ Features
 
 ### Core Proxy Features
@@ -201,7 +218,7 @@ _iOS 10.3+ (including iOS 12.2 hardening):_
 - Server: your IP, see the `🌐 Your Local IP Address(es)` banner printed by `pnpm start` (also covered in [Device Setup](#device-setup))
 - Port: `8080`
 
-## ⚙️ Configuration
+## 🧰 Configuration
 
 ### CLI Options
 
@@ -319,13 +336,13 @@ fetch("http://any-proxied-site/__revamp__/config", {
 });
 ```
 
-## 🏗️ Architecture
+## 🧱 Architecture
 
 ### Request Lifecycle
 
 Both proxy stacks converge on the same pipeline:
 
-```
+```text
 Legacy Device
    │
    ├─ SOCKS5 (port 1080) ──┐  SOCKS5 handshake / HTTP CONNECT, then TLS
@@ -370,7 +387,7 @@ Built-ins are plain registry entries. Plugins add their own transformers via `co
 
 ### Plugin Hooks
 
-Plugins observe and modify the lifecycle through 10 hooks: `request:pre`, `response:post`, `transform:pre`, `transform:post`, `filter:decision`, `config:resolution`, `domain:lifecycle`, `cache:get`, `cache:set`, and `metrics:record`. See [Plugin System](#plugin-system) for the full surface.
+Plugins observe and modify the lifecycle through 10 hooks: `request:pre`, `response:post`, `transform:pre`, `transform:post`, `filter:decision`, `config:resolution`, `domain:lifecycle`, `cache:get`, `cache:set`, and `metrics:record`. See [Plugin System](#-plugin-system) for the full surface.
 
 ### Worker Pools
 
@@ -398,7 +415,7 @@ Two tiers: an in-memory LRU for hot data (100 MB cap) backed by a persistent dis
 
 ## 📁 Project Structure
 
-```
+```text
 src/
 ├── index.ts              # Main entry point (CLI + createRevampServer)
 ├── config/               # Configuration management
@@ -566,16 +583,17 @@ Access real-time statistics at `http://any-proxied-site/__revamp__/metrics`:
 
 PAC (Proxy Auto-Config) files make device setup easier:
 
-```bash
-# Get PAC file URL for iOS configuration (replace <your IP> with the
-# address from the `🌐 Your Local IP Address(es)` banner printed by
-# `pnpm start` — see Device Setup above).
+```text
+PAC file URL for iOS configuration — replace <your IP> with the address from
+the `🌐 Your Local IP Address(es)` banner printed by `pnpm start`
+(see Device Setup above):
+
 http://<your IP>:8888/__revamp__/pac/socks5
 ```
 
 Configure iOS: **Settings → Wi-Fi → [Network] → Configure Proxy → Automatic** → Enter PAC URL
 
-### Domain Profiles
+## 🌍 Domain Profiles
 
 Domain profiles allow per-domain configuration of filtering rules and transformations. This enables fine-grained control over ad blocking, tracking removal, and content transformation for specific websites.
 
@@ -731,7 +749,7 @@ curl -X POST http://any-proxied-site/__revamp__/domains \
 
 **Configuration hierarchy:**
 
-```
+```text
 Domain Profile (highest priority)
        ↓
 Client Defaults (per-IP settings)
@@ -776,7 +794,7 @@ curl -X POST http://any-proxied-site/__revamp__/domains \
   }'
 ```
 
-### Multi-Device Support
+## 📡 Multi-Device Support
 
 Revamp supports multiple devices connecting simultaneously, each with their own configuration:
 
@@ -806,7 +824,7 @@ curl -X POST http://any-proxied-site/__revamp__/config \
 curl -X DELETE http://any-proxied-site/__revamp__/config
 ```
 
-### Plugin System
+## 🧩 Plugin System
 
 Revamp includes a powerful plugin system that allows you to extend functionality through hooks into the request/response lifecycle.
 
@@ -814,7 +832,7 @@ Revamp includes a powerful plugin system that allows you to extend functionality
 
 Plugins are installed in the `.revamp-plugins/` directory. Each plugin has its own subdirectory containing a `plugin.json` manifest and entry point.
 
-```
+```text
 .revamp-plugins/
 ├── plugins.json              # Global plugin configuration
 └── com-example-my-plugin/
@@ -1188,7 +1206,7 @@ assertStops(result);     // Passes if hook returns { continue: false }
 
 **Plugin Lifecycle:**
 
-```
+```text
 unloaded → loaded → initializing → initialized → activating → active
                                                        ↓
                                             deactivating → deactivated
@@ -1196,7 +1214,7 @@ unloaded → loaded → initializing → initialized → activating → active
 
 **Configuration Hierarchy (with plugins):**
 
-```
+```text
 Plugin Hooks (highest priority)
        ↓
 Domain Profile
