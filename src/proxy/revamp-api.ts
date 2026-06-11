@@ -16,6 +16,12 @@
  * - /__revamp__/sw/remote - Remote Service Worker WebSocket endpoint
  * - /__revamp__/sw/remote/status - Remote SW server status
  *
+ * Routing is unified on a single {@link ApiRouter} instance: this module
+ * registers the core routes, and the per-domain-area modules
+ * (config-endpoint, domain-rules-api, plugins/api) register their own.
+ * Both proxy stacks (HTTP and SOCKS5) and the captive portal funnel into
+ * {@link handleRevampRequest}, which normalizes the request and dispatches.
+ *
  * IMPORTANT: All /__revamp__/* endpoints are handled BEFORE the proxy's
  * transformation pipeline runs. This ensures:
  * - Admin panel is never modified by JS/CSS/HTML transformations
@@ -24,16 +30,18 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { log } from '../logger/log.js';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { handleConfigRequest, CONFIG_ENDPOINT, type ConfigEndpointResult } from './config-endpoint.js';
+import { ApiRouter, parseQuery, type ApiRequest, type ApiResponse, type ApiHandler } from './api-router.js';
+import { registerConfigRoutes } from './config-endpoint.js';
+import { registerDomainRulesRoutes } from './domain-rules-api.js';
+import { registerPluginRoutes } from '../plugins/api.js';
 import { generateDashboardHtml, generateMetricsJson } from '../metrics/dashboard.js';
 import { generateSocks5Pac, generateHttpPac, generateCombinedPac } from '../pac/generator.js';
 import { bundleServiceWorker, transformInlineServiceWorker } from '../transformers/sw-bundler.js';
-import { getRemoteSwStatus, isRemoteSwEndpoint } from './remote-sw-server.js';
+import { getRemoteSwStatus } from './remote-sw-server.js';
 import { getClientConfig } from '../config/index.js';
-import { isDomainRulesEndpoint, handleDomainRulesRequest, DOMAIN_RULES_BASE } from './domain-rules-api.js';
-import { isPluginEndpoint, handlePluginRequest } from '../plugins/api.js';
 import { sanitizeForLog } from '../logger/sanitize.js';
 
 // Get project root directory
@@ -77,13 +85,9 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 /**
- * API response result
+ * API response result (alias of the router's response shape)
  */
-export interface ApiResult {
-  statusCode: number;
-  headers: Record<string, string>;
-  body: string;
-}
+export type ApiResult = ApiResponse;
 
 /** Standard CORS headers */
 const CORS_HEADERS = {
@@ -91,6 +95,33 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+/**
+ * Characters that must never appear in a raw HTTP header name or value.
+ * CR (0x0D) and LF (0x0A) are the HTTP response-splitting / header-injection
+ * vector (CWE-113); the remaining C0 control characters and DEL (0x7F) have no
+ * legitimate place in a header and are rejected defensively.
+ *
+ * This matters because {@link buildRawApiResponse} (the SOCKS5 stack's raw
+ * HTTP serializer) writes header bytes straight to the socket with no `http`
+ * module to validate framing — several SW endpoints echo attacker-controlled
+ * `url`/`scope` query/body values into response headers, and `parseQuery`
+ * URL-decodes `%0d%0a` into real CR/LF. The plain-HTTP proxy stack is
+ * incidentally safe because `res.setHeader` throws on CR/LF.
+ */
+// eslint-disable-next-line no-control-regex -- CR/LF/control chars are the injection vector we detect
+const UNSAFE_HEADER_CHAR = /[\x00-\x1F\x7F]/;
+
+/**
+ * Strip CR/LF and other control characters from a value before placing it in
+ * a response header. Defense-in-depth at the Service-Worker endpoints, which
+ * echo attacker-controlled `url`/`scope` values into headers;
+ * {@link buildRawApiResponse} independently guards the serializer itself.
+ */
+function stripHeaderUnsafeChars(value: string): string {
+  // eslint-disable-next-line no-control-regex -- intentionally strips control chars
+  return value.replace(/[\x00-\x1F\x7F]/g, '');
+}
 
 /**
  * Serve static files from the admin panel directory.
@@ -157,13 +188,23 @@ export function isRevampEndpoint(path: string): boolean {
 }
 
 /**
- * Handle a Revamp API request
- * @param path - API path
+ * Handle a Revamp API request — the single shared entry for both proxy
+ * stacks and the captive portal. Normalizes the raw path into an
+ * {@link ApiRequest} and dispatches through the shared router.
+ *
+ * @param path - API path (may include a query string)
  * @param method - HTTP method
  * @param body - Request body
  * @param clientIp - Optional client IP for per-client config
+ * @param headers - Optional request headers (forwarded to plugin endpoints)
  */
-export async function handleRevampRequest(path: string, method: string, body: string = '', clientIp?: string): Promise<ApiResult> {
+export async function handleRevampRequest(
+  path: string,
+  method: string,
+  body: string = '',
+  clientIp?: string,
+  headers: Record<string, string> = {}
+): Promise<ApiResult> {
   // Handle CORS preflight for all endpoints
   if (method === 'OPTIONS') {
     return {
@@ -176,137 +217,106 @@ export async function handleRevampRequest(path: string, method: string, body: st
     };
   }
 
-  // Admin panel static files - served directly without any proxy transformations
-  // This ensures the admin UI is never affected by JS/CSS/HTML transformations,
-  // ad blocking, tracking removal, or caching
-  if (path.startsWith(ENDPOINTS.admin)) {
-    const filePath = path.slice(ENDPOINTS.admin.length);
-    return serveAdminFile(filePath);
-  }
+  const queryStart = path.indexOf('?');
+  const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
+  const query = queryStart === -1 ? {} : parseQuery(path.slice(queryStart + 1));
 
-  // Domain rules API endpoints
-  if (isDomainRulesEndpoint(path)) {
-    return handleDomainRulesRequest(path, method, body);
-  }
+  return apiRouter.dispatch({ method, path: pathname, query, headers, body, clientIp });
+}
 
-  // Plugin API endpoints
-  if (path.startsWith(ENDPOINTS.plugins)) {
-    const pluginPath = path.slice(REVAMP_API_BASE.length);
-    return handlePluginRequest(pluginPath, method, body);
-  }
+// =============================================================================
+// Core Route Handlers
+// =============================================================================
 
-  // Service Worker inline transformation endpoint (POST)
-  if (path.startsWith(ENDPOINTS.swInline)) {
-    return handleSwInlineRequest(method, body, clientIp);
-  }
+/** Build a 405 handler matching the historical SW endpoint responses. */
+function methodNotAllowed(allow: string): ApiHandler {
+  return () => ({
+    statusCode: 405,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'application/json',
+      'Allow': allow,
+    },
+    body: JSON.stringify({ error: `Method not allowed. Use ${allow}.` }),
+  });
+}
 
-  // Service Worker bundle endpoint
-  if (path.startsWith(ENDPOINTS.swBundle)) {
-    return handleSwBundleRequest(path, method, clientIp);
-  }
+/** Admin panel static files - served directly without any proxy transformations */
+function handleAdminRequest(req: ApiRequest): Promise<ApiResult> {
+  return serveAdminFile(req.path.slice(ENDPOINTS.admin.length));
+}
 
-  // Config endpoint
-  if (path.startsWith(ENDPOINTS.config)) {
-    return handleConfigRequest(method, body, clientIp);
-  }
+/** Metrics JSON endpoint */
+function handleMetricsJson(): ApiResult {
+  return {
+    statusCode: 200,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    },
+    body: generateMetricsJson(),
+  };
+}
 
-  // Metrics JSON endpoint
-  if (path === ENDPOINTS.metricsJson || path === `${ENDPOINTS.metricsJson}/`) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      },
-      body: generateMetricsJson(),
-    };
-  }
+/** Metrics Dashboard endpoint (or just /metrics) */
+function handleMetricsDashboard(): ApiResult {
+  return {
+    statusCode: 200,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+    },
+    body: generateDashboardHtml(),
+  };
+}
 
-  // Metrics Dashboard endpoint (or just /metrics)
-  if (path === ENDPOINTS.metrics ||
-      path === `${ENDPOINTS.metrics}/` ||
-      path === ENDPOINTS.metricsDashboard ||
-      path === `${ENDPOINTS.metricsDashboard}/`) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store',
-      },
-      body: generateDashboardHtml(),
-    };
-  }
+/** PAC file endpoint */
+function pacResponse(filename: string, generate: () => string): ApiHandler {
+  return () => ({
+    statusCode: 200,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'application/x-ns-proxy-autoconfig',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+    body: generate(),
+  });
+}
 
-  // PAC file endpoints
-  if (path === ENDPOINTS.pacSocks5 || path === `${ENDPOINTS.pacSocks5}/`) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/x-ns-proxy-autoconfig',
-        'Content-Disposition': 'attachment; filename="revamp-socks5.pac"',
-      },
-      body: generateSocks5Pac(),
-    };
-  }
+/** Remote SW status endpoint */
+function handleSwRemoteStatus(): ApiResult {
+  return {
+    statusCode: 200,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    },
+    body: JSON.stringify(getRemoteSwStatus(), null, 2),
+  };
+}
 
-  if (path === ENDPOINTS.pacHttp || path === `${ENDPOINTS.pacHttp}/`) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/x-ns-proxy-autoconfig',
-        'Content-Disposition': 'attachment; filename="revamp-http.pac"',
-      },
-      body: generateHttpPac(),
-    };
-  }
+/** Remote SW WebSocket endpoint info (actual WebSocket handled by HTTP server upgrade) */
+function handleSwRemoteInfo(): ApiResult {
+  return {
+    statusCode: 200,
+    headers: {
+      ...CORS_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      endpoint: ENDPOINTS.swRemote,
+      description: 'Remote Service Worker WebSocket endpoint',
+      note: 'Connect via WebSocket for remote SW execution',
+      status: getRemoteSwStatus(),
+    }, null, 2),
+  };
+}
 
-  if (path === ENDPOINTS.pacCombined || path === `${ENDPOINTS.pacCombined}/`) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/x-ns-proxy-autoconfig',
-        'Content-Disposition': 'attachment; filename="revamp-combined.pac"',
-      },
-      body: generateCombinedPac(),
-    };
-  }
-
-  // Remote SW status endpoint
-  if (path === ENDPOINTS.swRemoteStatus || path === `${ENDPOINTS.swRemoteStatus}/`) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      },
-      body: JSON.stringify(getRemoteSwStatus(), null, 2),
-    };
-  }
-
-  // Remote SW WebSocket endpoint info (actual WebSocket handled by HTTP server upgrade)
-  if (isRemoteSwEndpoint(path)) {
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        endpoint: ENDPOINTS.swRemote,
-        description: 'Remote Service Worker WebSocket endpoint',
-        note: 'Connect via WebSocket for remote SW execution',
-        status: getRemoteSwStatus(),
-      }, null, 2),
-    };
-  }
-
-  // Unknown endpoint - return list of available endpoints
+/** Unknown endpoint - return list of available endpoints */
+function handleApiListing(): ApiResult {
   return {
     statusCode: 200,
     headers: {
@@ -347,21 +357,9 @@ export async function handleRevampRequest(path: string, method: string, body: st
  * Handle Service Worker bundle requests
  * URL format: /__revamp__/sw/bundle?url=<encoded-sw-url>&scope=<encoded-scope>
  */
-async function handleSwBundleRequest(path: string, method: string, clientIp?: string): Promise<ApiResult> {
-  if (method !== 'GET') {
-    return {
-      statusCode: 405,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-        'Allow': 'GET',
-      },
-      body: JSON.stringify({ error: 'Method not allowed. Use GET.' }),
-    };
-  }
-
+async function handleSwBundleRequest(req: ApiRequest): Promise<ApiResult> {
   // Check if remote SW mode is enabled - don't transpile in remote mode
-  const clientConfig = getClientConfig(clientIp);
+  const clientConfig = getClientConfig(req.clientIp);
   if (clientConfig.remoteServiceWorkers) {
     return {
       statusCode: 400,
@@ -376,26 +374,8 @@ async function handleSwBundleRequest(path: string, method: string, clientIp?: st
     };
   }
 
-  // Parse query parameters from path
-  const queryStart = path.indexOf('?');
-  if (queryStart === -1) {
-    return {
-      statusCode: 400,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        error: 'Missing required parameter: url',
-        usage: `${ENDPOINTS.swBundle}?url=<encoded-sw-url>&scope=<encoded-scope>`,
-      }),
-    };
-  }
-
-  const queryString = path.slice(queryStart + 1);
-  const params = new URLSearchParams(queryString);
-  const swUrl = params.get('url');
-  const scope = params.get('scope') || '/';
+  const swUrl = req.query['url'];
+  const scope = req.query['scope'] || '/';
 
   if (!swUrl) {
     return {
@@ -411,7 +391,13 @@ async function handleSwBundleRequest(path: string, method: string, clientIp?: st
     };
   }
 
-  console.log(`📦 SW Bundle request: ${swUrl} (scope: ${scope})`);
+  // `swUrl` and `scope` are attacker-controlled query values that get echoed
+  // into response headers below. Strip CR/LF/control chars at the source as
+  // defense-in-depth (the serializer in buildRawApiResponse guards too).
+  const safeSwUrlHeader = stripHeaderUnsafeChars(swUrl);
+  const safeScopeHeader = stripHeaderUnsafeChars(scope);
+
+  log.info('📦 SW Bundle request: %s (scope: %s)', sanitizeForLog(swUrl), sanitizeForLog(scope));
 
   try {
     const result = await bundleServiceWorker(swUrl, scope);
@@ -423,15 +409,15 @@ async function handleSwBundleRequest(path: string, method: string, clientIp?: st
           ...CORS_HEADERS,
           'Content-Type': 'application/javascript; charset=utf-8',
           'Cache-Control': 'public, max-age=3600',
-          'X-Revamp-SW-Original': swUrl,
-          'X-Revamp-SW-Scope': scope,
+          'X-Revamp-SW-Original': safeSwUrlHeader,
+          'X-Revamp-SW-Scope': safeScopeHeader,
           // Service Worker specific header
-          'Service-Worker-Allowed': scope,
+          'Service-Worker-Allowed': safeScopeHeader,
         },
         body: result.code,
       };
     } else {
-      console.warn(`⚠️ SW bundling failed for ${swUrl}: ${result.error}`);
+      log.warn('⚠️ SW bundling failed for %s: %s', sanitizeForLog(swUrl), sanitizeForLog(result.error));
       // Still return the fallback code with 200 to allow SW registration
       return {
         statusCode: 200,
@@ -439,16 +425,16 @@ async function handleSwBundleRequest(path: string, method: string, clientIp?: st
           ...CORS_HEADERS,
           'Content-Type': 'application/javascript; charset=utf-8',
           'Cache-Control': 'no-store',
-          'X-Revamp-SW-Original': swUrl,
-          'X-Revamp-SW-Error': result.error || 'Unknown error',
-          'Service-Worker-Allowed': scope,
+          'X-Revamp-SW-Original': safeSwUrlHeader,
+          'X-Revamp-SW-Error': stripHeaderUnsafeChars(result.error || 'Unknown error'),
+          'Service-Worker-Allowed': safeScopeHeader,
         },
         body: result.code,
       };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`❌ SW bundle error: ${message}`);
+    log.error(`❌ SW bundle error: ${message}`);
 
     return {
       statusCode: 500,
@@ -466,51 +452,11 @@ async function handleSwBundleRequest(path: string, method: string, clientIp?: st
 }
 
 /**
- * Build a raw HTTP response string from ApiResult
- * Used by SOCKS5 proxy which sends raw HTTP responses
- */
-export function buildRawApiResponse(result: ApiResult): string {
-  const statusMessages: Record<number, string> = {
-    200: 'OK',
-    204: 'No Content',
-    400: 'Bad Request',
-    404: 'Not Found',
-    405: 'Method Not Allowed',
-  };
-
-  const statusMessage = statusMessages[result.statusCode] || 'OK';
-  let response = `HTTP/1.1 ${result.statusCode} ${statusMessage}\r\n`;
-
-  for (const [key, value] of Object.entries(result.headers)) {
-    response += `${key}: ${value}\r\n`;
-  }
-
-  if (result.body) {
-    response += `Content-Length: ${Buffer.byteLength(result.body)}\r\n`;
-  }
-  response += 'Connection: close\r\n';
-  response += '\r\n';
-  response += result.body;
-
-  return response;
-}
-
-/**
  * Handle inline Service Worker transformation requests
  * POST body format: { code: string, scope?: string }
  */
-async function handleSwInlineRequest(method: string, body: string, clientIp?: string): Promise<ApiResult> {
-  if (method !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-        'Allow': 'POST',
-      },
-      body: JSON.stringify({ error: 'Method not allowed. Use POST.' }),
-    };
-  }
+async function handleSwInlineRequest(req: ApiRequest): Promise<ApiResult> {
+  const { body, clientIp } = req;
 
   // Check if remote SW mode is enabled - don't transpile in remote mode
   const clientConfig = getClientConfig(clientIp);
@@ -580,10 +526,15 @@ async function handleSwInlineRequest(method: string, body: string, clientIp?: st
   // `scope` arrives via JSON body and is attacker-controlled; sanitize.
   // Drop `code.length` from the format: even though it's a number, CodeQL
   // taint-tracks every property of the attacker-controlled `code` value.
-  console.log('📦 SW Inline transform request (scope: %s)', sanitizeForLog(scope));
+  log.info('📦 SW Inline transform request (scope: %s)', sanitizeForLog(scope));
 
   try {
     const result = await transformInlineServiceWorker(code, scope);
+
+    // `scope` is attacker-controlled (JSON body); strip CR/LF/control chars
+    // before echoing it into headers (defense-in-depth alongside the
+    // serializer guard in buildRawApiResponse).
+    const safeScopeHeader = stripHeaderUnsafeChars(scope);
 
     return {
       statusCode: 200,
@@ -592,14 +543,14 @@ async function handleSwInlineRequest(method: string, body: string, clientIp?: st
         'Content-Type': 'application/javascript; charset=utf-8',
         'Cache-Control': 'no-store',
         'X-Revamp-SW-Type': 'inline',
-        'X-Revamp-SW-Scope': scope,
-        'Service-Worker-Allowed': scope,
+        'X-Revamp-SW-Scope': safeScopeHeader,
+        'Service-Worker-Allowed': safeScopeHeader,
       },
       body: result.code,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`❌ SW inline transform error: ${message}`);
+    log.error(`❌ SW inline transform error: ${message}`);
 
     return {
       statusCode: 500,
@@ -613,4 +564,108 @@ async function handleSwInlineRequest(method: string, body: string, clientIp?: st
       }),
     };
   }
+}
+
+// =============================================================================
+// Route Registration
+// =============================================================================
+
+/**
+ * Register the routes owned by this module. Adding a future core endpoint
+ * means adding exactly one `router.register(...)` line here (per-area
+ * endpoints go in their owning module's `register*Routes` instead).
+ */
+function registerCoreRoutes(router: ApiRouter): void {
+  // Admin panel static files (any method, as before)
+  router.register('*', ENDPOINTS.admin, handleAdminRequest);
+  router.register('*', `${ENDPOINTS.admin}/`, handleAdminRequest);
+  router.register('*', `${ENDPOINTS.admin}/*`, handleAdminRequest);
+
+  // Service Worker inline transformation endpoint (POST)
+  router.register('POST', ENDPOINTS.swInline, handleSwInlineRequest);
+  router.register('*', ENDPOINTS.swInline, methodNotAllowed('POST'));
+
+  // Service Worker bundle endpoint
+  router.register('GET', ENDPOINTS.swBundle, handleSwBundleRequest);
+  router.register('*', ENDPOINTS.swBundle, methodNotAllowed('GET'));
+
+  // Remote SW status + WebSocket endpoint info
+  router.register('*', ENDPOINTS.swRemoteStatus, handleSwRemoteStatus);
+  router.register('*', `${ENDPOINTS.swRemoteStatus}/`, handleSwRemoteStatus);
+  router.register('*', ENDPOINTS.swRemote, handleSwRemoteInfo);
+
+  // Metrics endpoints
+  router.register('*', ENDPOINTS.metricsJson, handleMetricsJson);
+  router.register('*', `${ENDPOINTS.metricsJson}/`, handleMetricsJson);
+  router.register('*', ENDPOINTS.metrics, handleMetricsDashboard);
+  router.register('*', `${ENDPOINTS.metrics}/`, handleMetricsDashboard);
+  router.register('*', ENDPOINTS.metricsDashboard, handleMetricsDashboard);
+  router.register('*', `${ENDPOINTS.metricsDashboard}/`, handleMetricsDashboard);
+
+  // PAC file endpoints
+  router.register('*', ENDPOINTS.pacSocks5, pacResponse('revamp-socks5.pac', generateSocks5Pac));
+  router.register('*', `${ENDPOINTS.pacSocks5}/`, pacResponse('revamp-socks5.pac', generateSocks5Pac));
+  router.register('*', ENDPOINTS.pacHttp, pacResponse('revamp-http.pac', generateHttpPac));
+  router.register('*', `${ENDPOINTS.pacHttp}/`, pacResponse('revamp-http.pac', generateHttpPac));
+  router.register('*', ENDPOINTS.pacCombined, pacResponse('revamp-combined.pac', generateCombinedPac));
+  router.register('*', `${ENDPOINTS.pacCombined}/`, pacResponse('revamp-combined.pac', generateCombinedPac));
+}
+
+/** The single shared router both proxy stacks dispatch through. */
+const apiRouter = new ApiRouter();
+registerCoreRoutes(apiRouter);
+registerConfigRoutes(apiRouter);
+registerDomainRulesRoutes(apiRouter);
+registerPluginRoutes(apiRouter);
+apiRouter.setFallback(handleApiListing);
+
+/**
+ * Build a raw HTTP response string from ApiResult
+ * Used by SOCKS5 proxy which sends raw HTTP responses
+ */
+export function buildRawApiResponse(result: ApiResult): string {
+  const statusMessages: Record<number, string> = {
+    200: 'OK',
+    204: 'No Content',
+    400: 'Bad Request',
+    404: 'Not Found',
+    405: 'Method Not Allowed',
+  };
+
+  const statusMessage = statusMessages[result.statusCode] || 'OK';
+  let response = `HTTP/1.1 ${result.statusCode} ${statusMessage}\r\n`;
+
+  for (const [key, value] of Object.entries(result.headers)) {
+    // Framing headers are emitted below from the actual body bytes; skip
+    // handler-supplied copies so the response never carries duplicate or
+    // mismatched Content-Length / Connection headers.
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === 'content-length' || lowerKey === 'connection') {
+      continue;
+    }
+    // HTTP response-splitting guard (CWE-113): this serializer writes header
+    // bytes straight to the SOCKS5 socket, so a CR/LF (or other control char)
+    // in an attacker-influenced header name/value would inject an arbitrary
+    // header or split the framed response. Drop the offending header entirely
+    // and warn — never pass it through.
+    if (UNSAFE_HEADER_CHAR.test(key) || UNSAFE_HEADER_CHAR.test(value)) {
+      log.warn(
+        '🚫 Dropping API response header with control characters: %s',
+        sanitizeForLog(`${key}: ${value}`)
+      );
+      continue;
+    }
+    response += `${key}: ${value}\r\n`;
+  }
+
+  // Always emit a byte-accurate Content-Length (multi-byte UTF-8 bodies are
+  // longer in bytes than in code units), including `0` for empty bodies —
+  // the plain-HTTP SOCKS5 path leaves the socket open after writing, so an
+  // unframed response would make the client wait for an EOF that never comes.
+  response += `Content-Length: ${Buffer.byteLength(result.body)}\r\n`;
+  response += 'Connection: close\r\n';
+  response += '\r\n';
+  response += result.body;
+
+  return response;
 }

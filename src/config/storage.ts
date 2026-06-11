@@ -8,6 +8,7 @@
  */
 
 import { watch, type FSWatcher } from 'node:fs';
+import { log } from '../logger/log.js';
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -87,7 +88,7 @@ export async function readJson<T>(filename: string): Promise<T | null> {
     const content = await readFile(filePath, 'utf-8');
     return JSON.parse(content) as T;
   } catch (error) {
-    console.warn(`[Storage] Failed to read ${filename}:`, error);
+    log.warn(`[Storage] Failed to read ${filename}:`, error);
     return null;
   }
 }
@@ -113,7 +114,7 @@ export async function deleteDataFile(filename: string): Promise<boolean> {
     await unlink(filePath);
     return true;
   } catch (error) {
-    console.warn(`[Storage] Failed to delete ${filename}:`, error);
+    log.warn(`[Storage] Failed to delete ${filename}:`, error);
     return false;
   }
 }
@@ -165,18 +166,18 @@ function startWatching(): void {
           try {
             callback(filename);
           } catch (error) {
-            console.warn('[Storage] Callback error:', error);
+            log.warn('[Storage] Callback error:', error);
           }
         }
       }
     });
 
     watcher.on('error', (error) => {
-      console.warn('[Storage] Watch error:', error);
+      log.warn('[Storage] Watch error:', error);
       stopWatching();
     });
   } catch (error) {
-    console.warn('[Storage] Failed to start watching:', error);
+    log.warn('[Storage] Failed to start watching:', error);
   }
 }
 

@@ -12,6 +12,7 @@
  */
 
 import * as cheerio from 'cheerio';
+import { log } from '../logger/log.js';
 import type { CheerioAPI, Cheerio } from 'cheerio';
 import type { Element } from 'domhandler';
 import { getConfig, type RevampConfig } from '../config/index.js';
@@ -390,7 +391,7 @@ function processScripts(
     // Remove scripts that cause syntax errors on old Safari
     // We provide our own polyfills for these features
     if (isIncompatibleScript(src, content)) {
-      console.log(`[Revamp] Removed incompatible script: ${src || '(inline)'}`);
+      log.debug(`[Revamp] Removed incompatible script: ${src || '(inline)'}`);
       $script.remove();
       return;
     }
@@ -432,29 +433,32 @@ async function transformInlineScripts(
 ): Promise<void> {
   const inlineScripts = collectInlineScripts($);
 
-  for (const { elem, content } of inlineScripts) {
-    // Skip Revamp's own scripts
-    if (isRevampScript(content)) {
-      continue;
-    }
+  const transformable = inlineScripts.filter(({ content }) =>
+    // Skip Revamp's own scripts, HTML template content, and React Server
+    // Component (RSC) / Next.js data payloads — none of these are
+    // transformable JavaScript.
+    !isRevampScript(content) &&
+    !isHtmlTemplateContent(content) &&
+    !isRscPayload(content)
+  );
 
-    // Skip HTML template content
-    if (isHtmlTemplateContent(content)) {
-      continue;
-    }
-
-    // Skip React Server Component (RSC) / Next.js data payloads
-    if (isRscPayload(content)) {
-      continue;
-    }
-
-    try {
-      const transformed = await transformJs(content, url ? `${url}#inline` : 'inline.js');
-      $(elem).html(transformed);
-    } catch (err) {
-      console.error(`⚠️ Failed to transform inline script: ${err instanceof Error ? err.message : err}`);
-    }
-  }
+  // Transform all inline scripts concurrently — the Babel Tinypool worker
+  // pool (see js.ts) fans the work out across threads, so N scripts no
+  // longer cost N sequential pool round-trips. Replacement stays
+  // deterministic because each script's result is written back into its own
+  // element, independent of completion order. A failing script logs and
+  // keeps its original content without affecting its siblings — exactly the
+  // semantics of the previous sequential loop.
+  await Promise.all(
+    transformable.map(async ({ elem, content }) => {
+      try {
+        const transformed = await transformJs(content, url ? `${url}#inline` : 'inline.js');
+        $(elem).html(transformed);
+      } catch (err) {
+        log.error(`⚠️ Failed to transform inline script: ${err instanceof Error ? err.message : err}`);
+      }
+    })
+  );
 }
 
 /**
@@ -586,10 +590,10 @@ async function transformModuleScripts(
   // Extract import map before processing modules
   const importMap = extractImportMap($);
   if (importMap) {
-    console.log(`📦 Found import map with ${Object.keys(importMap.imports || {}).length} imports`);
+    log.debug(`📦 Found import map with ${Object.keys(importMap.imports || {}).length} imports`);
   }
 
-  console.log(`📦 Found ${moduleScripts.length} ES module script(s) to bundle`);
+  log.debug(`📦 Found ${moduleScripts.length} ES module script(s) to bundle`);
 
   // Inject module shim before any module processing
   const firstModule = $(moduleScripts[0].elem);
@@ -606,12 +610,12 @@ async function transformModuleScripts(
       if (src) {
         // External module - resolve URL and bundle
         const moduleUrl = new URL(src, url || 'http://localhost').href;
-        console.log(`📦 Bundling external module: ${moduleUrl}`);
+        log.debug(`📦 Bundling external module: ${moduleUrl}`);
         bundleResult = await bundleEsModule(moduleUrl, undefined, importMap);
       } else if (content) {
         // Inline module - bundle with base URL for resolving imports
         const baseUrl = url || 'http://localhost/inline-module.js';
-        console.log(`📦 Bundling inline module from: ${baseUrl}`);
+        log.debug(`📦 Bundling inline module from: ${baseUrl}`);
         bundleResult = await bundleInlineModule(content, baseUrl, importMap);
       } else {
         // Empty module script - remove it
@@ -628,13 +632,13 @@ async function transformModuleScripts(
       if (bundleResult.success) {
         bundledCount++;
         if (bundleResult.bundledModules.length > 0) {
-          console.log(`✅ Bundled ${bundleResult.bundledModules.length} module(s) for: ${src || 'inline'}`);
+          log.debug(`✅ Bundled ${bundleResult.bundledModules.length} module(s) for: ${src || 'inline'}`);
         }
       } else {
-        console.warn(`⚠️ Module bundling failed for ${src || 'inline'}: ${bundleResult.error}`);
+        log.warn(`⚠️ Module bundling failed for ${src || 'inline'}: ${bundleResult.error}`);
       }
     } catch (err) {
-      console.error(`❌ Failed to bundle module ${src || 'inline'}: ${err instanceof Error ? err.message : err}`);
+      log.error(`❌ Failed to bundle module ${src || 'inline'}: ${err instanceof Error ? err.message : err}`);
       // Remove the failing module script to prevent errors
       $script.remove();
     }
@@ -837,7 +841,7 @@ function extractContentAfterHtml(html: string): { mainHtml: string; trailingCont
     return { mainHtml: html, trailingContent: '' };
   }
 
-  console.log(`⚠️ Found content after </html> tag (${trailingContent.trim().length} chars) - preserving it`);
+  log.info(`⚠️ Found content after </html> tag (${trailingContent.trim().length} chars) - preserving it`);
 
   return {
     mainHtml: html.slice(0, endOfClosingTag),
@@ -871,13 +875,13 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     // Must check raw string before cheerio parsing (cheerio merges them)
     const htmlTagMatches = mainHtml.match(/<html[\s>]/gi);
     if (htmlTagMatches && htmlTagMatches.length > 1) {
-      console.warn(`⚠️ Malformed HTML detected: found ${htmlTagMatches.length} <html> tags${url ? ` in ${url}` : ''}`);
+      log.warn(`⚠️ Malformed HTML detected: found ${htmlTagMatches.length} <html> tags${url ? ` in ${url}` : ''}`);
       return html;
     }
 
     const bodyTagMatches = mainHtml.match(/<body[\s>]/gi);
     if (bodyTagMatches && bodyTagMatches.length > 1) {
-      console.warn(`⚠️ Malformed HTML detected: found ${bodyTagMatches.length} <body> tags${url ? ` in ${url}` : ''}`);
+      log.warn(`⚠️ Malformed HTML detected: found ${bodyTagMatches.length} <body> tags${url ? ` in ${url}` : ''}`);
       return html;
     }
 
@@ -928,7 +932,7 @@ export async function transformHtml(html: string, url?: string, config?: RevampC
     const transformedHtml = $.html();
     return trailingContent ? transformedHtml + trailingContent : transformedHtml;
   } catch (error) {
-    console.error('❌ HTML transform error:', error instanceof Error ? error.message : error);
+    log.error('❌ HTML transform error:', error instanceof Error ? error.message : error);
     return html;
   }
 }

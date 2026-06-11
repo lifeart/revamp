@@ -12,6 +12,7 @@
  */
 
 import postcss, { Root, Rule, Declaration } from 'postcss';
+import { log } from '../logger/log.js';
 
 /**
  * Properties that are unambiguously grid-only. Standalone `gap` is intentionally
@@ -159,7 +160,7 @@ function warnUnsupportedShape(selector: string): void {
     return;
   }
   warnedSelectors.add(selector);
-  console.warn(
+  log.warn(
     '[css-grid] unsupported grid shape, leaving rule unchanged:',
     selector
   );

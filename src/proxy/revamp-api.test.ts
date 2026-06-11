@@ -13,6 +13,7 @@ import {
 } from './revamp-api.js';
 import { resetConfig, updateConfig } from '../config/index.js';
 import { resetMetrics } from '../metrics/index.js';
+import { getAllPluginEndpoints } from '../plugins/context.js';
 
 describe('REVAMP_API_BASE', () => {
   it('should be /__revamp__', () => {
@@ -275,6 +276,115 @@ describe('handleRevampRequest', () => {
       expect(parsed.endpoints.sw).toBeDefined();
       expect(parsed.endpoints.sw.bundle).toBe('/__revamp__/sw/bundle');
     });
+
+    // End-to-end regression for the CRLF header-injection finding: a `scope`
+    // query value carrying URL-encoded CR/LF (parseQuery decodes %0d%0a into a
+    // real CR LF) must not be able to inject a header / split the raw SOCKS5
+    // response that buildRawApiResponse produces.
+    it('neutralizes CRLF injected via the scope query param', async () => {
+      const malicious =
+        '/__revamp__/sw/bundle?url=invalid-url&scope=' +
+        encodeURIComponent('/\r\nSet-Cookie: evil=1');
+      const result = await handleRevampRequest(malicious, 'GET');
+
+      // Source-level defense: the echoed header value carries no CR/LF.
+      expect(result.headers['Service-Worker-Allowed']).toBe('/Set-Cookie: evil=1');
+      expect(result.headers['Service-Worker-Allowed']).not.toMatch(/[\r\n]/);
+
+      // Serializer-level guard: the raw response has no injected header line.
+      const raw = buildRawApiResponse(result);
+      expect(raw).not.toContain('\r\nSet-Cookie:');
+    });
+  });
+});
+
+describe('plugin endpoints through the unified router', () => {
+  const PLUGIN_ID = 'router-test-plugin';
+
+  beforeEach(() => {
+    getAllPluginEndpoints().set(PLUGIN_ID, new Map());
+  });
+
+  afterEach(() => {
+    getAllPluginEndpoints().delete(PLUGIN_ID);
+  });
+
+  it('serves a plugin-registered endpoint via dynamic lookup', async () => {
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('hello', async (req) => ({
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ greeting: 'hi', method: req.method, name: req.query['name'] }),
+    }));
+
+    const result = await handleRevampRequest(
+      `/__revamp__/plugins/${PLUGIN_ID}/hello?name=world`,
+      'GET'
+    );
+    expect(result.statusCode).toBe(200);
+    expect(result.headers['Access-Control-Allow-Origin']).toBe('*');
+    const parsed = JSON.parse(result.body);
+    expect(parsed.greeting).toBe('hi');
+    expect(parsed.method).toBe('GET');
+    expect(parsed.name).toBe('world');
+  });
+
+  it('reflects endpoint registration changes at request time (register/unregister)', async () => {
+    const path = `/__revamp__/plugins/${PLUGIN_ID}/dynamic`;
+
+    // Not registered yet -> 404
+    let result = await handleRevampRequest(path, 'GET');
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body).error).toBe('Not found');
+
+    // Register -> served
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('dynamic', async () => ({
+      statusCode: 200,
+      headers: {},
+      body: 'dynamic-ok',
+    }));
+    result = await handleRevampRequest(path, 'GET');
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toBe('dynamic-ok');
+
+    // Unregister -> 404 again
+    getAllPluginEndpoints().get(PLUGIN_ID)!.delete('dynamic');
+    result = await handleRevampRequest(path, 'GET');
+    expect(result.statusCode).toBe(404);
+  });
+
+  it('never lets custom endpoints shadow reserved management actions', async () => {
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('activate', async () => ({
+      statusCode: 200,
+      headers: {},
+      body: 'should-never-run',
+    }));
+
+    // GET on a reserved action stays a 404 (management activate is POST-only)
+    const result = await handleRevampRequest(
+      `/__revamp__/plugins/${PLUGIN_ID}/activate`,
+      'GET'
+    );
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body).error).toBe('Not found');
+  });
+
+  it('maps a throwing custom endpoint to a 500 with the error message', async () => {
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('boom', async () => {
+      throw new Error('endpoint exploded');
+    });
+
+    const result = await handleRevampRequest(
+      `/__revamp__/plugins/${PLUGIN_ID}/boom`,
+      'GET'
+    );
+    expect(result.statusCode).toBe(500);
+    expect(JSON.parse(result.body).error).toBe('endpoint exploded');
+  });
+
+  it('returns 404 for unknown sub-paths under /plugins', async () => {
+    const result = await handleRevampRequest('/__revamp__/plugins', 'POST');
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body).error).toBe('Not found');
   });
 });
 
@@ -381,5 +491,116 @@ describe('buildRawApiResponse', () => {
     };
     const raw = buildRawApiResponse(result);
     expect(raw).toContain('HTTP/1.1 201 OK');
+  });
+
+  // Regression tests for the SOCKS5 plain-HTTP framing bug: the serialized
+  // response must be a fully framed HTTP/1.1 message — exact CRLF line
+  // endings, a single status line, and a byte-accurate Content-Length —
+  // because the SOCKS5 stack writes these bytes straight to the socket with
+  // no http module to fix framing up afterwards.
+  it('should produce exact CRLF framing with byte-accurate Content-Length for a UTF-8 body', () => {
+    const body = '{"emoji":"🧦","text":"żółć"}';
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    };
+    const raw = buildRawApiResponse(result);
+
+    // Multi-byte UTF-8: byte length must differ from code-unit length,
+    // and Content-Length must reflect bytes, not string length.
+    expect(Buffer.byteLength(body)).toBeGreaterThan(body.length);
+    expect(raw).toBe(
+      'HTTP/1.1 200 OK\r\n' +
+      'Content-Type: application/json\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      'Connection: close\r\n' +
+      '\r\n' +
+      body
+    );
+  });
+
+  it('should emit Content-Length: 0 for empty bodies so responses stay framed', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {},
+      body: '',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw).toBe(
+      'HTTP/1.1 200 OK\r\n' +
+      'Content-Length: 0\r\n' +
+      'Connection: close\r\n' +
+      '\r\n'
+    );
+  });
+
+  it('should not duplicate handler-supplied Content-Length or Connection headers', () => {
+    const result: ApiResult = {
+      statusCode: 204,
+      headers: { 'Content-Length': '0', 'Connection': 'keep-alive' },
+      body: '',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw.match(/Content-Length:/gi)).toHaveLength(1);
+    expect(raw.match(/Connection:/gi)).toHaveLength(1);
+    expect(raw).toContain('Content-Length: 0\r\n');
+    expect(raw).toContain('Connection: close\r\n');
+  });
+
+  // HTTP response-splitting / header-injection guard (CWE-113). The SOCKS5
+  // stack writes these bytes straight to the socket, so a CR/LF embedded in a
+  // header value MUST NOT be serialized verbatim — otherwise an attacker who
+  // controls a header value (several SW endpoints echo query/body values into
+  // headers) could inject an arbitrary header or split the response body.
+  it('should NOT serialize a header value containing CRLF (injection neutralized)', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Revamp-SW-Scope': '/\r\nSet-Cookie: evil=1',
+      },
+      body: '{}',
+    };
+    const raw = buildRawApiResponse(result);
+
+    // The injected header must not appear as its own line, and the tainted
+    // header is dropped entirely rather than passed through.
+    expect(raw).not.toContain('Set-Cookie');
+    expect(raw).not.toContain('\r\nSet-Cookie:');
+    expect(raw).not.toContain('X-Revamp-SW-Scope');
+    // Legitimate headers and framing are unaffected.
+    expect(raw).toContain('Content-Type: application/json\r\n');
+    expect(raw).toContain('Content-Length: 2\r\n');
+    expect(raw).toContain('Connection: close\r\n');
+  });
+
+  it('should NOT serialize a header value containing a bare LF', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Evil': 'a\nSet-Cookie: b',
+      },
+      body: '{}',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw).not.toContain('Set-Cookie');
+    expect(raw).not.toContain('X-Evil');
+    expect(raw).toContain('Content-Type: application/json\r\n');
+  });
+
+  it('should drop a header whose NAME contains CRLF', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {
+        'X-Ok': 'fine',
+        'X-Bad\r\nSet-Cookie': 'evil',
+      },
+      body: '{}',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw).not.toContain('Set-Cookie');
+    expect(raw).toContain('X-Ok: fine\r\n');
   });
 });

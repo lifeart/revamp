@@ -371,3 +371,58 @@ export function stopResult<T>(value: T): HookResult<T> {
 export function errorResult<T>(error: Error): HookResult<T> {
   return { continue: false, error };
 }
+
+// ==========================================
+// Shared per-request plugin data
+// ==========================================
+//
+// Hook contexts that carry `pluginData: Map<string, unknown>` (RequestContext
+// and, by extension, ResponseContext) share a single Map instance for the
+// lifetime of one proxied request: `buildRequestContext` creates the Map and
+// `buildResponseContext` spreads the request context, so a value written in
+// `request:pre` is readable in `response:post` of the SAME request. There is
+// no cross-request persistence — use `context.readStorage`/`writeStorage` for
+// that.
+//
+// To let plugin B read what plugin A wrote without key collisions, entries
+// are namespaced by the WRITING plugin's id using the `<pluginId>:<key>`
+// convention. The helpers below implement that convention; readers pass the
+// writer's plugin id explicitly.
+
+/**
+ * Build the namespaced `pluginData` key for a plugin-owned value
+ * (`<pluginId>:<key>` convention).
+ */
+export function sharedPluginDataKey(pluginId: string, key: string): string {
+  return `${pluginId}:${key}`;
+}
+
+/**
+ * Write a value into the per-request shared `pluginData` Map under the
+ * writing plugin's namespace. Other plugins later in the chain (or in the
+ * `response:post` chain of the same request) can read it via
+ * `getSharedPluginData(pluginData, writerPluginId, key)`.
+ */
+export function setSharedPluginData(
+  pluginData: Map<string, unknown>,
+  pluginId: string,
+  key: string,
+  value: unknown
+): void {
+  pluginData.set(sharedPluginDataKey(pluginId, key), value);
+}
+
+/**
+ * Read a value another plugin (or this plugin, earlier in the request) wrote
+ * into the per-request shared `pluginData` Map. Returns `undefined` when the
+ * writer never set the key.
+ *
+ * @param pluginId - Id of the plugin that WROTE the value (the namespace)
+ */
+export function getSharedPluginData<T = unknown>(
+  pluginData: Map<string, unknown>,
+  pluginId: string,
+  key: string
+): T | undefined {
+  return pluginData.get(sharedPluginDataKey(pluginId, key)) as T | undefined;
+}

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getConfig,
   updateConfig,
@@ -8,6 +8,8 @@ import {
   setClientConfig,
   resetClientConfig,
   getEffectiveConfig,
+  setRuntimeStarted,
+  RESTART_REQUIRED_CONFIG_KEYS,
   type RevampConfig,
   type ClientConfig,
 } from './index.js';
@@ -161,6 +163,81 @@ describe('updateConfig', () => {
     const originalCompressionLevel = getConfig().compressionLevel;
     updateConfig({ transformJs: false });
     expect(getConfig().compressionLevel).toBe(originalCompressionLevel);
+  });
+});
+
+describe('restart-required config warnings', () => {
+  beforeEach(() => {
+    resetConfig();
+    setRuntimeStarted(false);
+  });
+
+  afterEach(() => {
+    resetConfig();
+    setRuntimeStarted(false);
+    vi.restoreAllMocks();
+  });
+
+  it('exposes the startup-only fields', () => {
+    expect(RESTART_REQUIRED_CONFIG_KEYS).toEqual([
+      'socks5Port',
+      'httpProxyPort',
+      'captivePortalPort',
+      'bindAddress',
+      'cacheDir',
+      'certDir',
+      'caKeyFile',
+      'caCertFile',
+    ]);
+  });
+
+  it('warns when a startup-only field changes after the server has started', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setRuntimeStarted();
+    updateConfig({ httpProxyPort: 9999 });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('httpProxyPort');
+    expect(warn.mock.calls[0][0]).toContain('restart');
+    // The value is still stored — it just won't take effect until restart
+    expect(getConfig().httpProxyPort).toBe(9999);
+  });
+
+  it('names every changed startup-only field in one warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setRuntimeStarted();
+    updateConfig({ socks5Port: 2080, certDir: '/tmp/other-certs', removeAds: false });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('socks5Port');
+    expect(warn.mock.calls[0][0]).toContain('certDir');
+    expect(warn.mock.calls[0][0]).not.toContain('removeAds');
+  });
+
+  it('does not warn before the server has started', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    updateConfig({ httpProxyPort: 9999 });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn for hot-reloadable fields after start', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setRuntimeStarted();
+    updateConfig({ removeAds: false, transformJs: false, cacheTTL: 60 });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when a startup-only field is set to its current value', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setRuntimeStarted();
+    updateConfig({ httpProxyPort: defaultConfig.httpProxyPort });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('stops warning after setRuntimeStarted(false)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setRuntimeStarted();
+    setRuntimeStarted(false);
+    updateConfig({ httpProxyPort: 9999 });
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

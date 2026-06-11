@@ -10,7 +10,8 @@ import {
   cleanupPluginResources,
   __ssrfTesting,
 } from './context.js';
-import type { PluginPermission } from './types.js';
+import { pluginRegistry } from './registry.js';
+import type { PluginPermission, PluginManifest } from './types.js';
 import type { LookupAddress } from 'node:dns';
 
 describe('Plugin Context Security', () => {
@@ -360,6 +361,69 @@ describe('Plugin Context Security', () => {
         `Plugin ${testPluginId} lacks permission metrics:write required for hook metrics:record`
       );
     });
+  });
+});
+
+describe('Plugin Composition API', () => {
+  const ACTIVE_ID = 'com.test.composition-active';
+  const LOADED_ID = 'com.test.composition-loaded';
+  const UNKNOWN_ID = 'com.test.composition-never-loaded';
+
+  function manifestFor(id: string): PluginManifest {
+    return {
+      id,
+      name: `Composition Test Plugin ${id}`,
+      version: '1.0.0',
+      description: 'Exercises getActivePlugins / isPluginActive',
+      author: 'Revamp Tests',
+      revampVersion: '1.0.0',
+      main: 'index.js',
+      permissions: [],
+    };
+  }
+
+  beforeEach(() => {
+    pluginRegistry.clear();
+    pluginRegistry.register({ manifest: manifestFor(ACTIVE_ID) });
+    pluginRegistry.updateState(ACTIVE_ID, 'active');
+    pluginRegistry.register({ manifest: manifestFor(LOADED_ID) });
+    // LOADED_ID stays in 'loaded' state — registered but not active.
+  });
+
+  afterEach(() => {
+    pluginRegistry.clear();
+  });
+
+  it('getActivePlugins returns only active plugin ids', () => {
+    // Zero permissions: composition introspection is intentionally ungated.
+    const context = createPluginContext(ACTIVE_ID, []);
+
+    const active = context.getActivePlugins();
+    expect(active).toContain(ACTIVE_ID);
+    expect(active).not.toContain(LOADED_ID);
+    expect(active).not.toContain(UNKNOWN_ID);
+  });
+
+  it('isPluginActive distinguishes active, inactive and unloaded plugins', () => {
+    const context = createPluginContext(ACTIVE_ID, []);
+
+    expect(context.isPluginActive(ACTIVE_ID)).toBe(true);
+    // Registered but not activated.
+    expect(context.isPluginActive(LOADED_ID)).toBe(false);
+    // Never registered at all.
+    expect(context.isPluginActive(UNKNOWN_ID)).toBe(false);
+  });
+
+  it('reflects state transitions (deactivated plugin disappears)', () => {
+    const context = createPluginContext(ACTIVE_ID, []);
+    expect(context.isPluginActive(ACTIVE_ID)).toBe(true);
+
+    pluginRegistry.updateState(ACTIVE_ID, 'deactivated');
+    expect(context.isPluginActive(ACTIVE_ID)).toBe(false);
+    expect(context.getActivePlugins()).not.toContain(ACTIVE_ID);
+
+    pluginRegistry.updateState(LOADED_ID, 'active');
+    expect(context.getActivePlugins()).toEqual([LOADED_ID]);
   });
 });
 

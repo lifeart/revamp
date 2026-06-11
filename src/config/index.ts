@@ -9,6 +9,7 @@ import { getProfileForDomain } from './domain-manager.js';
 import { runConfigResolutionHooks } from '../plugins/hook-executor.js';
 import type { ConfigResolutionContext } from '../plugins/hooks.js';
 import { sanitizeForLog } from '../logger/sanitize.js';
+import { log, type LogLevel } from '../logger/log.js';
 
 export interface RevampConfig {
   // Server settings
@@ -59,6 +60,9 @@ export interface RevampConfig {
   // JSON request logging
   logJsonRequests: boolean; // Log application/json requests (disabled by default)
   jsonLogDir: string; // Directory for JSON request logs
+
+  // Logging
+  logLevel: LogLevel; // Minimum level for console output: debug|info|warn|error|silent
 
   // Body-size limits (P1-3). Both default to 50 MB and are independently
   // tunable so a host that legitimately receives large downloads but never
@@ -157,16 +161,49 @@ export const defaultConfig: RevampConfig = {
   logJsonRequests: false, // Log application/json requests
   jsonLogDir: './.revamp-json-logs', // Directory for JSON request logs
 
+  // Logging: info hides per-request debug chatter, silent disables everything
+  logLevel: 'info',
+
   // Body-size limits (P1-3): default 50 MB on both sides.
   maxRequestBodyBytes: 50 * 1024 * 1024,
   maxResponseBodyBytes: 50 * 1024 * 1024,
 };
+
+/**
+ * Top-level config fields that are only read while the server starts up:
+ * listen ports and bind address are consumed by server.listen() calls,
+ * cert settings by generateCA(), and cacheDir by the one-shot cache dir
+ * initialization. Changing them via updateConfig() after start has no
+ * effect until the server is restarted.
+ */
+export const RESTART_REQUIRED_CONFIG_KEYS = [
+  'socks5Port',
+  'httpProxyPort',
+  'captivePortalPort',
+  'bindAddress',
+  'cacheDir',
+  'certDir',
+  'caKeyFile',
+  'caCertFile',
+] as const satisfies readonly (keyof RevampConfig)[];
+
+// Flipped by the server entry once listeners are bound (see src/index.ts),
+// so updateConfig() can warn when a startup-only field changes too late.
+let runtimeStarted = false;
+
+export function setRuntimeStarted(started: boolean = true): void {
+  runtimeStarted = started;
+}
 
 // Current active configuration (mutable for runtime changes)
 let currentConfig: RevampConfig = { ...defaultConfig };
 
 // Per-client config storage - Map of clientIp -> ClientConfig
 const clientConfigs = new Map<string, ClientConfig>();
+
+// Memoized defaults for clients with no stored config, keyed by the identity
+// of the RevampConfig they were derived from (see getClientConfig).
+let defaultClientConfigMemo: { source: RevampConfig; value: ClientConfig } | null = null;
 
 // Default key for non-IP-specific config (backward compatibility)
 const DEFAULT_CLIENT_KEY = '__default__';
@@ -176,6 +213,16 @@ export function getConfig(): RevampConfig {
 }
 
 export function updateConfig(partial: Partial<RevampConfig>): void {
+  if (runtimeStarted) {
+    const restartRequired = RESTART_REQUIRED_CONFIG_KEYS.filter(
+      (key) => key in partial && partial[key] !== currentConfig[key]
+    );
+    if (restartRequired.length > 0) {
+      log.warn(
+        `[Revamp] Config field(s) ${restartRequired.join(', ')} are only read at startup — restart the server for the new value(s) to take effect.`
+      );
+    }
+  }
   currentConfig = { ...currentConfig, ...partial };
 }
 
@@ -218,11 +265,17 @@ export function getClientConfig(clientIp?: string): ClientConfig {
     // Return defaults from server config when no client-specific config is set
     // Use CLIENT_CONFIG_OPTIONS to ensure all keys are included
     const serverConfig = getConfig();
-    const result: ClientConfig = {};
-    for (const opt of CLIENT_CONFIG_OPTIONS) {
-      result[opt.key as keyof ClientConfig] = serverConfig[opt.key as keyof RevampConfig] as boolean;
+    // updateConfig() replaces currentConfig rather than mutating it, so the
+    // derived defaults can be memoized by object identity. Callers treat the
+    // result as read-only (it feeds cache-key hashing and JSON responses).
+    if (defaultClientConfigMemo?.source !== serverConfig) {
+      const result: ClientConfig = {};
+      for (const opt of CLIENT_CONFIG_OPTIONS) {
+        result[opt.key as keyof ClientConfig] = serverConfig[opt.key as keyof RevampConfig] as boolean;
+      }
+      defaultClientConfigMemo = { source: serverConfig, value: result };
     }
-    return result;
+    return defaultClientConfigMemo.value;
   }
   return clientConfig;
 }
@@ -239,7 +292,7 @@ export function setClientConfig(config: ClientConfig, clientIp?: string): void {
   // are attacker-controlled — pass each through `sanitizeForLog` so a
   // crafted value can't forge a fake log line. JSON-stringifying the
   // body first keeps a single-argument log shape that CodeQL recognises.
-  console.log(
+  log.info(
     '[Revamp] Client config updated for %s: %s',
     sanitizeForLog(clientIp || 'default'),
     sanitizeForLog(JSON.stringify(config))
@@ -253,10 +306,10 @@ export function setClientConfig(config: ClientConfig, clientIp?: string): void {
 export function resetClientConfig(clientIp?: string): void {
   if (clientIp) {
     clientConfigs.delete(clientIp);
-    console.log('[Revamp] Client config reset for %s', sanitizeForLog(clientIp));
+    log.info('[Revamp] Client config reset for %s', sanitizeForLog(clientIp));
   } else {
     clientConfigs.clear();
-    console.log('[Revamp] All client configs reset to defaults');
+    log.info('[Revamp] All client configs reset to defaults');
   }
 }
 

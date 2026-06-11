@@ -70,7 +70,7 @@ Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern we
 
 ### Performance Optimizations
 
-- **🧵 Babel Worker Pool** — JavaScript transforms run in parallel worker threads via [tinypool](https://github.com/tinylibs/tinypool)
+- **🧵 Babel & PostCSS Worker Pools** — JS and CSS transforms run in parallel worker threads via [tinypool](https://github.com/tinylibs/tinypool), keeping the main event loop responsive
 - **⚡ Async Compression** — Non-blocking gzip compression/decompression
 - **🎚️ Configurable Compression** — Adjustable gzip level (1-9) for speed vs size tradeoff
 - **📈 Up to 9x speedup** — Parallel compression achieves significant performance gains
@@ -167,6 +167,34 @@ _iOS 10.3+ (including iOS 12.2 hardening):_
 
 ## ⚙️ Configuration
 
+### CLI Options
+
+Every flag has a matching `REVAMP_`-prefixed environment variable. Precedence: **CLI flag > environment variable > built-in default**.
+
+```bash
+# Pick different ports and keep the proxy local-only
+pnpm start -- --http-proxy-port 9090 --bind-address 127.0.0.1
+
+# Same overrides via environment variables
+REVAMP_HTTP_PROXY_PORT=9090 REVAMP_BIND_ADDRESS=127.0.0.1 pnpm start
+```
+
+| Flag                           | Env var                      | Default           | Description                                              |
+| ------------------------------ | ---------------------------- | ----------------- | -------------------------------------------------------- |
+| `--socks5-port <port>`         | `REVAMP_SOCKS5_PORT`         | `1080`            | SOCKS5 proxy port                                        |
+| `--http-proxy-port <port>`     | `REVAMP_HTTP_PROXY_PORT`     | `8080`            | HTTP proxy port                                          |
+| `--captive-portal-port <port>` | `REVAMP_CAPTIVE_PORTAL_PORT` | `8888`            | Captive portal (certificate download) port               |
+| `--bind-address <addr>`        | `REVAMP_BIND_ADDRESS`        | `0.0.0.0`         | `0.0.0.0` for LAN access, `127.0.0.1` for localhost only |
+| `--cache-dir <dir>`            | `REVAMP_CACHE_DIR`           | `./.revamp-cache` | Cache directory                                          |
+| `--cert-dir <dir>`             | `REVAMP_CERT_DIR`            | `./.revamp-certs` | Certificate directory                                    |
+| `--log-level <level>`          | `REVAMP_LOG_LEVEL`           | `info`            | Log verbosity: `debug`, `info`, `warn`, `error`, `silent` |
+
+Every feature toggle from the example below (`transformJs`, `removeAds`, `cacheEnabled`, …) is also available as a kebab-case boolean flag, negatable with a `no-` prefix: e.g. `--no-remove-ads` or `REVAMP_REMOVE_ADS=false`. Run `pnpm start -- --help` for the full list of all 21 options with their defaults and env vars; `--version` prints the version.
+
+Note: ports, bind address, and the cache/cert directories are read once at startup — changing them via the runtime config API logs a warning and requires a restart to take effect.
+
+### Programmatic Configuration
+
 Edit `src/config/index.ts` or pass options when creating the server:
 
 ```typescript
@@ -187,7 +215,7 @@ const server = createRevampServer({
   transformHtml: true, // HTML polyfill injection
   bundleEsModules: true, // Bundle ES modules for legacy browsers
   emulateServiceWorkers: true, // Service Worker bypass/emulation
-  remoteServiceWorkers: true, // Remote Service Worker bridge
+  remoteServiceWorkers: true, // Remote Service Worker bridge (default: false, requires Playwright)
   removeAds: true, // Block ad domains
   removeTracking: true, // Block tracking domains
   injectPolyfills: true, // Add polyfills for missing APIs
@@ -213,6 +241,32 @@ const server = createRevampServer({
 server.start();
 ```
 
+### Embedding
+
+`createRevampServer` returns a handle with `start()`, `stop()`, `getConfig()`, `updateConfig()`, `clearCache()`, and `getCacheStats()`, so Re:Vamp can run inside a host application. By default logs go to the console; embedders can swap the backend with `setLoggerBackend` (level filtering via `logLevel` / `setLogLevel` still applies before the backend is invoked):
+
+```typescript
+import { createRevampServer, setLoggerBackend } from "revamp";
+
+// Route Revamp's output into your own logger
+setLoggerBackend({
+  debug: (...args) => myLogger.debug(...args),
+  info: (...args) => myLogger.info(...args),
+  warn: (...args) => myLogger.warn(...args),
+  error: (...args) => myLogger.error(...args),
+});
+
+const server = createRevampServer({
+  bindAddress: "127.0.0.1",
+  logLevel: "warn",
+});
+server.start();
+// ... later
+server.stop();
+```
+
+Pass `consoleLoggerBackend` (also exported) to restore the default sink.
+
 ### Runtime Configuration API
 
 You can change settings at runtime via the config API:
@@ -231,109 +285,151 @@ fetch("http://any-proxied-site/__revamp__/config", {
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Legacy Device  │────▶│  SOCKS5 Proxy   │────▶│  Target Server  │
-│   (iOS 9+)      │     │   (port 1080)   │     │                 │
-└─────────────────┘     └────────┬────────┘     └─────────────────┘
-                                 │
-                                 ▼
-                        ┌─────────────────────────────────────────┐
-                        │         Transformation Pipeline         │
-                        ├─────────────────────────────────────────┤
-                        │  1. Intercept request                   │
-                        │  2. Check cache                         │
-                        │  3. Fetch from origin server            │
-                        │  4. Transform content:                  │
-                        │     • JS → Babel (ES5/ES6)              │
-                        │     • CSS → PostCSS (prefixes)          │
-                        │     • HTML → Cheerio (polyfills)        │
-                        │  5. Cache transformed result            │
-                        │  6. Return to client                    │
-                        └─────────────────────────────────────────┘
-```
+### Request Lifecycle
 
-### Request Flow (Admin Panel vs Proxied Content)
+Both proxy stacks converge on the same pipeline:
 
 ```
-                              ┌─────────────────────┐
-                              │   Incoming Request  │
-                              └──────────┬──────────┘
-                                         │
-                                         ▼
-                              ┌─────────────────────┐
-                              │ Is /__revamp__/* ?  │
-                              └──────────┬──────────┘
-                                         │
-                    ┌────────────────────┼────────────────────┐
-                    │ YES                │                    │ NO
-                    ▼                    │                    ▼
-       ┌────────────────────┐            │       ┌────────────────────┐
-       │   Revamp API       │            │       │   Normal Proxy     │
-       │   (Direct serve)   │            │       │   Pipeline         │
-       ├────────────────────┤            │       ├────────────────────┤
-       │ • Admin panel      │            │       │ • Domain blocking  │
-       │ • Config API       │            │       │ • URL filtering    │
-       │ • Domain API       │            │       │ • JS transform     │
-       │ • Metrics          │            │       │ • CSS transform    │
-       │ • PAC files        │            │       │ • HTML transform   │
-       │ • SW endpoints     │            │       │ • Image convert    │
-       ├────────────────────┤            │       │ • Caching          │
-       │ NO transformations │            │       │ • Compression      │
-       │ NO caching         │            │       └────────────────────┘
-       │ NO filtering       │            │
-       └────────────────────┘            │
+Legacy Device
+   │
+   ├─ SOCKS5 (port 1080) ──┐  SOCKS5 handshake / HTTP CONNECT, then TLS
+   │                       │  interception with a per-domain certificate
+   └─ HTTP proxy (8080) ───┤  minted from the Revamp CA
+                           ▼
+              ┌────────────────────────────┐        ┌──────────────────────┐
+              │ Is it /__revamp__/* ?      │─ yes ─▶│ API Router           │
+              └────────────┬───────────────┘        │ (admin, config,      │
+                           │ no                     │  domains, metrics,   │
+                           ▼                        │  PAC, SW, plugins)   │
+   1. Resolve client IP, effective config, and      │ NO transforms        │
+      domain profile (resolved once per request,    │ NO caching           │
+      then threaded through the whole pipeline)     │ NO filtering         │
+   2. `request:pre` plugin hooks · domain/URL       └──────────────────────┘
+      blocking (ads, tracking, custom filters)
+   3. Cache lookup (memory LRU → disk)
+   4. Upstream fetch (TLS validated by default;
+      optional User-Agent spoofing)
+   5. Transform pipeline: binary lane (images) →
+      charset decode → `transform:pre` hooks →
+      transformer registry (js / css / html) →
+      `transform:post` hooks
+   6. Cache store · `response:post` plugin hooks
+   7. Compress (gzip) and respond
 ```
 
-This design ensures the admin panel always works correctly, even when aggressive filtering or transformation options are enabled.
+`/__revamp__/*` requests are matched **before** the proxy pipeline runs, so the admin panel, config API, and metrics always work untouched — regardless of how aggressive the filtering configuration is.
+
+### API Router
+
+All `/__revamp__/*` endpoints dispatch through a single shared router (`src/proxy/api-router.ts`). Both proxy stacks normalize their requests into one common shape and route through the same table, so every endpoint is defined exactly once: adding an endpoint is one `router.register(...)` line in the owning module (core, config, domain rules, or plugins).
+
+### Transformer Registry
+
+Content transformation is dispatched through an ordered registry (`src/transformers/registry.ts`) with two lanes:
+
+- **Text lane** — string in, string out: the built-in `js` (Babel), `css` (PostCSS), and `html` (Cheerio) transformers.
+- **Binary lane** — Buffer in, `{ data, contentType }` out: the built-in `image` transformer (WebP/AVIF → JPEG/PNG).
+
+Built-ins are plain registry entries. Plugins add their own transformers via `context.registerTransformer`; plugin transformers run before built-ins, the first match wins, and a throwing plugin transformer is logged and skipped so the response is never broken.
+
+### Plugin Hooks
+
+Plugins observe and modify the lifecycle through 10 hooks: `request:pre`, `response:post`, `transform:pre`, `transform:post`, `filter:decision`, `config:resolution`, `domain:lifecycle`, `cache:get`, `cache:set`, and `metrics:record`. See [Plugin System](#plugin-system) for the full surface.
+
+### Worker Pools
+
+Babel (JS) and PostCSS (CSS) transforms run in [tinypool](https://github.com/tinylibs/tinypool) worker threads (`js-worker.ts`, `css-worker.ts`), keeping the main event loop free for concurrent connections. Moving PostCSS off the main thread cut event-loop blocking on large CSS files from ~880ms to ~11.5ms. Inline `<script>` blocks in an HTML document are transformed concurrently across the pool.
+
+### Cache Tiers
+
+Two tiers: an in-memory LRU for hot data (100 MB cap) backed by a persistent disk cache. Keys incorporate the client IP, HTTP method, config and domain-profile hashes (memoized by object identity), `Vary`-named request header values, and content type. Responses carrying `Set-Cookie` / `Cache-Control: private|no-store` — and requests carrying `Cookie` / `Authorization` — are never cached. The ESM bundler keeps its own bounded LRU module cache.
+
+### Module Map
+
+| Directory           | Responsibility                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `src/config/`       | Config defaults and getters, CLI/env parsing (`cli.ts`), per-client config, domain profiles                      |
+| `src/proxy/`        | HTTP + SOCKS5 stacks, TLS interception, API router, focused helpers (cors, compression, charset, content-type, blocking, transform-pipeline, user-agent, client-ip) |
+| `src/transformers/` | Transformer registry, js/css/html/image transformers, worker pools, ESM bundler (`esm/`), SW bundler, polyfills  |
+| `src/plugins/`      | Plugin manifests, loader, registry, sandboxed context, hook executor, plugin REST API, testing utilities         |
+| `src/cache/`        | Memory LRU + disk cache                                                                                          |
+| `src/certs/`        | CA generation + per-domain certificate minting                                                                   |
+| `src/logger/`       | Leveled swappable logger, log sanitization, JSON request logging                                                 |
+| `src/metrics/`      | Metrics collection + dashboard                                                                                   |
+| `src/pac/`          | PAC file generation                                                                                              |
+| `src/portal/`       | Captive portal (certificate install, PAC URLs)                                                                   |
+| `src/filters/`      | Ad/tracking pattern management                                                                                   |
 
 ## 📁 Project Structure
 
 ```
 src/
-├── index.ts              # Main entry point
+├── index.ts              # Main entry point (CLI + createRevampServer)
 ├── config/               # Configuration management
 │   ├── index.ts          # Config defaults and getters
+│   ├── cli.ts            # CLI flag / REVAMP_* env var parsing
 │   ├── client-options.ts # Single source of truth for client options
 │   ├── domain-rules.ts   # Domain profile types
 │   ├── domain-manager.ts # Profile CRUD and matching
 │   └── storage.ts        # File persistence utilities
 ├── filters/              # Modular filtering system
 │   └── index.ts          # Ad/tracking pattern management
+├── logger/               # Leveled swappable logger
+│   ├── log.ts            # log.debug/info/warn/error, setLoggerBackend
+│   ├── sanitize.ts       # Log output sanitization
+│   └── json-request-logger.ts # Optional JSON request logging
 ├── plugins/              # Plugin system
-│   ├── index.ts          # Public API exports
+│   ├── index.ts          # Public API exports (revamp/plugin)
 │   ├── types.ts          # Core types (PluginManifest, RevampPlugin, etc.)
 │   ├── hooks.ts          # Hook type definitions
 │   ├── registry.ts       # Plugin registry (singleton)
 │   ├── loader.ts         # Plugin discovery & lifecycle
 │   ├── context.ts        # Sandboxed plugin context API
 │   ├── hook-executor.ts  # Interceptor chain execution
-│   ├── validation.ts     # Manifest validation
+│   ├── validation.ts     # Manifest + config schema validation (ajv)
+│   ├── testing.ts        # Plugin testing utilities
 │   └── api.ts            # REST endpoints for plugin management
 ├── proxy/                # Proxy servers
 │   ├── http-proxy.ts     # HTTP/HTTPS proxy
 │   ├── socks5.ts         # SOCKS5 proxy
 │   ├── socks5-protocol.ts # SOCKS5 protocol implementation
 │   ├── http-client.ts    # HTTP request utilities
-│   ├── shared.ts         # Shared utilities
-│   ├── revamp-api.ts     # API endpoint handler
+│   ├── api-router.ts     # Shared router for all /__revamp__/* endpoints
+│   ├── revamp-api.ts     # Core API endpoints + shared router instance
+│   ├── config-endpoint.ts # Runtime config endpoint
 │   ├── domain-rules-api.ts # Domain profiles REST API
+│   ├── transform-pipeline.ts # transformContent orchestrator
+│   ├── proxy-hooks.ts    # request:pre / response:post hook plumbing
+│   ├── blocking.ts       # Domain/URL blocking
+│   ├── cors.ts           # CORS header builders/filtering
+│   ├── compression.ts    # gzip/brotli/deflate helpers
+│   ├── charset.ts        # Charset detection/decoding
+│   ├── content-type.ts   # Content-type detection
+│   ├── user-agent.ts     # User-Agent spoofing
+│   ├── client-ip.ts      # Client IP resolution
+│   ├── shared.ts         # Compatibility facade (re-exports the above)
 │   ├── remote-sw-server.ts # Remote Service Worker bridge
 │   └── types.ts          # Type definitions
 ├── transformers/         # Content transformation
+│   ├── registry.ts       # Transformer registry (text + binary lanes)
 │   ├── js.ts             # JavaScript (Babel worker pool)
 │   ├── js-worker.ts      # Babel worker thread
-│   ├── css.ts            # CSS (PostCSS)
+│   ├── css.ts            # CSS (PostCSS worker pool)
+│   ├── css-worker.ts     # PostCSS worker thread
+│   ├── worker-pool.ts    # Shared tinypool helpers
 │   ├── css-grid-fallback.ts # CSS Grid → Flexbox
 │   ├── dark-mode-strip.ts # Dark mode CSS removal
 │   ├── html.ts           # HTML (Cheerio)
 │   ├── image.ts          # Image optimization
-│   ├── esm-bundler.ts    # ES module bundler
+│   ├── esm-bundler.ts    # ES module bundler entry
+│   ├── esm/              # ESM bundler internals (fetcher, import-map,
+│   │                     #   top-level-await, css-module, esbuild-plugin,
+│   │                     #   module-cache)
 │   ├── sw-bundler.ts     # Service Worker bundler
 │   └── polyfills/        # 30+ polyfill scripts
 ├── metrics/              # Metrics collection
 ├── pac/                  # PAC file generation
-├── cache/                # Caching system
+├── cache/                # Caching system (memory LRU + disk)
 ├── certs/                # Certificate generation
 ├── portal/               # Captive portal
 └── benchmarks/           # Performance benchmarks
@@ -355,6 +451,7 @@ public/
     ├── plugin.json       # Plugin manifest
     └── index.js          # Entry point
 
+examples/plugins/         # Runnable example plugins (start here)
 tests/                    # E2E tests (Playwright)
 config/                   # External configuration (blocked domains)
 ```
@@ -372,6 +469,7 @@ All API endpoints are available on any proxied domain at `/__revamp__/*`:
 | `/__revamp__/domains/match/:host` | GET test which profile matches a host |
 | `/__revamp__/metrics`             | HTML metrics dashboard                |
 | `/__revamp__/metrics/json`        | JSON metrics data                     |
+| `/__revamp__/metrics/dashboard`   | HTML metrics dashboard (alias)        |
 | `/__revamp__/pac/socks5`          | SOCKS5 PAC file download              |
 | `/__revamp__/pac/http`            | HTTP PAC file download                |
 | `/__revamp__/pac/combined`        | Combined PAC file download            |
@@ -379,9 +477,11 @@ All API endpoints are available on any proxied domain at `/__revamp__/*`:
 | `/__revamp__/sw/inline`           | POST Service Worker transformation    |
 | `/__revamp__/sw/remote`           | WebSocket for remote SW execution     |
 | `/__revamp__/sw/remote/status`    | GET remote SW server status           |
-| `/__revamp__/plugins`             | GET all plugins, POST load all        |
+| `/__revamp__/plugins`             | GET list all plugins                  |
 | `/__revamp__/plugins/discover`    | GET available plugins in directory    |
 | `/__revamp__/plugins/load-all`    | POST load and activate all plugins    |
+| `/__revamp__/plugins/shutdown-all`| POST shut down all plugins            |
+| `/__revamp__/plugins/hot-reload`  | POST toggle hot-reload                |
 | `/__revamp__/plugins/:id`         | GET plugin info, DELETE unload        |
 | `/__revamp__/plugins/:id/activate`| POST activate a plugin                |
 | `/__revamp__/plugins/:id/deactivate`| POST deactivate a plugin            |
@@ -389,6 +489,7 @@ All API endpoints are available on any proxied domain at `/__revamp__/*`:
 | `/__revamp__/plugins/:id/config`  | PUT update plugin configuration       |
 | `/__revamp__/plugins/metrics`     | GET all plugin metrics, DELETE reset  |
 | `/__revamp__/plugins/:id/metrics` | GET/DELETE plugin-specific metrics    |
+| `/__revamp__/plugins/:id/{path}`  | Custom plugin-registered endpoints    |
 
 ### Admin Panel
 
@@ -685,6 +786,8 @@ Plugins are installed in the `.revamp-plugins/` directory. Each plugin has its o
     └── index.js              # Entry point
 ```
 
+Runnable example plugins live under `examples/plugins/` — copy one into `.revamp-plugins/` as a starting point for your own.
+
 **Plugin Manifest (plugin.json):**
 
 ```json
@@ -789,7 +892,7 @@ export default {
 };
 ```
 
-A runnable copy of this pattern lives at `examples/plugins/hello-world/`.
+A runnable copy of this pattern lives at `examples/plugins/com-revamp-hello-world/`.
 
 **Plugin Context API:**
 
@@ -826,10 +929,64 @@ interface PluginContext {
   registerEndpoint(path, handler): void;
   unregisterEndpoint(path): void;
 
+  // Content transformers (run before built-in js/css/html/image
+  // transformers; first match wins; requires response:modify)
+  registerTransformer(transformer): void;
+  unregisterTransformer(name): void;
+
+  // Plugin composition (ungated, read-only)
+  getActivePlugins(): string[];
+  isPluginActive(id): boolean;
+
   // Logging
   log(level, message, ...args): void;
 }
 ```
+
+**Plugin Composition & Shared Per-Request Data:**
+
+Plugins can discover each other at runtime via `context.getActivePlugins()`
+(ids of all active plugins) and `context.isPluginActive(id)`. Both are
+read-only and require no permission.
+
+Hook contexts that carry `pluginData: Map<string, unknown>` (`request:pre`
+and `response:post`) share one Map per proxied request, so plugin B can read
+what plugin A wrote within the same request (no cross-request persistence).
+Entries are namespaced by the writing plugin's id using the
+`<pluginId>:<key>` convention; the `setSharedPluginData` /
+`getSharedPluginData` helpers exported from the plugin API implement it:
+
+```javascript
+import { setSharedPluginData, getSharedPluginData } from 'revamp/plugin';
+
+// Plugin A (higher priority) tags the request in request:pre:
+setSharedPluginData(ctx.pluginData, 'com.example.a', 'trace', 'abc123');
+
+// Plugin B reads it later in the same request (request:pre or response:post):
+const trace = getSharedPluginData(ctx.pluginData, 'com.example.a', 'trace');
+```
+
+When a plugin hook throws or times out, the chain continues (fail-safe) but
+the failure is no longer silent: the chain result's `errors` array lists
+`{ pluginId, hookName, error, timedOut }` per failure, and the proxy logs a
+structured warning for each failed plugin.
+
+**Custom Content Transformers:**
+
+Plugins with the `response:modify` permission can register their own content
+transformers into the transform pipeline via `context.registerTransformer`.
+A transformer declares a unique `name`, a `matches(ctx)` predicate over the
+dispatch context (`url`, detected `contentType`, raw content-type header,
+effective `config`, matched `profile`, `clientIp`), and a `transform`
+function. Two lanes exist: `kind: 'text'` transformers take and return a
+string (like the built-in js/css/html transformers); `kind: 'binary'`
+transformers take a `Buffer` and return `{ data, contentType, transformed }`
+(like the built-in image transformer). Plugin transformers run before the
+built-ins in registration order and the first match wins; a throwing plugin
+transformer is logged and skipped so the built-ins (and the response) are
+never broken. Transformers are unregistered automatically on plugin
+deactivation. The `ContentTransformer` types are exported from
+`revamp/plugin`.
 
 **Managing Plugins via API:**
 
@@ -1022,12 +1179,18 @@ Global Defaults (lowest)
 | `transformHtml` | true | HTML polyfill injection |
 | `bundleEsModules` | true | Bundle ES modules |
 | `emulateServiceWorkers` | true | SW bypass/emulation |
-| `remoteServiceWorkers` | true | Remote SW bridge |
+| `remoteServiceWorkers` | false | Remote SW bridge (requires Playwright) |
 | `removeAds` | true | Block ad domains |
 | `removeTracking` | true | Block tracking domains |
 | `injectPolyfills` | true | Add polyfills |
 | `spoofUserAgent` | true | Spoof User-Agent header |
 | `spoofUserAgentInJs` | true | Override navigator.userAgent |
+| `cacheEnabled` | true | Response caching |
+
+The following are **server-wide** settings (set at startup or via `updateConfig()`, not overridable per client):
+
+| Option | Default | Description |
+|--------|---------|-------------|
 | `maxRequestBodyBytes` | 52428800 | Maximum upstream request body size in bytes (default 50 MB). Requests exceeding this are rejected with 413. |
 | `maxResponseBodyBytes` | 52428800 | Maximum upstream response body size in bytes (default 50 MB). Responses exceeding this are returned as 502. |
 | `allowInsecureUpstream` | false | Skip upstream TLS certificate validation. Default `false`. Set to `true` only for development against self-signed upstreams; production proxies should leave this off. |
@@ -1036,8 +1199,8 @@ Global Defaults (lowest)
 
 ```bash
 # Unit tests
-pnpm test:unit        # Watch mode
-pnpm test:unit:run    # Single run
+pnpm test:unit        # Single run (alias: pnpm test:unit:run)
+pnpm exec vitest      # Watch mode
 
 # E2E tests
 pnpm test             # Run all
@@ -1062,7 +1225,7 @@ On a typical machine (8-core CPU), parallel performance improvements:
 | Gzip Compress   | ~0.4ms     | ~0.04ms  | **9.36x** |
 | Gzip Decompress | ~0.06ms    | ~0.04ms  | 1.52x     |
 
-The worker pool's main benefit is **keeping the main event loop responsive** during heavy concurrent load, preventing request queuing and latency spikes.
+The worker pool's main benefit is **keeping the main event loop responsive** during heavy concurrent load, preventing request queuing and latency spikes. Moving PostCSS into its own worker pool cut main-thread blocking while transforming large CSS files from ~880ms to ~11.5ms.
 
 ## 🔧 Troubleshooting
 

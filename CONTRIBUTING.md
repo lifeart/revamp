@@ -34,39 +34,14 @@ pnpm test           # E2E tests with Playwright
 
 ## Project Structure
 
-```
-src/
-├── index.ts              # Main entry point and server creation
-├── config/               # Configuration management
-│   ├── index.ts          # Config defaults and getters
-│   └── client-options.ts # Single source of truth for client options
-├── proxy/                # HTTP and SOCKS5 proxy implementations
-│   ├── http-proxy.ts     # HTTP/HTTPS proxy server
-│   ├── socks5.ts         # SOCKS5 proxy server
-│   ├── socks5-protocol.ts # SOCKS5 protocol parsing
-│   ├── http-client.ts    # HTTP request utilities
-│   ├── shared.ts         # Shared utilities and transformation
-│   ├── revamp-api.ts     # API endpoint handler
-│   └── types.ts          # Type definitions
-├── transformers/         # Content transformation
-│   ├── js.ts             # JavaScript transpilation (Babel worker pool)
-│   ├── js-worker.ts      # Babel worker thread
-│   ├── css.ts            # CSS transformation (PostCSS)
-│   ├── css-grid-fallback.ts # CSS Grid → Flexbox
-│   ├── dark-mode-strip.ts # Dark mode CSS removal
-│   ├── html.ts           # HTML modification (Cheerio)
-│   ├── image.ts          # Image optimization
-│   └── polyfills/        # 25+ polyfill scripts
-├── metrics/              # Metrics collection and dashboard
-├── pac/                  # PAC file generation
-├── cache/                # Caching system
-├── certs/                # Certificate generation
-├── portal/               # Captive portal
-└── benchmarks/           # Performance benchmarks
+See the [Architecture](README.md#%EF%B8%8F-architecture) and [Project Structure](README.md#-project-structure) sections of the README for the full module map. The short version:
 
-tests/                    # E2E tests with Playwright
-config/                   # External configuration files
-```
+- `src/proxy/` — HTTP + SOCKS5 stacks, TLS interception, the shared `/__revamp__/*` API router (`api-router.ts`), and focused helpers (cors, compression, charset, content-type, blocking, transform-pipeline, user-agent, client-ip). `shared.ts` is only a compatibility facade — put new code in the focused module it belongs to.
+- `src/transformers/` — the transformer registry (`registry.ts`), js/css/html/image transformers, the Babel and PostCSS worker pools, the ESM bundler (`esm/`), and 30+ polyfills.
+- `src/plugins/` — plugin manifests, loader, registry, sandboxed context, hook executor, and the plugin REST API.
+- `src/config/`, `src/cache/`, `src/certs/`, `src/logger/`, `src/metrics/`, `src/pac/`, `src/portal/`, `src/filters/` — see the README module map.
+
+Unit tests live alongside source files (`*.test.ts`); E2E tests live in `tests/`; runnable example plugins live in `examples/plugins/`.
 
 ## How to Contribute
 
@@ -138,8 +113,8 @@ refactor/socks5-protocol
 Located alongside source files (`*.test.ts`):
 
 ```bash
-pnpm test:unit       # Watch mode
-pnpm test:unit:run   # Single run
+pnpm test:unit       # Single run (alias: pnpm test:unit:run)
+pnpm exec vitest     # Watch mode
 ```
 
 ### E2E Tests (Playwright)
@@ -161,15 +136,17 @@ pnpm test:ui         # Interactive UI mode
 
 ## Adding Transformations
 
+Content transformation is dispatched through the registry in `src/transformers/registry.ts` (text and binary lanes; first match wins). Supporting a new content type means registering a new transformer entry there; tweaking an existing transform means editing the transformer it dispatches to:
+
 ### JavaScript (Babel)
 
-Edit `src/transformers/js.ts`:
+Edit `src/transformers/js-worker.ts` (the worker thread holds the Babel options; `js.ts` owns the pool):
 - Add new Babel plugins/presets in the options
 - Test with various JS syntax features
 
 ### CSS (PostCSS)
 
-Edit `src/transformers/css.ts`:
+Edit `src/transformers/css-worker.ts` (the worker thread holds the PostCSS pipeline; `css.ts` owns the pool):
 - Add new PostCSS plugins
 - Configure `postcss-preset-env` options
 

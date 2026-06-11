@@ -6,6 +6,10 @@
     "sourceMap": false,
     "isolatedModules": false
   },
-  "include": ["src/transformers/js-worker.ts"],
+  "include": [
+    "src/transformers/js-worker.ts",
+    "src/transformers/css-worker.ts",
+    "src/types/postcss-preset-env.d.ts"
+  ],
   "exclude": ["**/*.test.ts", "node_modules", "dist"]
 }

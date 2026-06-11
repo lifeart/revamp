@@ -8,6 +8,7 @@
  */
 
 import type { DomainProfile, FilterContext } from '../config/domain-rules.js';
+import { log } from '../logger/log.js';
 import { getProfileForDomain, getGlobalDefaults } from '../config/domain-manager.js';
 
 // =============================================================================
@@ -158,7 +159,7 @@ function compilePattern(pattern: string): RegExp | null {
     compiledPatternCache.set(pattern, regex);
     return regex;
   } catch (err) {
-    console.warn(`[Filters] Invalid pattern "${pattern}":`, err);
+    log.warn(`[Filters] Invalid pattern "${pattern}":`, err);
     return null;
   }
 }
@@ -444,7 +445,7 @@ export function shouldBlockUrlWithProfile(
             return rule.action === 'block';
           }
         } catch (err) {
-          console.warn(`[Filters] Invalid tracking url-pattern "${rule.value}":`, err);
+          log.warn(`[Filters] Invalid tracking url-pattern "${rule.value}":`, err);
         }
       }
     }
@@ -461,7 +462,7 @@ export function shouldBlockUrlWithProfile(
             return rule.action === 'block';
           }
         } catch (err) {
-          console.warn(`[Filters] Invalid ad url-pattern "${rule.value}":`, err);
+          log.warn(`[Filters] Invalid ad url-pattern "${rule.value}":`, err);
         }
       }
     }

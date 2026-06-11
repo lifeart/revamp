@@ -14,9 +14,9 @@
  */
 
 import { createServer, type Server, type Socket } from 'node:net';
+import { log } from '../logger/log.js';
 import { connect } from 'node:net';
 import { TLSSocket, connect as tlsConnect } from 'node:tls';
-import { randomUUID } from 'node:crypto';
 import { generateDomainCert, CertRateLimitError } from '../certs/index.js';
 import { sanitizeForLog } from '../logger/sanitize.js';
 import {
@@ -36,16 +36,14 @@ import {
 import { makeHttpRequest, makeHttpsRequest } from './http-client.js';
 import { getConfig } from '../config/index.js';
 import { isRevampEndpoint, handleRevampRequest, buildRawApiResponse } from './revamp-api.js';
+import { shouldCompress, acceptsGzip, compressGzip } from './compression.js';
+import { shouldBlockDomain, shouldBlockUrl } from './blocking.js';
 import {
-  shouldCompress,
-  acceptsGzip,
-  compressGzip,
-  shouldBlockDomain,
-  shouldBlockUrl,
   SKIP_RESPONSE_HEADERS,
   buildScopedCorsPreflightResponse,
   buildScopedCorsHeadersString,
-} from './shared.js';
+} from './cors.js';
+import { resolveBucketClientIp } from './client-ip.js';
 import { getProfileForDomain } from '../config/domain-manager.js';
 import type { DomainProfile } from '../config/domain-rules.js';
 import {
@@ -120,26 +118,30 @@ function normalizeIpAddress(ip: string): string {
 // =============================================================================
 
 /**
- * Handle Revamp API endpoint request in SOCKS5 context.
+ * Handle Revamp API endpoint request in SOCKS5 context — this stack's thin
+ * adapter around the shared `handleRevampRequest` entry, synthesizing the
+ * request from the hand-parsed raw HTTP request.
  *
  * @param method - HTTP method
  * @param path - URL path
  * @param body - Request body
  * @param clientIp - Client IP for per-client config
+ * @param headers - Parsed request headers (forwarded to plugin endpoints)
  * @returns Raw HTTP response string or null if not a Revamp endpoint
  */
 async function handleRevampApiSocks5(
   method: string,
   path: string,
   body: string,
-  clientIp: string
+  clientIp: string,
+  headers: Record<string, string> = {}
 ): Promise<string | null> {
   if (!isRevampEndpoint(path)) {
     return null;
   }
 
-  console.log(`🔧 Revamp API: ${method} ${path} (client: ${clientIp})`);
-  const result = await handleRevampRequest(path, method, body, clientIp);
+  log.debug(`🔧 Revamp API: ${method} ${path} (client: ${clientIp})`);
+  const result = await handleRevampRequest(path, method, body, clientIp, headers);
   return buildRawApiResponse(result);
 }
 
@@ -403,7 +405,7 @@ async function maybeCompress(
  */
 function checkAndBlockUrl(targetUrl: string, socket: Socket | TLSSocket): boolean {
   if (shouldBlockUrl(targetUrl)) {
-    console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
+    log.debug(`🚫 Blocked tracking URL: ${targetUrl}`);
     recordBlocked();
     recordHostBlocked(targetUrl);
     socket.write(buildBlockedResponse());
@@ -420,7 +422,9 @@ function checkAndBlockUrl(targetUrl: string, socket: Socket | TLSSocket): boolea
  * @param hostname - Target hostname
  * @param port - Target port
  * @param clientIp - Client IP address
- * @param makeRequest - Function to make the HTTP request
+ * @param makeRequest - Function to make the HTTP request (receives the
+ *   already-fetched domain profile so downstream transform code never has
+ *   to re-fetch it)
  */
 async function handleHttpRequestSocks5(
   request: ParsedHttpRequest,
@@ -435,18 +439,19 @@ async function handleHttpRequestSocks5(
     path: string,
     headers: Record<string, string>,
     body: Buffer,
-    clientIp: string
+    clientIp: string,
+    profile: DomainProfile | null
   ) => Promise<HttpResponse>
 ): Promise<void> {
   const { method, path, headers, body: requestBody } = request;
   const isHttps = port === 443;
   const targetUrl = `${isHttps ? 'https' : 'http'}://${hostname}${path}`;
 
-  console.log(`${isHttps ? '🔐 HTTPS' : '📡 HTTP'}: ${method} ${targetUrl}`);
+  log.debug(`${isHttps ? '🔐 HTTPS' : '📡 HTTP'}: ${method} ${targetUrl}`);
   recordRequest();
 
   // Check for Revamp API endpoints
-  const apiResponse = await handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp);
+  const apiResponse = await handleRevampApiSocks5(method, path, requestBody.toString('utf-8'), clientIp, headers);
   if (apiResponse) {
     socket.write(apiResponse);
     if (socket instanceof TLSSocket) {
@@ -464,6 +469,9 @@ async function handleHttpRequestSocks5(
   }
 
   const requestOrigin = headers['origin'];
+  // Single profile fetch for this request: gates the CORS preflight below
+  // and is threaded through `makeRequest` into the transform pipeline so
+  // nothing downstream looks it up again.
   const { profile } = getProfileForDomain(hostname);
 
   // Handle CORS preflight (T9: only respond permissively when the matched
@@ -483,9 +491,9 @@ async function handleHttpRequestSocks5(
   }
 
   try {
-    console.log(`📤 Fetching: ${method} ${targetUrl}`);
-    const response = await makeRequest(method, hostname, port as number, path, headers, requestBody, clientIp);
-    console.log(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
+    log.debug(`📤 Fetching: ${method} ${targetUrl}`);
+    const response = await makeRequest(method, hostname, port as number, path, headers, requestBody, clientIp, profile);
+    log.debug(`📥 Response: ${response.statusCode} for ${targetUrl} (${response.body.length} bytes)`);
 
     // Apply compression
     const responseContentType = response.headers['content-type'];
@@ -519,7 +527,7 @@ async function handleHttpRequestSocks5(
     }
   } catch (err) {
     const error = err as Error;
-    console.error(`❌ Request error for ${targetUrl}:`, error.message);
+    log.error(`❌ Request error for ${targetUrl}:`, error.message);
     recordError();
     recordHostError(targetUrl);
     socket.write(buildErrorResponse(502, 'Bad Gateway'));
@@ -544,12 +552,12 @@ async function handleRemoteSwWebSocket(
   tlsClient: TLSSocket,
   request: { method: string; path: string; headers: Record<string, string> }
 ): Promise<void> {
-  console.log(`🔌 SOCKS5 Remote SW WebSocket: ${request.path}`);
+  log.debug(`🔌 SOCKS5 Remote SW WebSocket: ${request.path}`);
 
   try {
     // Ensure server is initialized
     if (!remoteSwServer.isInitialized()) {
-      console.log(`🔌 Initializing Remote SW server...`);
+      log.info(`🔌 Initializing Remote SW server...`);
       await remoteSwServer.initialize();
     }
 
@@ -568,7 +576,7 @@ async function handleRemoteSwWebSocket(
     // Handle the upgrade
     await remoteSwServer.handleUpgrade(mockReq, tlsClient, Buffer.alloc(0));
   } catch (err) {
-    console.error(`❌ SOCKS5 Remote SW WebSocket error:`, err);
+    log.error(`❌ SOCKS5 Remote SW WebSocket error:`, err);
     tlsClient.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
   }
 }
@@ -585,7 +593,7 @@ function handleWebSocketUpgrade(
   hostname: string,
   initialRequest: Buffer
 ): void {
-  console.log(`🌐 Establishing WebSocket connection to ${hostname}`);
+  log.debug(`🌐 Establishing WebSocket connection to ${hostname}`);
 
   const tlsServer = tlsConnect({
     host: hostname,
@@ -594,25 +602,25 @@ function handleWebSocketUpgrade(
   });
 
   tlsServer.on('secureConnect', () => {
-    console.log(`🔗 WebSocket TLS connection established to ${hostname}`);
+    log.debug(`🔗 WebSocket TLS connection established to ${hostname}`);
     tlsServer.write(initialRequest);
     tlsClient.pipe(tlsServer);
     tlsServer.pipe(tlsClient);
   });
 
   tlsServer.on('error', (err: Error) => {
-    console.error(`❌ WebSocket server connection error for ${hostname}: ${err.message}`);
+    log.error(`❌ WebSocket server connection error for ${hostname}: ${err.message}`);
     tlsClient.end();
   });
 
   tlsServer.on('close', () => {
-    console.log(`🔌 WebSocket connection closed for ${hostname}`);
+    log.debug(`🔌 WebSocket connection closed for ${hostname}`);
     tlsClient.end();
   });
 
   tlsClient.on('error', (err: Error) => {
     if (!err.message.includes('ECONNRESET')) {
-      console.error(`❌ WebSocket client error for ${hostname}: ${err.message}`);
+      log.error(`❌ WebSocket client error for ${hostname}: ${err.message}`);
     }
     tlsServer.end();
   });
@@ -640,7 +648,7 @@ function handleHttpsConnection(
   addressType: number,
   clientIp: string
 ): void {
-  console.log(`🔒 Starting TLS interception for ${hostname}`);
+  log.debug(`🔒 Starting TLS interception for ${hostname}`);
 
   // Generate certificate for this domain (rate-limited per client IP).
   // P1-2: previously the non-rate-limit branch re-threw, which inside this
@@ -652,13 +660,13 @@ function handleHttpsConnection(
     certPair = generateDomainCert(hostname, clientIp);
   } catch (err) {
     if (err instanceof CertRateLimitError) {
-      console.warn(`[socks5] cert mint rate limit exceeded for ${clientIp}`);
+      log.warn(`[socks5] cert mint rate limit exceeded for ${clientIp}`);
       recordError();
       clientSocket.write(createReply(REPLY_GENERAL_FAILURE, addressType));
       clientSocket.end();
       return;
     }
-    console.error('[socks5] cert mint failed', err);
+    log.error('[socks5] cert mint failed', err);
     recordError();
     clientSocket.write(createReply(REPLY_GENERAL_FAILURE, addressType));
     clientSocket.end();
@@ -676,7 +684,7 @@ function handleHttpsConnection(
   });
 
   tlsServer.on('secure', () => {
-    console.log(`🔐 TLS handshake complete with client for ${hostname}`);
+    log.debug(`🔐 TLS handshake complete with client for ${hostname}`);
   });
 
   let requestBuffer = Buffer.alloc(0);
@@ -692,7 +700,7 @@ function handleHttpsConnection(
     if (request === PARSE_BODY_TOO_LARGE) {
       requestComplete = true;
       const limit = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
-      console.warn(`[socks5] HTTPS request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
+      log.warn(`[socks5] HTTPS request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
       recordError();
       tlsServer.write(build413Response(limit));
       tlsServer.end();
@@ -703,7 +711,7 @@ function handleHttpsConnection(
 
     // Check for WebSocket upgrade
     if (request.headers['upgrade']?.toLowerCase() === 'websocket') {
-      console.log(`🔌 WebSocket upgrade request: https://${hostname}${request.path}`);
+      log.debug(`🔌 WebSocket upgrade request: https://${hostname}${request.path}`);
 
       // Check if this is a Remote SW endpoint - handle internally
       if (isRemoteSwEndpoint(request.path)) {
@@ -723,8 +731,8 @@ function handleHttpsConnection(
       hostname,
       443,
       clientIp,
-      async (method, host, _port, path, headers, body, ip) =>
-        makeHttpsRequest(method, host, path, headers, body, ip)
+      async (method, host, _port, path, headers, body, ip, profile) =>
+        makeHttpsRequest(method, host, path, headers, body, ip, profile)
     );
   });
 
@@ -734,7 +742,7 @@ function handleHttpsConnection(
       err.message.includes(pattern)
     );
     if (!isExpectedError) {
-      console.error(`❌ TLS server error for ${hostname}: ${err.message}`);
+      log.error(`❌ TLS server error for ${hostname}: ${err.message}`);
     }
   });
 
@@ -775,7 +783,7 @@ function handleHttpConnection(
     if (request === null) return;
     if (request === PARSE_BODY_TOO_LARGE) {
       const limit = getConfig().maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
-      console.warn(`[socks5] HTTP request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
+      log.warn(`[socks5] HTTP request body exceeded ${limit} bytes for ${sanitizeForLog(hostname)}`);
       recordError();
       clientSocket.write(build413Response(limit));
       clientSocket.end();
@@ -816,14 +824,14 @@ function handleDirectConnection(
   addressType: number
 ): Socket {
   const targetSocket = connect(port, hostname, () => {
-    console.log(`✅ Direct connection to ${hostname}:${port}`);
+    log.debug(`✅ Direct connection to ${hostname}:${port}`);
     clientSocket.write(createReply(REPLY_SUCCESS, addressType));
     clientSocket.pipe(targetSocket);
     targetSocket.pipe(clientSocket);
   });
 
   targetSocket.on('error', (err) => {
-    console.error(`❌ Target socket error: ${err.message}`);
+    log.error(`❌ Target socket error: ${err.message}`);
     clientSocket.write(createReply(REPLY_NETWORK_UNREACHABLE));
     clientSocket.end();
   });
@@ -872,7 +880,7 @@ function handleGreeting(
   }
 
   if (version !== SOCKS_VERSION) {
-    console.error(`❌ Invalid SOCKS version: ${version}`);
+    log.error(`❌ Invalid SOCKS version: ${version}`);
     clientSocket.end();
     return { state: ConnectionState.CONNECTED, buffer: Buffer.alloc(0) };
   }
@@ -895,19 +903,38 @@ function handleGreeting(
 }
 
 /**
+ * Result of processing the SOCKS5 request phase.
+ *
+ * The three outcomes need distinct values: 'pending' means "keep buffering
+ * and re-run on the next data event", while 'handled' means ownership of
+ * the byte stream moved to an in-process protocol handler (or the socket
+ * was ended) and the SOCKS5 state machine must stop interpreting client
+ * bytes. Conflating the two (both used to be `null`) made the state machine
+ * re-parse the stale CONNECT request when the client's HTTP request bytes
+ * arrived, writing a duplicate SOCKS5 success reply into the response
+ * stream ahead of the HTTP response.
+ */
+type Socks5RequestResult =
+  | { kind: 'pending' }
+  | { kind: 'handled' }
+  | { kind: 'direct'; socket: Socket };
+
+/**
  * Handle SOCKS5 request phase.
  *
  * @param buffer - Data buffer
  * @param clientSocket - Client socket
  * @param clientIp - Client IP address
- * @returns Target socket if direct connection, or null
+ * @returns 'pending' when more bytes are needed, 'handled' when an
+ *   in-process handler took over the stream (or the socket was ended), or
+ *   'direct' with the target socket for raw passthrough tunnels
  */
 function handleRequest(
   buffer: Buffer,
   clientSocket: Socket,
   clientIp: string
-): Socket | null {
-  if (buffer.length < 7) return null;
+): Socks5RequestResult {
+  if (buffer.length < 7) return { kind: 'pending' };
 
   const version = buffer[0];
   const command = buffer[1];
@@ -915,13 +942,13 @@ function handleRequest(
   if (version !== SOCKS_VERSION) {
     clientSocket.write(createReply(REPLY_GENERAL_FAILURE));
     clientSocket.end();
-    return null;
+    return { kind: 'handled' };
   }
 
   if (command !== CMD_CONNECT) {
     clientSocket.write(createReply(REPLY_COMMAND_NOT_SUPPORTED));
     clientSocket.end();
-    return null;
+    return { kind: 'handled' };
   }
 
   const address = parseAddress(buffer, 3);
@@ -929,33 +956,37 @@ function handleRequest(
     if (buffer.length > 300) {
       clientSocket.write(createReply(REPLY_ADDRESS_TYPE_NOT_SUPPORTED));
       clientSocket.end();
+      return { kind: 'handled' };
     }
-    return null;
+    return { kind: 'pending' };
   }
 
-  console.log(`🔌 SOCKS5 CONNECT: ${address.host}:${address.port}`);
+  log.debug(`🔌 SOCKS5 CONNECT: ${address.host}:${address.port}`);
 
   // Check domain blocking
   if (shouldBlockDomain(address.host)) {
-    console.log(`🚫 Blocked: ${address.host}`);
+    log.debug(`🚫 Blocked: ${address.host}`);
     recordBlocked();
     // T25: synthesize a URL so the per-host counter records the hit. SOCKS5
     // CONNECT only gives us host:port, no scheme/path.
     recordHostBlocked(`https://${address.host}/`);
     clientSocket.write(createReply(REPLY_SUCCESS, address.addressType));
     clientSocket.end();
-    return null;
+    return { kind: 'handled' };
   }
 
   // Route based on port
   if (address.port === 443) {
     handleHttpsConnection(clientSocket, address.host, address.addressType, clientIp);
-    return null;
+    return { kind: 'handled' };
   } else if (address.port === 80) {
     handleHttpConnection(clientSocket, address.host, address.port, address.addressType, clientIp);
-    return null;
+    return { kind: 'handled' };
   } else {
-    return handleDirectConnection(clientSocket, address.host, address.port, address.addressType);
+    return {
+      kind: 'direct',
+      socket: handleDirectConnection(clientSocket, address.host, address.port, address.addressType),
+    };
   }
 }
 
@@ -963,27 +994,18 @@ function handleRequest(
 // Main Connection Handler
 // =============================================================================
 
+// Re-export for backwards compatibility: `resolveBucketClientIp` lived here
+// before moving to the neutral `client-ip.ts` module (it is an IP utility,
+// not SOCKS5 logic — and http-proxy importing it from here created a
+// wrong-direction dependency).
+export { resolveBucketClientIp } from './client-ip.js';
+
 /**
  * Handle incoming SOCKS5 connection.
  *
  * @param clientSocket - Client socket
  * @param httpProxyPort - HTTP proxy port (unused, for compatibility)
  */
-/**
- * Resolve a client IP for rate-limit-bucket assignment.
- *
- * Exported for unit tests (P1-1 — empty-clientIp DoS bucket) so the
- * synthetic-bucket logic can be exercised without a real TCP socket. The
- * production code path is the same as the inline call sites in
- * `handleConnection` and `http-proxy.handleConnect`.
- */
-export function resolveBucketClientIp(rawClientIp: string): string {
-  if (rawClientIp) return rawClientIp;
-  const synthetic = `__unknown_${randomUUID()}`;
-  console.warn('[proxy] no client IP — using synthetic bucket', synthetic);
-  return synthetic;
-}
-
 function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
   let state = ConnectionState.AWAITING_GREETING;
   let targetSocket: Socket | TLSSocket | null = null;
@@ -1013,9 +1035,17 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
       }
 
       case ConnectionState.AWAITING_REQUEST: {
-        const socket = handleRequest(buffer, clientSocket, clientIp);
-        if (socket) {
-          targetSocket = socket;
+        const result = handleRequest(buffer, clientSocket, clientIp);
+        if (result.kind === 'direct') {
+          targetSocket = result.socket;
+          state = ConnectionState.CONNECTED;
+          buffer = Buffer.alloc(0);
+        } else if (result.kind === 'handled') {
+          // An in-process handler (HTTP/HTTPS interception) owns the byte
+          // stream now, or the socket was ended. Either way, stop parsing
+          // client bytes as SOCKS5 — with `targetSocket` null the CONNECTED
+          // case below ignores them, leaving the handler's own data
+          // listener as the sole consumer.
           state = ConnectionState.CONNECTED;
           buffer = Buffer.alloc(0);
         }
@@ -1032,7 +1062,7 @@ function handleConnection(clientSocket: Socket, httpProxyPort: number): void {
 
   clientSocket.on('error', (err) => {
     if (!err.message.includes('ECONNRESET') && !err.message.includes('write after end')) {
-      console.error(`❌ Client socket error: ${err.message}`);
+      log.error(`❌ Client socket error: ${err.message}`);
     }
     if (targetSocket && !targetSocket.destroyed) {
       targetSocket.end();
@@ -1069,11 +1099,11 @@ export function createSocks5Proxy(
   });
 
   server.on('error', (err) => {
-    console.error(`❌ SOCKS5 server error: ${err.message}`);
+    log.error(`❌ SOCKS5 server error: ${err.message}`);
   });
 
   server.listen(port, bindAddress, () => {
-    console.log(`🧦 SOCKS5 Proxy listening on ${bindAddress}:${port}`);
+    log.info(`🧦 SOCKS5 Proxy listening on ${bindAddress}:${port}`);
   });
 
   return server;

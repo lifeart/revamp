@@ -5,6 +5,8 @@
  * and dependency resolution for plugins.
  */
 
+import { Ajv, type ErrorObject, type ValidateFunction } from 'ajv';
+import { log } from '../logger/log.js';
 import type {
   PluginManifest,
   PluginPermission,
@@ -354,7 +356,7 @@ export function resolveDependencies(manifests: PluginManifest[]): PluginManifest
   // Check for cycles
   if (sorted.length !== manifests.length) {
     const missing = manifests.filter((m) => !sorted.includes(m));
-    console.warn(
+    log.warn(
       '[PluginValidation] Circular dependencies detected for:',
       missing.map((m) => m.id)
     );
@@ -407,19 +409,23 @@ export interface SchemaValidationResult {
 
 /**
  * JSON Schema type
- * Supports a subset of JSON Schema Draft-07 for plugin config validation
+ * Plugin config schemas are validated with ajv (JSON Schema Draft-07).
+ * The index signature allows any additional draft keywords ($ref, const,
+ * tuple items, definitions, ...) to pass through to ajv.
  */
 export interface JSONSchema {
   type?: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'null';
   properties?: Record<string, JSONSchema>;
   required?: string[];
-  items?: JSONSchema;
+  items?: JSONSchema | JSONSchema[];
   enum?: unknown[];
+  const?: unknown;
   minimum?: number;
   maximum?: number;
   minLength?: number;
   maxLength?: number;
   pattern?: string;
+  format?: string;
   default?: unknown;
   description?: string;
   additionalProperties?: boolean | JSONSchema;
@@ -429,229 +435,224 @@ export interface JSONSchema {
   oneOf?: JSONSchema[];
   anyOf?: JSONSchema[];
   allOf?: JSONSchema[];
+  $ref?: string;
+  definitions?: Record<string, JSONSchema>;
+  [keyword: string]: unknown;
+}
+
+// Maximum string length tested against `pattern` regexes. Longer values are
+// truncated before matching to guard against catastrophic backtracking
+// (ReDoS) in plugin-supplied patterns.
+const PATTERN_TEST_MAX_LENGTH = 1000;
+
+/**
+ * Shared ajv instance for plugin config validation.
+ * - allErrors: report one error per violation (callers join them for display)
+ * - strict: false: plugin schemas are third-party input; unknown keywords are
+ *   ignored instead of rejected
+ * - validateFormats: false: `format` is treated as an annotation (no
+ *   ajv-formats dependency)
+ * - verbose: errors carry `schema`/`data` so messages can reference them
+ */
+const ajv = new Ajv({
+  allErrors: true,
+  strict: false,
+  validateFormats: false,
+  verbose: true,
+});
+
+// Replace the built-in `pattern` keyword to keep the ReDoS guard: patterns
+// are compiled without the `u` flag (matching legacy behavior) and only the
+// first PATTERN_TEST_MAX_LENGTH characters are tested.
+ajv.removeKeyword('pattern');
+ajv.addKeyword({
+  keyword: 'pattern',
+  type: 'string',
+  schemaType: 'string',
+  compile(pattern: string) {
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern);
+    } catch (error) {
+      // Surface a stable message; rethrown so compileSchema reports it
+      throw new Error(`Invalid pattern: ${pattern}`, { cause: error });
+    }
+    return (data: string) =>
+      regex.test(
+        data.length > PATTERN_TEST_MAX_LENGTH
+          ? data.slice(0, PATTERN_TEST_MAX_LENGTH)
+          : data
+      );
+  },
+});
+
+// Replace the built-in `uniqueItems` keyword: ajv's deep-equal comparison
+// recurses infinitely on circular structures, so keep the legacy
+// JSON.stringify comparison with a reference-equality fallback.
+ajv.removeKeyword('uniqueItems');
+ajv.addKeyword({
+  keyword: 'uniqueItems',
+  type: 'array',
+  schemaType: 'boolean',
+  compile(unique: boolean) {
+    if (!unique) {
+      return () => true;
+    }
+    return (data: unknown[]) => {
+      try {
+        const serialized = data.map((v) => JSON.stringify(v));
+        return new Set(serialized).size === data.length;
+      } catch (error) {
+        // JSON.stringify throws on circular structures; fall back to
+        // reference equality so validation still completes.
+        log.warn(
+          '[PluginValidation] uniqueItems: falling back to reference equality:',
+          error instanceof Error ? error.message : error
+        );
+        return new Set(data).size === data.length;
+      }
+    };
+  },
+});
+
+// Compiled validators cached per schema object so per-request validation
+// does not recompile. Failed compilations are cached too.
+const compiledSchemaCache = new WeakMap<JSONSchema, ValidateFunction | Error>();
+
+function compileSchema(schema: JSONSchema): ValidateFunction | Error {
+  const cached = compiledSchemaCache.get(schema);
+  if (cached) {
+    return cached;
+  }
+
+  let compiled: ValidateFunction | Error;
+  try {
+    compiled = ajv.compile(schema);
+  } catch (error) {
+    compiled = error instanceof Error ? error : new Error(String(error));
+    log.warn(
+      '[PluginValidation] Failed to compile JSON Schema:',
+      compiled.message
+    );
+  }
+  compiledSchemaCache.set(schema, compiled);
+  return compiled;
 }
 
 /**
- * Validate a value against a JSON Schema
- * Supports common JSON Schema keywords for plugin configuration validation
+ * Convert an ajv JSON-pointer instancePath (e.g. "/a/0/b") into the dotted
+ * path format used by ValidationError fields (e.g. "a[0].b"), prefixed with
+ * the caller-supplied base path.
+ */
+function formatFieldPath(basePath: string, instancePath: string): string {
+  let field = basePath;
+  if (instancePath) {
+    for (const rawSegment of instancePath.slice(1).split('/')) {
+      const segment = rawSegment.replace(/~1/g, '/').replace(/~0/g, '~');
+      if (/^\d+$/.test(segment)) {
+        field = `${field}[${segment}]`;
+      } else {
+        field = field ? `${field}.${segment}` : segment;
+      }
+    }
+  }
+  return field;
+}
+
+/**
+ * Map an ajv error to the ValidationError shape (one per violation)
+ */
+function ajvErrorToValidationError(
+  error: ErrorObject,
+  basePath: string
+): ValidationError {
+  const objectPath = formatFieldPath(basePath, error.instancePath);
+  const params = error.params as Record<string, unknown>;
+
+  // These two keywords report on the parent object; point the field at the
+  // offending property instead.
+  if (error.keyword === 'required') {
+    const prop = String(params.missingProperty);
+    return {
+      field: objectPath ? `${objectPath}.${prop}` : prop,
+      message: `Missing required property: ${prop}`,
+    };
+  }
+  if (error.keyword === 'additionalProperties') {
+    const prop = String(params.additionalProperty);
+    return {
+      field: objectPath ? `${objectPath}.${prop}` : prop,
+      message: `Unknown property: ${prop}`,
+    };
+  }
+
+  return {
+    field: objectPath || 'value',
+    message: describeViolation(error, params),
+  };
+}
+
+function describeViolation(
+  error: ErrorObject,
+  params: Record<string, unknown>
+): string {
+  switch (error.keyword) {
+    case 'type':
+      return `Expected ${params.type}, got ${getJsonType(error.data)}`;
+    case 'enum': {
+      const allowed = (params.allowedValues as unknown[]) ?? [];
+      return `Value must be one of: ${allowed.map((v) => JSON.stringify(v)).join(', ')}`;
+    }
+    case 'minLength':
+      return `String must be at least ${params.limit} characters`;
+    case 'maxLength':
+      return `String must be at most ${params.limit} characters`;
+    case 'pattern':
+      return `String must match pattern: ${String(error.schema)}`;
+    case 'minimum':
+      return `Number must be >= ${params.limit}`;
+    case 'maximum':
+      return `Number must be <= ${params.limit}`;
+    case 'minItems':
+      return `Array must have at least ${params.limit} items`;
+    case 'maxItems':
+      return `Array must have at most ${params.limit} items`;
+    case 'uniqueItems':
+      return 'Array items must be unique';
+    case 'oneOf':
+      return 'Value must match exactly one of the schemas';
+    case 'anyOf':
+      return 'Value must match at least one of the schemas';
+    default:
+      return error.message || `Failed "${error.keyword}" validation`;
+  }
+}
+
+/**
+ * Validate a value against a JSON Schema (Draft-07, via ajv)
  */
 export function validateJsonSchema(
   value: unknown,
   schema: JSONSchema,
   path: string = ''
 ): SchemaValidationResult {
-  const errors: ValidationError[] = [];
+  const compiled = compileSchema(schema);
 
-  // Handle oneOf
-  if (schema.oneOf) {
-    const validCount = schema.oneOf.filter(
-      (s) => validateJsonSchema(value, s, path).valid
-    ).length;
-    if (validCount !== 1) {
-      errors.push({
-        field: path || 'value',
-        message: `Value must match exactly one of the schemas`,
-      });
-    }
-    return { valid: errors.length === 0, errors };
+  if (compiled instanceof Error) {
+    return {
+      valid: false,
+      errors: [{ field: path || 'value', message: compiled.message }],
+    };
   }
 
-  // Handle anyOf
-  if (schema.anyOf) {
-    const valid = schema.anyOf.some((s) => validateJsonSchema(value, s, path).valid);
-    if (!valid) {
-      errors.push({
-        field: path || 'value',
-        message: `Value must match at least one of the schemas`,
-      });
-    }
-    return { valid: errors.length === 0, errors };
+  if (compiled(value)) {
+    return { valid: true, errors: [] };
   }
 
-  // Handle allOf
-  if (schema.allOf) {
-    for (const s of schema.allOf) {
-      const result = validateJsonSchema(value, s, path);
-      errors.push(...result.errors);
-    }
-    return { valid: errors.length === 0, errors };
-  }
-
-  // Type validation
-  if (schema.type) {
-    const actualType = getJsonType(value);
-
-    // Handle integer as a special case of number
-    if (schema.type === 'integer') {
-      if (typeof value !== 'number' || !Number.isInteger(value)) {
-        errors.push({
-          field: path || 'value',
-          message: `Expected integer, got ${actualType}`,
-        });
-        return { valid: false, errors };
-      }
-    } else if (schema.type !== actualType) {
-      errors.push({
-        field: path || 'value',
-        message: `Expected ${schema.type}, got ${actualType}`,
-      });
-      return { valid: false, errors };
-    }
-  }
-
-  // Enum validation
-  if (schema.enum !== undefined) {
-    if (!schema.enum.some((e) => deepEqual(e, value))) {
-      errors.push({
-        field: path || 'value',
-        message: `Value must be one of: ${schema.enum.map((v) => JSON.stringify(v)).join(', ')}`,
-      });
-    }
-  }
-
-  // String validations
-  if (typeof value === 'string') {
-    if (schema.minLength !== undefined && value.length < schema.minLength) {
-      errors.push({
-        field: path || 'value',
-        message: `String must be at least ${schema.minLength} characters`,
-      });
-    }
-    if (schema.maxLength !== undefined && value.length > schema.maxLength) {
-      errors.push({
-        field: path || 'value',
-        message: `String must be at most ${schema.maxLength} characters`,
-      });
-    }
-    if (schema.pattern !== undefined) {
-      try {
-        const regex = new RegExp(schema.pattern);
-        // Use a timeout to prevent ReDoS - test with limited input
-        const testValue = value.length > 1000 ? value.slice(0, 1000) : value;
-        if (!regex.test(testValue)) {
-          errors.push({
-            field: path || 'value',
-            message: `String must match pattern: ${schema.pattern}`,
-          });
-        }
-      } catch {
-        errors.push({
-          field: path || 'value',
-          message: `Invalid pattern: ${schema.pattern}`,
-        });
-      }
-    }
-  }
-
-  // Number validations
-  if (typeof value === 'number') {
-    if (schema.minimum !== undefined && value < schema.minimum) {
-      errors.push({
-        field: path || 'value',
-        message: `Number must be >= ${schema.minimum}`,
-      });
-    }
-    if (schema.maximum !== undefined && value > schema.maximum) {
-      errors.push({
-        field: path || 'value',
-        message: `Number must be <= ${schema.maximum}`,
-      });
-    }
-  }
-
-  // Array validations
-  if (Array.isArray(value)) {
-    if (schema.minItems !== undefined && value.length < schema.minItems) {
-      errors.push({
-        field: path || 'value',
-        message: `Array must have at least ${schema.minItems} items`,
-      });
-    }
-    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
-      errors.push({
-        field: path || 'value',
-        message: `Array must have at most ${schema.maxItems} items`,
-      });
-    }
-    if (schema.uniqueItems) {
-      try {
-        const serialized = value.map((v) => JSON.stringify(v));
-        if (new Set(serialized).size !== value.length) {
-          errors.push({
-            field: path || 'value',
-            message: `Array items must be unique`,
-          });
-        }
-      } catch {
-        // If we can't serialize (e.g., circular refs), fall back to reference equality
-        if (new Set(value).size !== value.length) {
-          errors.push({
-            field: path || 'value',
-            message: `Array items must be unique`,
-          });
-        }
-      }
-    }
-    if (schema.items) {
-      for (let i = 0; i < value.length; i++) {
-        const itemPath = path ? `${path}[${i}]` : `[${i}]`;
-        const result = validateJsonSchema(value[i], schema.items, itemPath);
-        errors.push(...result.errors);
-      }
-    }
-  }
-
-  // Object validations
-  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-    const obj = value as Record<string, unknown>;
-
-    // Check required properties
-    if (schema.required) {
-      for (const prop of schema.required) {
-        if (!(prop in obj)) {
-          errors.push({
-            field: path ? `${path}.${prop}` : prop,
-            message: `Missing required property: ${prop}`,
-          });
-        }
-      }
-    }
-
-    // Validate known properties
-    if (schema.properties) {
-      for (const [prop, propSchema] of Object.entries(schema.properties)) {
-        if (prop in obj) {
-          const propPath = path ? `${path}.${prop}` : prop;
-          const result = validateJsonSchema(obj[prop], propSchema, propPath);
-          errors.push(...result.errors);
-        }
-      }
-    }
-
-    // Check additional properties
-    if (schema.additionalProperties === false && schema.properties) {
-      const knownProps = new Set(Object.keys(schema.properties));
-      for (const prop of Object.keys(obj)) {
-        if (!knownProps.has(prop)) {
-          errors.push({
-            field: path ? `${path}.${prop}` : prop,
-            message: `Unknown property: ${prop}`,
-          });
-        }
-      }
-    } else if (typeof schema.additionalProperties === 'object') {
-      const knownProps = new Set(Object.keys(schema.properties || {}));
-      for (const [prop, val] of Object.entries(obj)) {
-        if (!knownProps.has(prop)) {
-          const propPath = path ? `${path}.${prop}` : prop;
-          const result = validateJsonSchema(val, schema.additionalProperties, propPath);
-          errors.push(...result.errors);
-        }
-      }
-    }
-  }
-
-  return { valid: errors.length === 0, errors };
+  const errors = (compiled.errors ?? []).map((error) =>
+    ajvErrorToValidationError(error, path)
+  );
+  return { valid: false, errors };
 }
 
 /**
@@ -661,26 +662,6 @@ function getJsonType(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
   return typeof value;
-}
-
-/**
- * Deep equality check for enum validation
- */
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object' || a === null) return false;
-  if (typeof b !== 'object' || b === null) return false;
-
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-
-  const keysA = Object.keys(a);
-  const keysB = Object.keys(b);
-  if (keysA.length !== keysB.length) return false;
-
-  return keysA.every((key) =>
-    deepEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])
-  );
 }
 
 /**

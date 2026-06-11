@@ -5,10 +5,18 @@ import {
   clearCache,
   clearMemoryCache,
   getCacheStats,
+  getHashComputeCounts,
   isRedirectStatus,
   markAsRedirect,
 } from './index.js';
-import { resetConfig, updateConfig } from '../config/index.js';
+import {
+  resetConfig,
+  updateConfig,
+  setClientConfig,
+  resetClientConfig,
+  type DomainProfile,
+} from '../config/index.js';
+import { getRulesStore, clearProfileCache } from '../config/domain-manager.js';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -658,15 +666,19 @@ describe('cache cookie / auth / method isolation (T4 leak repro)', () => {
   });
 
   it('should not serve one user logged-in HTML to another user behind the same NAT IP', async () => {
-    // Two distinct users sit behind one NAT'd IP. They differ only in their
-    // session cookies. Without cookie-aware keying, user B receives user A's
-    // private HTML — the original cross-user leak.
+    // Two distinct users sit behind one NAT'd IP. They differ in cookie name
+    // SHAPE, so the cookie-name fingerprint keeps them in separate buckets.
+    // The response is explicitly Cache-Control: public — a precondition for any
+    // cookie-bearing response to be stored at all under the cacheability guard
+    // (without it, an authenticated response is treated as private and never
+    // cached; see the dedicated guard tests below).
     const url = 'https://example.com/dashboard';
     const contentType = 'text/html';
     const sharedClientIp = '203.0.113.7';
 
     const userAHeaders = { cookie: 'session=alice-secret-token; csrftoken=abc' };
     const userBHeaders = { cookie: 'auth=bob-bearer; sid=xyz' };
+    const publicResponse = { 'cache-control': 'public, max-age=600' };
 
     await setCache(
       url,
@@ -674,7 +686,8 @@ describe('cache cookie / auth / method isolation (T4 leak repro)', () => {
       Buffer.from('<html>Alice private dashboard</html>'),
       sharedClientIp,
       'GET',
-      userAHeaders
+      userAHeaders,
+      publicResponse
     );
 
     const userBResult = await getCached(url, contentType, sharedClientIp, 'GET', userBHeaders);
@@ -765,16 +778,19 @@ describe('cache cookie / auth / method isolation (T4 leak repro)', () => {
     expect(result?.toString()).toBe('public body');
   });
 
-  it('should reuse cache across requests with the same cookie name shape', async () => {
-    // Two requests with cookies of the same *names* (different values) should
-    // share a cache bucket — we only key on names by spec, not values.
+  it('should reuse cache across requests with the same cookie name shape (public response)', async () => {
+    // Two requests with cookies of the same *names* (different values) share a
+    // cache bucket — we only key on names by spec, not values. The response is
+    // Cache-Control: public so the cacheability guard allows the (authenticated)
+    // response to be stored; without `public` a cookie-bearing response is
+    // treated as private and is never cached at all.
     const url = 'https://example.com/feed';
     const contentType = 'text/html';
     const data = Buffer.from('feed body');
 
     await setCache(url, contentType, data, '10.0.0.1', 'GET', {
       cookie: 'session=token-A; csrf=v1',
-    });
+    }, { 'cache-control': 'public, max-age=600' });
 
     const result = await getCached(url, contentType, '10.0.0.1', 'GET', {
       cookie: 'csrf=v2; session=token-B',
@@ -826,6 +842,173 @@ describe('cache cookie / auth / method isolation (T4 leak repro)', () => {
 
     const result = await getCached(url, 'text/html');
     expect(result?.toString()).toBe('still cacheable');
+  });
+});
+
+describe('cacheability guard for newly-cacheable JSON (HIGH#1 regression)', () => {
+  // Once 'other'/JSON content was wired into the transform registry it began
+  // flowing into setCache. The cache key folds in the request method and a
+  // cookie-NAME fingerprint, but NOT the request body and NOT cookie/auth
+  // VALUES — so without an explicit cacheability guard, POST APIs and
+  // authenticated GET JSON leak across requests/users. These tests fail on
+  // the un-guarded code and pass once setCache/getCached refuse to store
+  // non-GET/HEAD or cookie/auth-bearing-non-public responses.
+  const testCacheDir = join(tmpdir(), 'revamp-cacheability-guard-test-' + Date.now());
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('must NOT serve one POST response to a different POST with a different body', async () => {
+    // GraphQL-style: two POSTs to the same URL differ only in their request
+    // body, which is NOT part of the cache key. Pre-fix, POST #2 was served
+    // POST #1's response (WRONG DATA). Post-fix, POST responses are never
+    // stored, so POST #2 misses and is fetched fresh.
+    const url = 'https://api.example.com/graphql';
+    const contentType = 'application/json';
+    const requestHeaders = { 'content-type': 'application/json' };
+
+    await setCache(
+      url,
+      contentType,
+      Buffer.from('{"data":"response-to-query-A"}'),
+      '10.0.0.1',
+      'POST',
+      requestHeaders
+    );
+
+    const served = await getCached(url, contentType, '10.0.0.1', 'POST', requestHeaders);
+    expect(served).toBeNull();
+  });
+
+  it('must NOT cache an authenticated GET JSON response without Cache-Control: public', async () => {
+    // Two users behind one NAT'd IP, each holding a `session` cookie (same
+    // NAME, different VALUE) collapse to one cache key. Pre-fix, user B was
+    // served user A's private JSON (DATA LEAK). Post-fix, the private response
+    // is never stored, so neither the other user nor the same user gets a
+    // shared-cache hit.
+    const url = 'https://api.example.com/me';
+    const contentType = 'application/json';
+    const sharedClientIp = '203.0.113.7';
+
+    await setCache(
+      url,
+      contentType,
+      Buffer.from('{"user":"alice","ssn":"redacted-secret"}'),
+      sharedClientIp,
+      'GET',
+      { cookie: 'session=alice-token' }
+    );
+
+    const userB = await getCached(url, contentType, sharedClientIp, 'GET', {
+      cookie: 'session=bob-token',
+    });
+    expect(userB).toBeNull();
+
+    const userA = await getCached(url, contentType, sharedClientIp, 'GET', {
+      cookie: 'session=alice-token',
+    });
+    expect(userA).toBeNull();
+  });
+
+  it('must NOT cache an Authorization-bearing GET JSON response without Cache-Control: public', async () => {
+    const url = 'https://api.example.com/account';
+    const contentType = 'application/json';
+
+    await setCache(
+      url,
+      contentType,
+      Buffer.from('{"balance":12345}'),
+      undefined,
+      'GET',
+      { authorization: 'Bearer alice-token' }
+    );
+
+    const result = await getCached(url, contentType, undefined, 'GET', {
+      authorization: 'Bearer alice-token',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('SHOULD still cache an authenticated GET JS asset that is Cache-Control: public', async () => {
+    // Static assets are virtually always GET and usually public. Even when the
+    // browser attaches a session cookie, an explicitly-public response stays
+    // cacheable exactly as before — the guard must not regress static assets.
+    const url = 'https://cdn.example.com/app.js';
+    const contentType = 'application/javascript';
+    const data = Buffer.from('console.log("bundle");');
+
+    await setCache(url, contentType, data, '10.0.0.1', 'GET', { cookie: 'session=x' }, {
+      'cache-control': 'public, max-age=31536000, immutable',
+    });
+
+    const result = await getCached(url, contentType, '10.0.0.1', 'GET', {
+      cookie: 'session=x',
+    });
+    expect(result?.toString()).toBe('console.log("bundle");');
+  });
+
+  it('must NOT cache an authenticated GET JS asset that lacks any Cache-Control', async () => {
+    // A cookie-bearing JS request whose response carries NO cache-control is
+    // treated as private and not shared — only an explicit `public` opts in.
+    const url = 'https://cdn.example.com/app-no-cc.js';
+    const contentType = 'application/javascript';
+
+    await setCache(url, contentType, Buffer.from('console.log("priv");'), '10.0.0.1', 'GET', {
+      cookie: 'session=x',
+    });
+
+    const result = await getCached(url, contentType, '10.0.0.1', 'GET', {
+      cookie: 'session=x',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('SHOULD still cache anonymous (no cookie/auth) GET content with no Cache-Control', async () => {
+    // The common static-asset path: no auth headers → cacheable regardless of
+    // cache-control, exactly as before this change.
+    const url = 'https://cdn.example.com/anon.css';
+    const contentType = 'text/css';
+    const data = Buffer.from('body{color:red}');
+
+    await setCache(url, contentType, data, '10.0.0.1', 'GET');
+
+    const result = await getCached(url, contentType, '10.0.0.1', 'GET');
+    expect(result?.toString()).toBe('body{color:red}');
+  });
+
+  it('SHOULD still cache an authenticated HEAD request marked Cache-Control: public', async () => {
+    const url = 'https://cdn.example.com/head-asset.js';
+    const contentType = 'application/javascript';
+    const data = Buffer.from('');
+
+    await setCache(url, contentType, data, undefined, 'HEAD', { cookie: 'session=x' }, {
+      'cache-control': 'public',
+    });
+
+    const result = await getCached(url, contentType, undefined, 'HEAD', { cookie: 'session=x' });
+    expect(result).not.toBeNull();
   });
 });
 
@@ -998,5 +1181,135 @@ describe('cache Vary header support (T41)', () => {
       'accept-language': 'fr-FR',
     });
     expect(miss).toBeNull();
+  });
+});
+
+describe('cache key hash memoization', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-hash-memo-test-' + Date.now());
+  const clientIp = '198.51.100.42';
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    resetClientConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetClientConfig();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should compute the config hash only once for a stable client config object', async () => {
+    // setClientConfig stores this exact object; getClientConfig returns the
+    // same reference until it is replaced — so the hash must be memoized.
+    setClientConfig({ removeAds: true, transformJs: true }, clientIp);
+
+    const url = 'https://memo-test.example/page';
+    const before = getHashComputeCounts().config;
+
+    await setCache(url, 'text/html', Buffer.from('<html>memo</html>'), clientIp);
+    await getCached(url, 'text/html', clientIp);
+    await getCached(url, 'text/html', clientIp);
+
+    const after = getHashComputeCounts().config;
+    // Three cache-key computations, one actual hash computation.
+    expect(after - before).toBe(1);
+  });
+
+  it('should change the cache key when the client config is replaced with different content', async () => {
+    const url = 'https://memo-replace.example/page';
+
+    setClientConfig({ removeAds: true }, clientIp);
+    await setCache(url, 'text/html', Buffer.from('v1'), clientIp);
+    expect((await getCached(url, 'text/html', clientIp))?.toString()).toBe('v1');
+
+    // Replacing the config with different content must produce a different
+    // hash → different cache key → MISS. A stale memo here would serve a
+    // response cached under the old config (correctness-critical).
+    setClientConfig({ removeAds: false }, clientIp);
+    expect(await getCached(url, 'text/html', clientIp)).toBeNull();
+
+    // A NEW object with content equal to the original must hash to the same
+    // value again (memo is identity-keyed, hash is content-derived) → HIT.
+    setClientConfig({ removeAds: true }, clientIp);
+    expect((await getCached(url, 'text/html', clientIp))?.toString()).toBe('v1');
+  });
+
+  it('should recompute (not reuse) the hash for a replaced equal-content config object', async () => {
+    setClientConfig({ removeTracking: true }, clientIp);
+    const url = 'https://memo-recompute.example/page';
+
+    await getCached(url, 'text/html', clientIp);
+    const afterFirst = getHashComputeCounts().config;
+
+    // New object identity, same content → memo miss → one more computation.
+    setClientConfig({ removeTracking: true }, clientIp);
+    await getCached(url, 'text/html', clientIp);
+
+    const afterSecond = getHashComputeCounts().config;
+    expect(afterSecond - afterFirst).toBe(1);
+  });
+
+  it('should memoize the profile hash and recompute when the profile object is replaced', async () => {
+    const store = getRulesStore();
+    const profile: DomainProfile = {
+      id: 'memo-profile-test-id',
+      name: 'memo test profile',
+      patterns: [{ type: 'exact', pattern: 'profile-memo.example' }],
+      priority: 100,
+      removeAds: true,
+      enabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    store.profiles.push(profile);
+    clearProfileCache();
+
+    try {
+      const url = 'https://profile-memo.example/page';
+      const before = getHashComputeCounts().profile;
+
+      await setCache(url, 'text/html', Buffer.from('profiled'), clientIp);
+      await getCached(url, 'text/html', clientIp);
+      expect((await getCached(url, 'text/html', clientIp))?.toString()).toBe('profiled');
+
+      const afterStable = getHashComputeCounts().profile;
+      // Three cache-key computations against the same profile object → one hash.
+      expect(afterStable - before).toBe(1);
+
+      // Replace the profile object exactly the way updateProfile() does:
+      // a fresh spread object swapped into the array slot, with a bumped
+      // updatedAt. The old cache entry must MISS under the new profile hash.
+      const index = store.profiles.indexOf(profile);
+      store.profiles[index] = {
+        ...profile,
+        removeAds: false,
+        updatedAt: profile.updatedAt + 1,
+      };
+      clearProfileCache();
+
+      expect(await getCached(url, 'text/html', clientIp)).toBeNull();
+      const afterReplace = getHashComputeCounts().profile;
+      expect(afterReplace - afterStable).toBe(1);
+    } finally {
+      store.profiles = store.profiles.filter((p) => p.id !== 'memo-profile-test-id');
+      clearProfileCache();
+    }
   });
 });

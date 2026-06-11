@@ -6,6 +6,7 @@
  */
 
 import type { PluginPermission, HookName } from './types.js';
+import { log } from '../logger/log.js';
 import { type HookTypes, HOOK_PERMISSION_REQUIREMENTS } from './hooks.js';
 import { pluginRegistry } from './internal.js';
 import type { RevampConfig } from '../config/index.js';
@@ -22,6 +23,12 @@ import {
   deleteDataFile,
 } from '../config/storage.js';
 import { validatePluginConfig, type JSONSchema } from './validation.js';
+import {
+  registerTransformer as registerContentTransformer,
+  unregisterTransformer as unregisterContentTransformer,
+  unregisterTransformersForPlugin,
+  type ContentTransformer,
+} from '../transformers/registry.js';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import type { LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
@@ -492,6 +499,52 @@ export interface PluginContext {
   getRegisteredEndpoints(): string[];
 
   // ==========================================
+  // Content Transformers
+  // ==========================================
+
+  /**
+   * Register a content transformer in the transform pipeline.
+   * Requires: response:modify (same permission as the transform hooks)
+   *
+   * Plugin transformers run before the built-in js/css/html/image
+   * transformers, in registration order among plugins; the first matching
+   * transformer wins. A throwing plugin transformer is logged and skipped
+   * so built-ins still run — it never breaks the response. Transformers
+   * are automatically unregistered when the plugin is deactivated.
+   */
+  registerTransformer(transformer: ContentTransformer): void;
+
+  /**
+   * Unregister a previously registered content transformer by name.
+   * Only removes transformers this plugin registered — built-ins and other
+   * plugins' transformers are not reachable from here.
+   */
+  unregisterTransformer(name: string): void;
+
+  // ==========================================
+  // Plugin Composition
+  // ==========================================
+
+  /**
+   * Get the ids of all currently active plugins.
+   *
+   * Intentionally ungated: this is read-only introspection that exposes only
+   * plugin ids (no config, manifest, or hook internals) — the same
+   * sensitivity class as the ungated `getPluginConfig` /
+   * `getRegisteredEndpoints`. No existing `PluginPermission` covers plugin
+   * introspection, and inventing one would force every composing plugin to
+   * declare it for a harmless capability.
+   */
+  getActivePlugins(): string[];
+
+  /**
+   * Check whether a specific plugin is currently active.
+   * Returns `false` for inactive AND unknown/unloaded plugin ids.
+   * Ungated for the same reason as {@link getActivePlugins}.
+   */
+  isPluginActive(id: string): boolean;
+
+  // ==========================================
   // Logging
   // ==========================================
 
@@ -653,7 +706,7 @@ export function createPluginContext(
       // Sanitize key to prevent path traversal
       const sanitizedKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
       if (sanitizedKey !== key) {
-        console.warn(`[Plugin:${pluginId}] Storage key sanitized: "${key}" -> "${sanitizedKey}"`);
+        log.warn(`[Plugin:${pluginId}] Storage key sanitized: "${key}" -> "${sanitizedKey}"`);
       }
       const filename = `plugin-${pluginId.replace(/\./g, '-')}-${sanitizedKey}.json`;
       return readJson<T>(filename);
@@ -664,7 +717,7 @@ export function createPluginContext(
       // Sanitize key to prevent path traversal
       const sanitizedKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
       if (sanitizedKey !== key) {
-        console.warn(`[Plugin:${pluginId}] Storage key sanitized: "${key}" -> "${sanitizedKey}"`);
+        log.warn(`[Plugin:${pluginId}] Storage key sanitized: "${key}" -> "${sanitizedKey}"`);
       }
 
       // Check value size limit
@@ -834,7 +887,7 @@ export function createPluginContext(
           void dispatcher.close().catch((err: unknown) => {
             // Constant format string + tainted value as a separate argument:
             // closes CodeQL js/tainted-format-string without losing context.
-            console.warn(
+            log.warn(
               '[Plugin] failed to close fetch dispatcher (plugin=%s)',
               sanitizeForLog(pluginId),
               err
@@ -865,6 +918,29 @@ export function createPluginContext(
       return endpoints ? Array.from(endpoints.keys()) : [];
     },
 
+    // Content transformers (gated by the same permission as the transform
+    // hooks — registering a transformer is response modification).
+    registerTransformer(transformer: ContentTransformer): void {
+      requirePermission('response:modify', 'registerTransformer');
+      registerContentTransformer(transformer, pluginId);
+    },
+
+    unregisterTransformer(name: string): void {
+      // Ownership is enforced by passing this plugin's id — a plugin can
+      // never unregister built-ins or another plugin's transformers.
+      unregisterContentTransformer(name, pluginId);
+    },
+
+    // Plugin composition (read-only introspection; intentionally ungated —
+    // see the PluginContext interface docs above for the rationale).
+    getActivePlugins(): string[] {
+      return pluginRegistry.getActivePlugins().map((info) => info.manifest.id);
+    },
+
+    isPluginActive(id: string): boolean {
+      return pluginRegistry.getPlugin(id)?.state === 'active';
+    },
+
     // Logging
     log(
       level: 'debug' | 'info' | 'warn' | 'error',
@@ -874,16 +950,16 @@ export function createPluginContext(
       const prefix = `[Plugin:${pluginId}]`;
       switch (level) {
         case 'debug':
-          console.debug(prefix, message, ...args);
+          log.debug(prefix, message, ...args);
           break;
         case 'info':
-          console.log(prefix, message, ...args);
+          log.info(prefix, message, ...args);
           break;
         case 'warn':
-          console.warn(prefix, message, ...args);
+          log.warn(prefix, message, ...args);
           break;
         case 'error':
-          console.error(prefix, message, ...args);
+          log.error(prefix, message, ...args);
           break;
       }
     },
@@ -899,6 +975,7 @@ export function cleanupPluginResources(pluginId: string): void {
   pluginEndpoints.delete(pluginId);
   pluginStorageKeys.delete(pluginId);
   pluginMetrics.delete(pluginId);
+  unregisterTransformersForPlugin(pluginId);
 }
 
 /**

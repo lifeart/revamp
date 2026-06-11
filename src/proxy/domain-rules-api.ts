@@ -6,6 +6,9 @@
  * - GET/PUT/DELETE /__revamp__/domains/:id - Manage specific profile
  * - GET /__revamp__/domains/match/:domain - Test domain matching
  *
+ * Routes are registered on the shared API router via
+ * {@link registerDomainRulesRoutes}; this module owns only its handlers.
+ *
  * @module proxy/domain-rules-api
  */
 
@@ -20,16 +23,13 @@ import {
   initializeDomainManager,
 } from '../config/domain-manager.js';
 import { isSafeRegexSource } from '../util/safe-regex.js';
+import type { ApiRouter, ApiHandler, ApiResponse } from './api-router.js';
 
 // =============================================================================
 // Types
 // =============================================================================
 
-export interface ApiResult {
-  statusCode: number;
-  headers: Record<string, string>;
-  body: string;
-}
+export type ApiResult = ApiResponse;
 
 // =============================================================================
 // Constants
@@ -71,82 +71,55 @@ function successResponse(data: Record<string, unknown>): ApiResult {
   return jsonResponse(200, { success: true, ...data });
 }
 
-// =============================================================================
-// API Detection
-// =============================================================================
-
 /**
- * Check if a path is a domain rules API endpoint
+ * Wrap a handler so the domain manager is initialized (rules loaded from
+ * disk, file watcher attached) before any domain route runs — same lazy
+ * init-on-first-request behavior the old dispatcher had.
  */
-export function isDomainRulesEndpoint(path: string): boolean {
-  return path.startsWith(DOMAIN_RULES_BASE);
+function withDomainManager(handler: ApiHandler): ApiHandler {
+  return async (req) => {
+    await initializeDomainManager();
+    return handler(req);
+  };
+}
+
+/** Historical 405 shape for the domains API. */
+function methodNotAllowed(): ApiResult {
+  return errorResponse(405, 'Method not allowed');
 }
 
 // =============================================================================
-// API Handlers
+// Route Registration
 // =============================================================================
 
 /**
- * Handle domain rules API requests
+ * Register the domain rules routes on the shared API router.
+ * Adding a future domains route means adding exactly one line here.
  */
-export async function handleDomainRulesRequest(
-  path: string,
-  method: string,
-  body: string = ''
-): Promise<ApiResult> {
-  // Ensure domain manager is initialized
-  await initializeDomainManager();
+export function registerDomainRulesRoutes(router: ApiRouter): void {
+  // GET/POST /__revamp__/domains - List/create profiles
+  router.register('GET', DOMAIN_RULES_BASE, withDomainManager(handleListProfiles));
+  router.register('GET', `${DOMAIN_RULES_BASE}/`, withDomainManager(handleListProfiles));
+  router.register('POST', DOMAIN_RULES_BASE, withDomainManager((req) => handleCreateProfile(req.body)));
+  router.register('POST', `${DOMAIN_RULES_BASE}/`, withDomainManager((req) => handleCreateProfile(req.body)));
+  router.register('*', DOMAIN_RULES_BASE, withDomainManager(methodNotAllowed));
+  router.register('*', `${DOMAIN_RULES_BASE}/`, withDomainManager(methodNotAllowed));
 
-  // Handle CORS preflight
-  if (method === 'OPTIONS') {
-    return {
-      statusCode: 204,
-      headers: CORS_HEADERS,
-      body: '',
-    };
-  }
+  // GET /__revamp__/domains/match/:domain - Test domain matching
+  // (wildcard, not :param, so URL-encoded domains and the historical
+  // empty-domain 400 behave exactly as before)
+  router.register('GET', `${DOMAIN_RULES_BASE}/match/*`, withDomainManager((req) => handleMatchDomain(decodeURIComponent(req.params['*']))));
+  router.register('GET', `${DOMAIN_RULES_BASE}/match/`, withDomainManager(() => handleMatchDomain('')));
+  router.register('*', `${DOMAIN_RULES_BASE}/match/*`, withDomainManager(methodNotAllowed));
+  router.register('*', `${DOMAIN_RULES_BASE}/match/`, withDomainManager(methodNotAllowed));
 
-  // Remove base path to get the rest
-  const pathWithoutBase = path.slice(DOMAIN_RULES_BASE.length);
-
-  // Route to appropriate handler
-  // GET/POST /__revamp__/domains
-  if (pathWithoutBase === '' || pathWithoutBase === '/') {
-    if (method === 'GET') {
-      return handleListProfiles();
-    }
-    if (method === 'POST') {
-      return handleCreateProfile(body);
-    }
-    return errorResponse(405, 'Method not allowed');
-  }
-
-  // GET /__revamp__/domains/match/:domain
-  if (pathWithoutBase.startsWith('/match/')) {
-    if (method === 'GET') {
-      const domain = decodeURIComponent(pathWithoutBase.slice(7));
-      return handleMatchDomain(domain);
-    }
-    return errorResponse(405, 'Method not allowed');
-  }
-
-  // GET/PUT/DELETE /__revamp__/domains/:id
-  const profileId = pathWithoutBase.slice(1); // Remove leading /
-
-  if (!profileId) {
-    return errorResponse(400, 'Profile ID required');
-  }
-
-  switch (method) {
-    case 'GET':
-      return handleGetProfile(profileId);
-    case 'PUT':
-      return handleUpdateProfile(profileId, body);
-    case 'DELETE':
-      return handleDeleteProfile(profileId);
-    default:
-      return errorResponse(405, 'Method not allowed');
-  }
+  // GET/PUT/DELETE /__revamp__/domains/:id - Manage specific profile
+  // (wildcard keeps the historical raw-id semantics, including ids that
+  // contain encoded separators)
+  router.register('GET', `${DOMAIN_RULES_BASE}/*`, withDomainManager((req) => handleGetProfile(req.params['*'])));
+  router.register('PUT', `${DOMAIN_RULES_BASE}/*`, withDomainManager((req) => handleUpdateProfile(req.params['*'], req.body)));
+  router.register('DELETE', `${DOMAIN_RULES_BASE}/*`, withDomainManager((req) => handleDeleteProfile(req.params['*'])));
+  router.register('*', `${DOMAIN_RULES_BASE}/*`, withDomainManager(methodNotAllowed));
 }
 
 // =============================================================================

@@ -1,0 +1,25 @@
+{
+  "id": "com.revamp.tracking-param-stripper",
+  "name": "Tracking Param Stripper",
+  "version": "1.0.0",
+  "description": "Strips tracking query parameters (utm_*, fbclid, gclid, ...) from request URLs before they go upstream",
+  "author": "Revamp",
+  "revampVersion": "1.0.0",
+  "main": "index.js",
+  "permissions": ["request:modify"],
+  "hooks": ["request:pre"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "params": {
+        "type": "array",
+        "description": "Query parameter names to strip: exact names or prefix wildcards like \"utm_*\". Replaces the default list.",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

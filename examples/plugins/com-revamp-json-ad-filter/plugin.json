@@ -1,0 +1,59 @@
+{
+  "id": "com.revamp.json-ad-filter",
+  "name": "JSON Ad Filter",
+  "version": "1.0.0",
+  "description": "Strips ad and tracking entries out of JSON API responses via a registered content transformer",
+  "author": "Revamp",
+  "revampVersion": "1.0.0",
+  "main": "index.js",
+  "permissions": ["response:modify"],
+  "hooks": [],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "rules": {
+        "type": "array",
+        "description": "Filtering rules applied to matching JSON responses, in order",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "action"],
+          "properties": {
+            "urlPattern": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Substring (or * wildcard) matched against the full URL; omit or \"*\" to match every URL"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Dotted path from the JSON root; [*] on a segment fans out over array elements (mid or final), e.g. \"data.items[*]\""
+            },
+            "when": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["field"],
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "description": "Dotted field path inside the matched node the predicate is evaluated on"
+                },
+                "equals": {
+                  "description": "Strict-equality predicate value"
+                },
+                "contains": {
+                  "description": "Substring (for strings) or membership (for arrays) predicate value"
+                }
+              }
+            },
+            "action": {
+              "enum": ["remove", "null", "empty"],
+              "description": "remove = delete the array item / object key, null = replace with null, empty = replace with []/{}/\"\" by type"
+            }
+          }
+        }
+      }
+    }
+  }
+}

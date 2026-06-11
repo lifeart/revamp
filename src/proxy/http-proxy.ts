@@ -14,11 +14,12 @@
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
+import { log } from '../logger/log.js';
 import { createServer as createHttpsServer } from 'node:https';
 import { connect, type Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { URL } from 'node:url';
-import { resolveBucketClientIp } from './socks5.js';
+import { resolveBucketClientIp } from './client-ip.js';
 import { getEffectiveConfig, getEffectiveConfigForRequestAsync, getConfig } from '../config/index.js';
 import {
   recordRequest,
@@ -30,15 +31,9 @@ import {
 } from '../metrics/index.js';
 import { generateDomainCert, CertRateLimitError } from '../certs/index.js';
 import { sanitizeForLog } from '../logger/sanitize.js';
-import {
-  shouldCompress,
-  acceptsGzip,
-  compressGzip,
-  shouldBlockDomain,
-  shouldBlockUrl,
-  removeCorsHeaders,
-  buildScopedCorsHeaders,
-} from './shared.js';
+import { shouldCompress, acceptsGzip, compressGzip } from './compression.js';
+import { shouldBlockDomain, shouldBlockUrl } from './blocking.js';
+import { removeCorsHeaders, buildScopedCorsHeaders } from './cors.js';
 import {
   processProxiedResponse,
   requestWithBody,
@@ -273,7 +268,8 @@ function sanitizeResponseHeaders(
 // =============================================================================
 
 /**
- * Handle Revamp API requests for HTTP proxy.
+ * Handle Revamp API requests for HTTP proxy — this stack's thin adapter
+ * around the shared `handleRevampRequest` entry.
  *
  * @param req - Incoming HTTP request
  * @param res - Server response object
@@ -291,10 +287,15 @@ async function handleRevampApiRequest(
     return false;
   }
 
-  console.log(`🔧 Revamp API: ${req.method} ${url} (client: ${clientIp})`);
+  const method = req.method || 'GET';
+  log.debug(`🔧 Revamp API: ${method} ${url} (client: ${clientIp})`);
 
-  const body = req.method === 'POST' ? await readRequestBody(req) : '';
-  const result = await handleRevampRequest(url, req.method || 'GET', body, clientIp);
+  // Read the body for every method that can carry one (previously only
+  // POST, which silently dropped PUT bodies for e.g. domain profile updates).
+  const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+  const body = hasBody ? await readRequestBody(req) : '';
+  const headers = flattenRequestHeaders(req);
+  const result = await handleRevampRequest(url, method, body, clientIp, headers);
 
   for (const [key, value] of Object.entries(result.headers)) {
     res.setHeader(key, value);
@@ -303,6 +304,19 @@ async function handleRevampApiRequest(
   res.writeHead(result.statusCode);
   res.end(result.body);
   return true;
+}
+
+/**
+ * Flatten Node's IncomingMessage headers (string | string[]) into the
+ * Record<string, string> shape the API request normalization expects.
+ */
+function flattenRequestHeaders(req: IncomingMessage): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value === undefined) continue;
+    headers[key] = Array.isArray(value) ? value.join(', ') : value;
+  }
+  return headers;
 }
 
 // =============================================================================
@@ -352,7 +366,7 @@ function checkAndBlockRequest(
   config: ReturnType<typeof getEffectiveConfig>
 ): boolean {
   if (shouldBlockDomain(hostname, config)) {
-    console.log(`🚫 Blocked domain: ${hostname}`);
+    log.debug(`🚫 Blocked domain: ${hostname}`);
     recordBlocked();
     recordHostBlocked(targetUrl);
     sendBlockedResponse(req, res, hostname, `Domain blocked by Revamp: ${hostname}`);
@@ -360,7 +374,7 @@ function checkAndBlockRequest(
   }
 
   if (shouldBlockUrl(targetUrl, config)) {
-    console.log(`🚫 Blocked tracking URL: ${targetUrl}`);
+    log.debug(`🚫 Blocked tracking URL: ${targetUrl}`);
     recordBlocked();
     recordHostBlocked(targetUrl);
     sendBlockedResponse(req, res, hostname, `Tracking URL blocked by Revamp: ${targetUrl}`);
@@ -689,7 +703,7 @@ function handleProxyError(
   url: string
 ): void {
   const reason = flattenError(err);
-  console.error(`❌ ${context}: ${reason}`);
+  log.error(`❌ ${context}: ${reason}`);
   recordError();
   recordHostError(url);
   sendUpstreamErrorResponse(req, res, url, reason);
@@ -751,7 +765,7 @@ async function prepareRequest(
 
   const preOutcome = await applyPreRequestHooks(requestContext);
   if (preOutcome.blocked) {
-    console.log(`🔌 Request blocked by plugin: ${preOutcome.stoppedBy || 'unknown'}`);
+    log.debug(`🔌 Request blocked by plugin: ${preOutcome.stoppedBy || 'unknown'}`);
     recordBlocked();
     recordHostBlocked(targetUrl);
     const blocked = preOutcome.blockedResponse;
@@ -849,6 +863,7 @@ async function executeUpstream(
     requestBody: prepared.requestBody,
     runPostResponseHook: true,
     requestContext: prepared.requestContext,
+    profile: prepared.profile,
   });
 }
 
@@ -930,7 +945,7 @@ async function proxyRequest(
     // generic 502 path, so clients see "I sent too much" rather than
     // "upstream broke" — and so the iPad host doesn't keep buffering.
     if (err instanceof RequestBodyTooLargeError) {
-      console.warn(`[http-proxy] request body exceeds max (${err.limitBytes} bytes)`);
+      log.warn(`[http-proxy] request body exceeds max (${err.limitBytes} bytes)`);
       recordError();
       recordHostError(targetUrl);
       sendErrorResponse(res, 413, 'Payload Too Large');
@@ -946,7 +961,7 @@ async function proxyRequest(
     processed = await executeUpstream(prepared);
   } catch (err) {
     if (isUpstreamCertError(err)) {
-      console.error(
+      log.error(
         `❌ Upstream cert validation failed for ${parsedUrl.hostname}: ${flattenError(err)}`
       );
       recordError();
@@ -957,7 +972,7 @@ async function proxyRequest(
     // allows — surface as 502 with a small explanation so the client knows
     // it's an upstream-side issue, not a malformed request.
     if (err instanceof ResponseBodyTooLargeError) {
-      console.warn(
+      log.warn(
         `[http-proxy] upstream response exceeds max (${err.limitBytes} bytes) for ${parsedUrl.hostname}`
       );
       recordError();
@@ -1005,7 +1020,7 @@ export function forwardWebSocketUpgrade(
   port: number
 ): void {
   const targetHost = `${hostname}:${port}`;
-  console.log(`🔌 WebSocket upgrade: wss://${targetHost}${httpsReq.url}`);
+  log.debug(`🔌 WebSocket upgrade: wss://${targetHost}${httpsReq.url}`);
 
   const allowInsecure = getConfig().allowInsecureUpstream === true;
 
@@ -1049,7 +1064,7 @@ export function forwardWebSocketUpgrade(
     );
 
     targetSocket.on('error', (err: Error) => {
-      console.error(`❌ WebSocket target error: ${err.message}`);
+      log.error(`❌ WebSocket target error: ${err.message}`);
       // Surface upstream cert failures as a 502 close frame on the client side
       // so the client never sees a happy upgrade for a MITM'd upstream.
       if (!socket.destroyed) {
@@ -1060,7 +1075,7 @@ export function forwardWebSocketUpgrade(
                 `Upstream certificate failed validation for ${hostname}: ${err.message}`
             );
           } catch (writeErr) {
-            console.warn('[ws-upgrade] failed to write 502 to client:', writeErr);
+            log.warn('[ws-upgrade] failed to write 502 to client:', writeErr);
           }
         }
         socket.end();
@@ -1068,7 +1083,7 @@ export function forwardWebSocketUpgrade(
     });
 
     socket.on('error', (err: Error) => {
-      console.error(`❌ WebSocket client error: ${sanitizeForLog(err.message)}`);
+      log.error(`❌ WebSocket client error: ${sanitizeForLog(err.message)}`);
       targetSocket.end();
     });
 
@@ -1108,7 +1123,7 @@ function handleConnect(
 
   // Check domain blocking
   if (shouldBlockDomain(hostname)) {
-    console.log(`🚫 Blocked HTTPS: ${hostname}`);
+    log.debug(`🚫 Blocked HTTPS: ${hostname}`);
     recordBlocked();
     recordHostBlocked(`https://${hostname}/`);
     // T20: a plain 403 over CONNECT can't render HTML — the TLS handshake
@@ -1120,7 +1135,7 @@ function handleConnect(
   }
 
   updateConnections(1);
-  console.log(`🔒 HTTPS CONNECT: ${hostname}:${port}`);
+  log.debug(`🔒 HTTPS CONNECT: ${hostname}:${port}`);
 
   // Generate certificate for TLS interception (rate-limited per client IP).
   // P1-2: previously the non-rate-limit branch re-threw, which inside this
@@ -1132,12 +1147,12 @@ function handleConnect(
     certPair = generateDomainCert(hostname, clientIp);
   } catch (err) {
     if (err instanceof CertRateLimitError) {
-      console.warn(`[http-proxy] cert mint rate limit exceeded for ${sanitizeForLog(clientIp)}`);
+      log.warn(`[http-proxy] cert mint rate limit exceeded for ${sanitizeForLog(clientIp)}`);
       recordError();
       clientSocket.end('HTTP/1.1 429 Too Many Requests\r\n\r\n');
       return;
     }
-    console.error('[http-proxy] cert mint failed', err);
+    log.error('[http-proxy] cert mint failed', err);
     recordError();
     clientSocket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
     return;
@@ -1148,12 +1163,12 @@ function handleConnect(
     { key: certPair.key, cert: certPair.cert },
     async (httpsReq, httpsRes) => {
       const targetUrl = `https://${hostname}${httpsReq.url}`;
-      console.log(`🔐 HTTPS: ${httpsReq.method} ${targetUrl}`);
+      log.debug(`🔐 HTTPS: ${httpsReq.method} ${targetUrl}`);
 
       try {
         await proxyRequest(httpsReq, httpsRes, targetUrl, true, clientIp);
       } catch (err) {
-        console.error(`❌ HTTPS proxy error: ${flattenError(err)}`);
+        log.error(`❌ HTTPS proxy error: ${flattenError(err)}`);
       }
     }
   );
@@ -1164,16 +1179,16 @@ function handleConnect(
 
     // Check if this is a Revamp internal WebSocket endpoint
     if (isRemoteSwEndpoint(url)) {
-      console.log(`🔌 HTTPS WebSocket upgrade for Remote SW: ${url}`);
+      log.debug(`🔌 HTTPS WebSocket upgrade for Remote SW: ${url}`);
       try {
         // Ensure server is initialized before handling upgrade
         if (!remoteSwServer.isInitialized()) {
-          console.log(`🔌 Initializing Remote SW server...`);
+          log.info(`🔌 Initializing Remote SW server...`);
           await remoteSwServer.initialize();
         }
         await remoteSwServer.handleUpgrade(httpsReq, socket, upgradeHead);
       } catch (err) {
-        console.error(`❌ Remote SW upgrade error:`, err);
+        log.error(`❌ Remote SW upgrade error:`, err);
         socket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
       }
       return;
@@ -1199,12 +1214,12 @@ function handleConnect(
 
     // Error handling
     serverSocket.on('error', (err) => {
-      console.error(`❌ Server socket error: ${err.message}`);
+      log.error(`❌ Server socket error: ${err.message}`);
       clientSocket.end();
     });
 
     clientSocket.on('error', (err) => {
-      console.error(`❌ Client socket error: ${err.message}`);
+      log.error(`❌ Client socket error: ${err.message}`);
       serverSocket.end();
     });
 
@@ -1230,7 +1245,7 @@ function handleConnect(
 export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): Server {
   const server = createServer(async (req, res) => {
     const targetUrl = req.url || '/';
-    console.log(`📡 HTTP: ${req.method} ${targetUrl}`);
+    log.debug(`📡 HTTP: ${req.method} ${targetUrl}`);
 
     try {
       // Determine full URL for proxy request
@@ -1240,7 +1255,7 @@ export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): 
 
       await proxyRequest(req, res, fullUrl, false);
     } catch (err) {
-      console.error(`❌ HTTP proxy error: ${err}`);
+      log.error(`❌ HTTP proxy error: ${err}`);
       sendErrorResponse(res, 500, 'Internal Server Error');
     }
   });
@@ -1252,27 +1267,27 @@ export function createHttpProxy(port: number, bindAddress: string = '0.0.0.0'): 
     const url = request.url || '';
 
     if (isRemoteSwEndpoint(url)) {
-      console.log(`🔌 WebSocket upgrade request for Remote SW: ${url}`);
+      log.debug(`🔌 WebSocket upgrade request for Remote SW: ${url}`);
       try {
         // Ensure server is initialized before handling upgrade
         if (!remoteSwServer.isInitialized()) {
-          console.log(`🔌 Initializing Remote SW server...`);
+          log.info(`🔌 Initializing Remote SW server...`);
           await remoteSwServer.initialize();
         }
         await remoteSwServer.handleUpgrade(request, socket, head);
       } catch (err) {
-        console.error(`❌ Remote SW upgrade error:`, err);
+        log.error(`❌ Remote SW upgrade error:`, err);
         socket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n');
       }
     } else {
       // For other upgrade requests, close the socket
-      console.log(`⚠️ Unsupported WebSocket upgrade request: ${url}`);
+      log.info(`⚠️ Unsupported WebSocket upgrade request: ${url}`);
       socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
     }
   });
 
   server.listen(port, bindAddress, () => {
-    console.log(`🌐 HTTP Proxy listening on ${bindAddress}:${port}`);
+    log.info(`🌐 HTTP Proxy listening on ${bindAddress}:${port}`);
   });
 
   return server;

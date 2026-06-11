@@ -7,9 +7,10 @@
  */
 
 import { createHash } from 'node:crypto';
+import { log } from '../logger/log.js';
 import { access, mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getConfig, getClientConfig, type ClientConfig } from '../config/index.js';
+import { getConfig, getClientConfig, type ClientConfig, type DomainProfile } from '../config/index.js';
 import { getProfileForDomain } from '../config/domain-manager.js';
 import { recordError } from '../metrics/index.js';
 
@@ -228,6 +229,74 @@ function getVaryFingerprint(
   return createHash('sha256').update(parts.join('\n')).digest('hex').substring(0, 16);
 }
 
+/**
+ * Memoized config / profile hashes, keyed by object identity.
+ *
+ * Identity-keyed memoization is sound here because both object kinds are
+ * REPLACED (never mutated in place) when they change:
+ * - Client configs: setClientConfig() stores the freshly JSON.parse'd request
+ *   body as a brand-new object (src/config/index.ts), so any update yields a
+ *   new identity and therefore a memo miss → fresh hash. The default fallback
+ *   in getClientConfig() (no stored config) builds a new object per call —
+ *   those always miss the memo, which costs the same stringify as before and
+ *   can never serve a stale hash.
+ * - Domain profiles: updateProfile() builds `{ ...old, ...updates }` and swaps
+ *   the array slot (src/config/domain-manager.ts), so updated profiles also
+ *   get a new identity (and a bumped `updatedAt`, which the hash includes).
+ *
+ * WeakMap entries die with their key objects, so replaced configs/profiles
+ * cannot leak memory.
+ */
+const configHashMemo = new WeakMap<ClientConfig, string>();
+const profileHashMemo = new WeakMap<DomainProfile, string>();
+
+/** Test-only counters: bumped when a hash is actually computed (memo miss). */
+let configHashComputeCount = 0;
+let profileHashComputeCount = 0;
+
+/**
+ * Test-only introspection for the hash memoization above. Lets tests prove a
+ * stable config/profile object is hashed exactly once and a replaced object
+ * is re-hashed.
+ *
+ * @internal
+ */
+export function getHashComputeCounts(): { config: number; profile: number } {
+  return { config: configHashComputeCount, profile: profileHashComputeCount };
+}
+
+function getConfigHash(clientConfig: ClientConfig): string {
+  const memoized = configHashMemo.get(clientConfig);
+  if (memoized !== undefined) return memoized;
+
+  configHashComputeCount++;
+  const hash = createHash('md5')
+    .update(JSON.stringify(clientConfig))
+    .digest('hex')
+    .substring(0, 8);
+  configHashMemo.set(clientConfig, hash);
+  return hash;
+}
+
+function getProfileHash(profile: DomainProfile): string {
+  const memoized = profileHashMemo.get(profile);
+  if (memoized !== undefined) return memoized;
+
+  profileHashComputeCount++;
+  const hash = createHash('md5')
+    .update(JSON.stringify({
+      id: profile.id,
+      updatedAt: profile.updatedAt,
+      transforms: profile.transforms,
+      removeAds: profile.removeAds,
+      removeTracking: profile.removeTracking,
+    }))
+    .digest('hex')
+    .substring(0, 8);
+  profileHashMemo.set(profile, hash);
+  return hash;
+}
+
 function getCacheKey(
   url: string,
   contentType: string,
@@ -247,27 +316,13 @@ function getCacheKey(
     // Invalid URL: fall through to the 'unknown' default profile.
   }
 
-  // Get domain profile hash
+  // Get domain profile hash (memoized by profile object identity)
   const { profile } = getProfileForDomain(domain);
-  const profileHash = profile
-    ? createHash('md5')
-        .update(JSON.stringify({
-          id: profile.id,
-          updatedAt: profile.updatedAt,
-          transforms: profile.transforms,
-          removeAds: profile.removeAds,
-          removeTracking: profile.removeTracking,
-        }))
-        .digest('hex')
-        .substring(0, 8)
-    : 'none';
+  const profileHash = profile ? getProfileHash(profile) : 'none';
 
-  // Get client config hash
+  // Get client config hash (memoized by config object identity)
   const clientConfig = getClientConfig(clientIp);
-  const configHash = createHash('md5')
-    .update(JSON.stringify(clientConfig))
-    .digest('hex')
-    .substring(0, 8);
+  const configHash = getConfigHash(clientConfig);
 
   const upperMethod = method.toUpperCase();
   const authFingerprint = getAuthFingerprint(requestHeaders);
@@ -289,14 +344,30 @@ function getCacheKey(
 }
 
 /**
+ * Tokenize a `Cache-Control` header into a set of lower-cased directive names
+ * with any `=value` argument stripped. Matching against this set is exact, so
+ * a vendor token like `x-private-cdn` can never be mistaken for the real
+ * `private` directive (substring matching would). Shared by
+ * isResponseUncacheable and isRequestCacheable so both speak the same dialect.
+ */
+function parseCacheControlDirectives(
+  responseHeaders?: Record<string, string | string[] | undefined>
+): Set<string> {
+  const cacheControl = responseHeaders ? getHeader(responseHeaders, 'cache-control') : undefined;
+  if (!cacheControl) return new Set();
+  return new Set(
+    cacheControl
+      .split(/[,\s]+/)
+      .map(part => part.trim().toLowerCase().split('=')[0])
+      .filter(Boolean)
+  );
+}
+
+/**
  * Returns true when the response carries headers that forbid shared caching.
  * Set-Cookie tags the response as user-specific; Cache-Control: no-store
  * forbids any persistence; Cache-Control: private forbids shared caches
  * (and Revamp is a shared cache by design).
- *
- * Cache-Control directives are tokenized (split on commas / whitespace and
- * stripped of any `=value` argument) so that a substring like `private` does
- * not falsely trigger on a vendor token such as `x-private-cdn`.
  */
 function isResponseUncacheable(
   responseHeaders?: Record<string, string | string[] | undefined>
@@ -307,18 +378,57 @@ function isResponseUncacheable(
     return true;
   }
 
-  const cacheControl = getHeader(responseHeaders, 'cache-control');
-  if (cacheControl) {
-    const tokens = cacheControl
-      .split(/[,\s]+/)
-      .map(part => part.trim().toLowerCase().split('=')[0])
-      .filter(Boolean);
-    if (tokens.includes('no-store') || tokens.includes('private')) {
-      return true;
-    }
+  const directives = parseCacheControlDirectives(responseHeaders);
+  if (directives.has('no-store') || directives.has('private')) {
+    return true;
   }
 
   return false;
+}
+
+/**
+ * Returns true when a REQUEST is eligible for Revamp's shared cache. This is
+ * the chokepoint that keeps the newly-cacheable 'other'/JSON content (routed
+ * into the transform pipeline by registered text transformers) from leaking
+ * across requests and users. Two independent guards:
+ *
+ *  1. Only GET and HEAD are cacheable. Other methods (POST/PUT/PATCH/...) carry
+ *     a request body that is NOT part of the cache key, so two POSTs to the
+ *     same URL with different bodies would otherwise collide — the second
+ *     caller being served the first's response (e.g. GraphQL over POST).
+ *
+ *  2. A request carrying a Cookie or Authorization header is user-specific.
+ *     We refuse to store its response UNLESS the origin explicitly marked the
+ *     response `Cache-Control: public` (the directive that authorises a shared
+ *     cache to store an authenticated response; RFC 7234 §3.2). The cache key
+ *     only folds in cookie NAMES + an "auth present" boolean, so two users
+ *     sharing one NAT'd client-IP bucket with the same cookie-name shape would
+ *     otherwise collapse onto one key and leak private data.
+ *
+ * Static assets (js/css/html) are unaffected: they are GET, and either carry
+ * no auth headers (cacheable regardless of Cache-Control) or are served
+ * `Cache-Control: public`.
+ */
+function isRequestCacheable(
+  method: string,
+  requestHeaders?: Record<string, string | string[] | undefined>,
+  responseHeaders?: Record<string, string | string[] | undefined>
+): boolean {
+  const upperMethod = method.toUpperCase();
+  if (upperMethod !== 'GET' && upperMethod !== 'HEAD') {
+    return false;
+  }
+
+  if (requestHeaders) {
+    const isAuthenticated =
+      Boolean(getHeader(requestHeaders, 'cookie')) ||
+      Boolean(getHeader(requestHeaders, 'authorization'));
+    if (isAuthenticated) {
+      return parseCacheControlDirectives(responseHeaders).has('public');
+    }
+  }
+
+  return true;
 }
 
 function getCachePath(key: string): string {
@@ -337,7 +447,7 @@ async function ensureCacheDir(): Promise<void> {
   } catch (err) {
     // mkdir with recursive:true should not fail unless the path is unwritable.
     // Surface so we don't silently degrade to a non-functional cache.
-    console.warn('[cache] failed to ensure cache dir', err);
+    log.warn('[cache] failed to ensure cache dir', err);
     recordError();
     cacheDirInitialized = true;
   }
@@ -413,6 +523,14 @@ export async function getCached(
   const config = getConfig();
   if (!config.cacheEnabled) return null;
   if (shouldSkipCache(url)) return null;
+  // Only GET/HEAD ever get stored (see isRequestCacheable / setCache), so a
+  // non-GET/HEAD lookup can never hit — short-circuit before touching disk.
+  // The cookie/auth + Cache-Control: public guard cannot be evaluated here
+  // (the response isn't known at read time); it is enforced on the write side
+  // in setCache, so an authenticated non-public response is simply never
+  // present to be read back.
+  const upperMethod = method.toUpperCase();
+  if (upperMethod !== 'GET' && upperMethod !== 'HEAD') return null;
 
   // T41: derive the BASE key (no Vary suffix). If a previous setCache wrote
   // a `<key>.vary` sidecar for this URL, we need to know the varied header
@@ -473,14 +591,14 @@ export async function getCached(
       }
       // Expired, clean up async (don't wait)
       Promise.all([unlink(cachePath), unlink(metaPath)]).catch((err: unknown) => {
-        console.warn('[cache] failed to unlink expired entry', err);
+        log.warn('[cache] failed to unlink expired entry', err);
         recordError();
       });
     }
   } catch (err) {
     // File-cache miss path: any error here means we treat as a miss and
     // re-fetch upstream. Log so corruption is investigatable.
-    console.warn('[cache] file-cache read failed', err);
+    log.warn('[cache] file-cache read failed', err);
     recordError();
   }
 
@@ -501,6 +619,10 @@ export async function setCache(
   if (shouldSkipCache(url)) return;
   // Never cache responses that the origin marked as user-specific or non-storable.
   if (isResponseUncacheable(responseHeaders)) return;
+  // Never cache requests that aren't safely shareable: non-GET/HEAD methods
+  // (request body not in the key) or cookie/auth-bearing requests whose
+  // response isn't explicitly `Cache-Control: public`.
+  if (!isRequestCacheable(method, requestHeaders, responseHeaders)) return;
 
   // T41: parse the response Vary header and refuse to cache `Vary: *` (RFC 7234
   // marks any response with `Vary: *` as uncacheable since literally any header
@@ -584,7 +706,7 @@ export async function setCache(
       }
       await Promise.all(writes);
     } catch (err) {
-      console.warn('[cache] file-cache write failed', err);
+      log.warn('[cache] file-cache write failed', err);
       recordError();
     }
   })();
@@ -616,12 +738,12 @@ export function clearCache(): void {
           if (stats.isDirectory()) {
             const files = await readdir(subdirPath);
             await Promise.all(files.map(file => unlink(join(subdirPath, file)).catch((err: unknown) => {
-              console.warn('[cache] failed to unlink', join(subdirPath, file), err);
+              log.warn('[cache] failed to unlink', join(subdirPath, file), err);
               recordError();
             })));
           }
         } catch (err) {
-          console.warn('[cache] failed to clear subdir', subdirPath, err);
+          log.warn('[cache] failed to clear subdir', subdirPath, err);
           recordError();
         }
       }

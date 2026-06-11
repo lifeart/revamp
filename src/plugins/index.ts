@@ -63,7 +63,14 @@ export type {
   HookRegistration,
 } from './hooks.js';
 
-export { continueResult, stopResult, errorResult } from './hooks.js';
+export {
+  continueResult,
+  stopResult,
+  errorResult,
+  sharedPluginDataKey,
+  setSharedPluginData,
+  getSharedPluginData,
+} from './hooks.js';
 
 // Context
 export type { PluginContext, ApiEndpointHandler } from './context.js';
@@ -77,6 +84,20 @@ export {
   getAllPluginMetrics,
 } from './context.js';
 
+// Content transformer registry types — plugin authors implement
+// `ContentTransformer` and register it via `context.registerTransformer`.
+// The registry's register/unregister functions themselves stay internal
+// (mirroring T37's reasoning for `pluginRegistry`): going through the
+// context enforces the `response:modify` permission gate and per-plugin
+// ownership tracking.
+export type {
+  ContentTransformer,
+  TextContentTransformer,
+  BinaryContentTransformer,
+  BinaryTransformResult,
+  TransformDispatchContext,
+} from '../transformers/registry.js';
+
 // Registry
 //
 // T37: `pluginRegistry` (the singleton) is intentionally NOT re-exported from
@@ -89,6 +110,7 @@ export {
 // internally as defence in depth — see `registry.ts`.
 export { PluginRegistry } from './registry.js';
 import { pluginRegistry as _pluginRegistry } from './internal.js';
+import { log } from '../logger/log.js';
 
 // Loader
 export { PluginLoader, pluginLoader } from './loader.js';
@@ -107,6 +129,7 @@ export {
 
 export type {
   ChainExecutionResult,
+  HookChainError,
   ExecutionMode,
   PluginHookStats,
   HookExecutionStats,
@@ -131,10 +154,7 @@ export type {
 } from './validation.js';
 
 // API
-export {
-  isPluginEndpoint,
-  handlePluginRequest,
-} from './api.js';
+export { registerPluginRoutes } from './api.js';
 
 export type { PluginApiResult } from './api.js';
 
@@ -167,7 +187,7 @@ export type {
  * Call this on server startup
  */
 export async function initializePluginSystem(): Promise<void> {
-  console.log('[Plugins] Initializing plugin system...');
+  log.info('[Plugins] Initializing plugin system...');
 
   try {
     // Load all plugins from the plugins directory
@@ -177,11 +197,11 @@ export async function initializePluginSystem(): Promise<void> {
     await _pluginLoader.activateAllPlugins();
 
     const stats = _pluginRegistry.getStats();
-    console.log(
+    log.info(
       `[Plugins] Plugin system ready: ${stats.activePlugins} active plugins, ${stats.totalHooks} hooks registered`
     );
   } catch (err) {
-    console.error('[Plugins] Failed to initialize plugin system:', err);
+    log.error('[Plugins] Failed to initialize plugin system:', err);
   }
 }
 
@@ -190,12 +210,12 @@ export async function initializePluginSystem(): Promise<void> {
  * Call this on server shutdown
  */
 export async function shutdownPluginSystem(): Promise<void> {
-  console.log('[Plugins] Shutting down plugin system...');
+  log.info('[Plugins] Shutting down plugin system...');
 
   try {
     await _pluginLoader.shutdownAllPlugins();
-    console.log('[Plugins] Plugin system shutdown complete');
+    log.info('[Plugins] Plugin system shutdown complete');
   } catch (err) {
-    console.error('[Plugins] Error during plugin system shutdown:', err);
+    log.error('[Plugins] Error during plugin system shutdown:', err);
   }
 }

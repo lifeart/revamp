@@ -1,6 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { transformCss, needsCssTransform, resetCssProcessor } from './css.js';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { transformCss, needsCssTransform, resetCssProcessor, shutdownCssWorkerPool } from './css.js';
 import { resetConfig, updateConfig } from '../config/index.js';
+
+// The PostCSS pool is shared across tests (mirrors production usage);
+// shut it down once at the end so no worker threads linger.
+afterAll(async () => {
+  await shutdownCssWorkerPool();
+});
 
 describe('needsCssTransform', () => {
   it('should detect :is() selector', () => {
@@ -348,6 +354,7 @@ describe('transformCss with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformCss(code, 'test.css', configWithCssDisabled);
@@ -395,6 +402,7 @@ describe('transformCss with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformCss(code, 'test.css', configWithCssEnabled);
@@ -418,5 +426,80 @@ describe('transformCss with config parameter', () => {
 
     // Code should be returned unchanged (global config has transformCss: false)
     expect(result).toBe(code);
+  });
+});
+
+describe('transformCss worker-pool equivalence', () => {
+  beforeEach(() => {
+    resetConfig();
+  });
+
+  afterEach(() => {
+    resetConfig();
+  });
+
+  // Representative modern-CSS fixture exercising the full pipeline:
+  // dark-mode stripping, grid->flexbox fallback, webkit flex prefixes and
+  // postcss-preset-env (oklch, color-mix, :is(), logical properties, clamp).
+  const FIXTURE = "/* Representative modern CSS fixture */\n:root {\n  --brand: oklch(0.55 0.15 250);\n  --accent: color-mix(in srgb, red 40%, blue);\n}\n.header :is(.nav, .menu) a:not(.active, .disabled) {\n  color: var(--brand);\n  padding-inline: 1rem;\n  margin-block: 0.5rem;\n}\n.container {\n  display: flex;\n  flex-direction: row;\n  flex-wrap: wrap;\n  justify-content: space-between;\n  align-items: center;\n  gap: 12px;\n}\n.grid {\n  display: grid;\n  grid-template-columns: repeat(3, 1fr);\n  grid-gap: 16px;\n}\n.card {\n  width: clamp(200px, 50%, 480px);\n  aspect-ratio: 16 / 9;\n  inset: 0;\n}\n@media (prefers-color-scheme: dark) {\n  body { background: #111; color: #eee; }\n}\n@media (prefers-color-scheme: light) {\n  body { background: #fff; color: #111; }\n}\n";
+
+  // Output captured from the pre-worker (main-thread) implementation with the
+  // default config (targets: safari 9, ios 9). The worker-pool implementation
+  // must produce byte-identical output.
+  const EXPECTED = "/* Representative modern CSS fixture */\n:root {\n  --brand: rgb(15, 116, 197);\n  --accent: rgb(102, 0, 153);\n}\n.header .nav a:not(.active):not(.disabled), .header .menu a:not(.active):not(.disabled) {\n  color: rgb(15, 116, 197);\n  color: var(--brand);\n  padding-left: 1rem;\n  padding-right: 1rem;\n  margin-top: 0.5rem;\n  margin-bottom: 0.5rem;\n}\n.container {\n  display: flex;\n  flex-direction: row;\n  flex-wrap: wrap;\n  justify-content: space-between;\n  align-items: center;\n  gap: 12px;\n}\n.grid {\n  /*  Revamp: Flexbox fallback for CSS Grid  */\n  flex-wrap: wrap;\n  -webkit-flex-wrap: wrap;\n  display: flex;\n  display: -webkit-flex;\n  display: grid;\n  grid-template-columns: repeat(3, 1fr);\n  grid-gap: 16px;\n}\n.card {\n  width: max(200px, min(50%, 480px));\n  aspect-ratio: 16 / 9;\n  top: 0;\n  right: 0;\n  bottom: 0;\n  left: 0;\n}\n/*  Revamp: Extracted from prefers-color-scheme media query  */\nbody { background: #fff; color: #111; }\n";
+
+  it('should produce output identical to the pre-worker implementation', async () => {
+    const result = await transformCss(FIXTURE, 'fixture.css');
+    expect(result).toBe(EXPECTED);
+  });
+
+  it('should produce identical output across concurrent transforms', async () => {
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => transformCss(FIXTURE, 'fixture.css'))
+    );
+    for (const result of results) {
+      expect(result).toBe(EXPECTED);
+    }
+  });
+});
+
+describe('transformCss worker failure fallback', () => {
+  beforeEach(() => {
+    resetConfig();
+  });
+
+  afterEach(() => {
+    vi.doUnmock('tinypool');
+    vi.resetModules();
+    vi.restoreAllMocks();
+    resetConfig();
+  });
+
+  it('should return original CSS and log when the worker pool crashes', async () => {
+    vi.resetModules();
+    vi.doMock('tinypool', () => ({
+      Tinypool: class {
+        options = { maxThreads: 1, concurrentTasksPerWorker: 1 };
+        run(): Promise<never> {
+          return Promise.reject(new Error('synthetic worker crash'));
+        }
+        async destroy(): Promise<void> {
+          // Nothing to clean up - this mock never spawns threads
+        }
+      },
+    }));
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence in test */ });
+
+    // Fresh module instance picks up the mocked tinypool
+    const { transformCss: transformCssWithBrokenPool } = await import('./css.js');
+
+    // Modern CSS > 50 bytes so the transform is actually dispatched to the pool
+    const code = '.box { display: flex; flex-direction: column; align-items: center; gap: 10px; }';
+    const result = await transformCssWithBrokenPool(code, 'broken.css');
+
+    // Worker crash must degrade to the original CSS, never kill the request
+    expect(result).toBe(code);
+    expect(errorSpy).toHaveBeenCalledWith('❌ PostCSS worker error:', 'synthetic worker crash');
   });
 });

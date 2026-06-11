@@ -18,6 +18,7 @@
  */
 
 import type { IncomingMessage } from 'http';
+import { log } from '../logger/log.js';
 import type { Duplex } from 'stream';
 
 // =============================================================================
@@ -156,7 +157,7 @@ async function loadWsModule(): Promise<boolean> {
     WebSocketServerClass = wsModule.WebSocketServer;
     return true;
   } catch (err) {
-    console.warn('[Remote SW Server] ws module not available. Install with: npm install ws @types/ws', err);
+    log.warn('[Remote SW Server] ws module not available. Install with: npm install ws @types/ws', err);
     return false;
   }
 }
@@ -172,7 +173,7 @@ async function loadPlaywright(): Promise<boolean> {
     playwrightChromium = playwright.chromium;
     return true;
   } catch (err) {
-    console.warn('[Remote SW Server] playwright module not available. Install with: npm install playwright', err);
+    log.warn('[Remote SW Server] playwright module not available. Install with: npm install playwright', err);
     return false;
   }
 }
@@ -188,7 +189,7 @@ async function getBrowser(): Promise<PlaywrightBrowser | null> {
   }
 
   try {
-    console.log('[Remote SW Server] Launching Playwright Chromium...');
+    log.info('[Remote SW Server] Launching Playwright Chromium...');
     playwrightBrowser = await playwrightChromium.launch({
       headless: true,
       args: [
@@ -197,10 +198,10 @@ async function getBrowser(): Promise<PlaywrightBrowser | null> {
         '--disable-features=IsolateOrigins,site-per-process'
       ]
     });
-    console.log('[Remote SW Server] Playwright Chromium launched');
+    log.info('[Remote SW Server] Playwright Chromium launched');
     return playwrightBrowser;
   } catch (error) {
-    console.error('[Remote SW Server] Failed to launch Playwright:', error);
+    log.error('[Remote SW Server] Failed to launch Playwright:', error);
     return null;
   }
 }
@@ -238,13 +239,13 @@ export class RemoteSwServer {
    */
   async initialize(): Promise<void> {
     if (this.wss) {
-      console.log('[Remote SW Server] Already initialized');
+      log.info('[Remote SW Server] Already initialized');
       return;
     }
 
     const hasWs = await loadWsModule();
     if (!hasWs || !WebSocketServerClass) {
-      console.warn('[Remote SW Server] Cannot initialize - ws module not available');
+      log.warn('[Remote SW Server] Cannot initialize - ws module not available');
       return;
     }
 
@@ -255,7 +256,7 @@ export class RemoteSwServer {
     this.setupServerEvents();
     this.startPingInterval();
 
-    console.log('[Remote SW Server] Initialized (noServer mode)');
+    log.info('[Remote SW Server] Initialized (noServer mode)');
   }
 
   /**
@@ -265,12 +266,12 @@ export class RemoteSwServer {
     if (!this.wss) {
       const hasWs = await loadWsModule();
       if (!hasWs || !WebSocketServerClass) {
-        console.warn('[Remote SW Server] Cannot handle upgrade - ws module not available');
+        log.warn('[Remote SW Server] Cannot handle upgrade - ws module not available');
         socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
         return;
       }
 
-      console.log('[Remote SW Server] Auto-initializing on upgrade');
+      log.info('[Remote SW Server] Auto-initializing on upgrade');
       this.wss = new WebSocketServerClass({ noServer: true });
       this.setupServerEvents();
       this.startPingInterval();
@@ -348,7 +349,7 @@ export class RemoteSwServer {
       try {
         await playwrightBrowser.close();
       } catch (err) {
-        console.warn('[Remote SW Server] failed to close playwright browser on shutdown', err);
+        log.warn('[Remote SW Server] failed to close playwright browser on shutdown', err);
       }
       playwrightBrowser = null;
     }
@@ -358,7 +359,7 @@ export class RemoteSwServer {
       this.wss = null;
     }
 
-    console.log('[Remote SW Server] Shutdown complete');
+    log.info('[Remote SW Server] Shutdown complete');
   }
 
   // ===========================================================================
@@ -375,7 +376,7 @@ export class RemoteSwServer {
     });
 
     wss.on('error', (error: unknown) => {
-      console.error('[Remote SW Server] Server error:', (error as Error).message);
+      log.error('[Remote SW Server] Server error:', (error as Error).message);
     });
   }
 
@@ -386,7 +387,7 @@ export class RemoteSwServer {
       this.clients.forEach((client, clientId) => {
         const lastActivity = this.getClientLastActivity(client);
         if (now - lastActivity > CONNECTION_TIMEOUT) {
-          console.log('[Remote SW Server] Client ' + clientId + ' timed out');
+          log.info('[Remote SW Server] Client ' + clientId + ' timed out');
           this.disconnectClient(clientId, 'Connection timeout');
           return;
         }
@@ -414,40 +415,40 @@ export class RemoteSwServer {
   // ===========================================================================
 
   private handleConnection(ws: unknown, request: IncomingMessage): void {
-    console.log('[Remote SW Server] New connection from ' + request.socket.remoteAddress);
-    console.log('[Remote SW Server] WebSocket readyState:', wsReadyState(ws));
+    log.debug('[Remote SW Server] New connection from ' + request.socket.remoteAddress);
+    log.debug('[Remote SW Server] WebSocket readyState:', wsReadyState(ws));
 
     wsOn(ws, 'message', (data: unknown) => {
-      console.log('[Remote SW Server] Raw message received:', String(data).substring(0, 200));
+      log.debug('[Remote SW Server] Raw message received:', String(data).substring(0, 200));
       try {
         const message: WSMessage = JSON.parse(String(data));
         const clientId = this.connectionsBySocket.get(ws as object);
 
-        console.log('[Remote SW Server] Parsed message type:', message.type, 'clientId:', clientId || 'not-yet-registered');
+        log.debug('[Remote SW Server] Parsed message type:', message.type, 'clientId:', clientId || 'not-yet-registered');
 
         if (message.type === 'client_init') {
           this.handleClientInit(ws, message);
         } else if (clientId) {
           this.handleClientMessage(clientId, message);
         } else {
-          console.warn('[Remote SW Server] Message from uninitialized client');
+          log.warn('[Remote SW Server] Message from uninitialized client');
         }
       } catch (e) {
-        console.error('[Remote SW Server] Failed to parse message:', e);
+        log.error('[Remote SW Server] Failed to parse message:', e);
       }
     });
 
     wsOn(ws, 'close', (code: unknown, reason: unknown) => {
       const clientId = this.connectionsBySocket.get(ws as object);
       if (clientId) {
-        console.log('[Remote SW Server] Client ' + clientId + ' disconnected: ' + code + ' ' + String(reason));
+        log.debug('[Remote SW Server] Client ' + clientId + ' disconnected: ' + code + ' ' + String(reason));
         this.cleanupClient(clientId);
       }
     });
 
     wsOn(ws, 'error', (error: unknown) => {
       const clientId = this.connectionsBySocket.get(ws as object);
-      console.error('[Remote SW Server] WebSocket error for ' + (clientId || 'unknown') + ':', (error as Error).message);
+      log.error('[Remote SW Server] WebSocket error for ' + (clientId || 'unknown') + ':', (error as Error).message);
     });
   }
 
@@ -456,10 +457,10 @@ export class RemoteSwServer {
     const origin = (message.origin as string) || 'unknown';
     const userAgent = (message.userAgent as string) || 'unknown';
 
-    console.log('[Remote SW Server] Received client_init from:', clientId, 'origin:', origin);
+    log.debug('[Remote SW Server] Received client_init from:', clientId, 'origin:', origin);
 
     if (this.clients.has(clientId)) {
-      console.log('[Remote SW Server] Cleaning up existing client:', clientId);
+      log.debug('[Remote SW Server] Cleaning up existing client:', clientId);
       this.cleanupClient(clientId);
     }
 
@@ -478,7 +479,7 @@ export class RemoteSwServer {
     this.clients.set(clientId, client);
     this.connectionsBySocket.set(ws as object, clientId);
 
-    console.log('[Remote SW Server] Client initialized: ' + clientId + ' from ' + origin);
+    log.info('[Remote SW Server] Client initialized: ' + clientId + ' from ' + origin);
 
     // Send init_ack immediately
     const ackMessage = {
@@ -486,27 +487,27 @@ export class RemoteSwServer {
       clientId,
       serverTime: Date.now()
     };
-    console.log('[Remote SW Server] Sending init_ack to:', clientId);
+    log.debug('[Remote SW Server] Sending init_ack to:', clientId);
 
     const sent = this.sendToClient(clientId, ackMessage);
     if (!sent) {
-      console.error('[Remote SW Server] Failed to send init_ack to:', clientId);
+      log.error('[Remote SW Server] Failed to send init_ack to:', clientId);
       // Try direct send as fallback
       try {
         wsSend(ws, JSON.stringify(ackMessage));
-        console.log('[Remote SW Server] init_ack sent directly to:', clientId);
+        log.debug('[Remote SW Server] init_ack sent directly to:', clientId);
       } catch (e) {
-        console.error('[Remote SW Server] Direct send also failed:', e);
+        log.error('[Remote SW Server] Direct send also failed:', e);
       }
     } else {
-      console.log('[Remote SW Server] init_ack sent successfully to:', clientId);
+      log.debug('[Remote SW Server] init_ack sent successfully to:', clientId);
     }
   }
 
   private handleClientMessage(clientId: string, message: WSMessage): void {
     const client = this.clients.get(clientId);
     if (!client) {
-      console.warn('[Remote SW Server] Message for unknown client: ' + clientId);
+      log.warn('[Remote SW Server] Message for unknown client: ' + clientId);
       return;
     }
 
@@ -536,7 +537,7 @@ export class RemoteSwServer {
         break;
 
       default:
-        console.warn('[Remote SW Server] Unknown message type: ' + message.type);
+        log.warn('[Remote SW Server] Unknown message type: ' + message.type);
     }
   }
 
@@ -551,7 +552,7 @@ export class RemoteSwServer {
 
     const browser = await getBrowser();
     if (!browser) {
-      console.error('[Remote SW Server] Failed to get browser for client ' + client.clientId);
+      log.error('[Remote SW Server] Failed to get browser for client ' + client.clientId);
       return false;
     }
 
@@ -585,7 +586,7 @@ export class RemoteSwServer {
         // For document/navigation requests, serve a minimal HTML page
         // This prevents circular dependencies during SW registration
         if (resourceType === 'document') {
-          console.log('[Remote SW Server] Serving minimal page for:', url);
+          log.debug('[Remote SW Server] Serving minimal page for:', url);
           const minimalHtml = `<!DOCTYPE html>
 <html>
 <head><title>SW Host</title></head>
@@ -607,7 +608,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
         // For service worker scripts, try to fetch from client
         if (resourceType === 'serviceworker' || url.endsWith('.js') || url.endsWith('.mjs')) {
           try {
-            console.log('[Remote SW Server] Fetching script from client:', url, 'resourceType:', resourceType);
+            log.debug('[Remote SW Server] Fetching script from client:', url, 'resourceType:', resourceType);
             const response = await this.requestFetchFromClient(
               client.clientId,
               '/',
@@ -633,7 +634,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
             // and the SW script URL pattern varies (e.g., /a/xxx.js for Telegram)
             const responseHeaders: Record<string, string> = { ...response.headers };
             responseHeaders['Service-Worker-Allowed'] = '/';
-            console.log('[Remote SW Server] Added Service-Worker-Allowed header for:', url, 'resourceType:', resourceType);
+            log.debug('[Remote SW Server] Added Service-Worker-Allowed header for:', url, 'resourceType:', resourceType);
 
             await route.fulfill({
               status: response.status,
@@ -642,7 +643,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
             });
             return;
           } catch (error) {
-            console.error('[Remote SW Server] Failed to fetch script ' + url + ':', error);
+            log.error('[Remote SW Server] Failed to fetch script ' + url + ':', error);
             await route.abort('failed');
             return;
           }
@@ -675,7 +676,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
             body
           });
         } catch (error) {
-          console.error('[Remote SW Server] Route error for ' + url + ':', error);
+          log.error('[Remote SW Server] Route error for ' + url + ':', error);
           await route.abort('failed');
         }
       });
@@ -691,10 +692,10 @@ console.log('[Revamp SW Host] Page loaded for SW context');
         });
       });
 
-      console.log('[Remote SW Server] Playwright context created for client ' + client.clientId);
+      log.info('[Remote SW Server] Playwright context created for client ' + client.clientId);
       return true;
     } catch (error) {
-      console.error('[Remote SW Server] Failed to setup Playwright for ' + client.clientId + ':', error);
+      log.error('[Remote SW Server] Failed to setup Playwright for ' + client.clientId + ':', error);
       await this.cleanupClientPlaywright(client);
       return false;
     }
@@ -705,7 +706,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
       try {
         await client.swPage.close();
       } catch (err) {
-        console.warn('[Remote SW Server] failed to close swPage during cleanup', err);
+        log.warn('[Remote SW Server] failed to close swPage during cleanup', err);
       }
       client.swPage = null;
     }
@@ -714,7 +715,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
       try {
         await client.browserContext.close();
       } catch (err) {
-        console.warn('[Remote SW Server] failed to close browserContext during cleanup', err);
+        log.warn('[Remote SW Server] failed to close browserContext during cleanup', err);
       }
       client.browserContext = null;
     }
@@ -731,7 +732,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
     const scriptCode = message.scriptCode as string;
     const requestId = message.requestId as string;
 
-    console.log('[Remote SW Server] Registering SW for client ' + client.clientId + ', scope: ' + scope);
+    log.info('[Remote SW Server] Registering SW for client ' + client.clientId + ', scope: ' + scope);
 
     const registrationId = 'sw_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
@@ -772,7 +773,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
         });
       } catch (navError) {
         // If navigation fails, we might still have a usable page context
-        console.warn('[Remote SW Server] Navigation warning:', (navError as Error).message);
+        log.warn('[Remote SW Server] Navigation warning:', (navError as Error).message);
 
         // Check if we have a valid page context
         const currentUrl = client.swPage!.url();
@@ -859,7 +860,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
           // If execution context was destroyed, try to recover
           if (errorMessage.includes('Execution context was destroyed') ||
               errorMessage.includes('navigation')) {
-            console.warn('[Remote SW Server] Context destroyed on attempt ' + (attempt + 1) + ', retrying...');
+            log.warn('[Remote SW Server] Context destroyed on attempt ' + (attempt + 1) + ', retrying...');
 
             // Wait before retry
             await new Promise(resolve => setTimeout(resolve, 500));
@@ -913,10 +914,10 @@ console.log('[Revamp SW Host] Page loaded for SW context');
         registrationId
       });
 
-      console.log('[Remote SW Server] SW registered in Playwright: ' + registrationId + ' for scope ' + scope);
+      log.info('[Remote SW Server] SW registered in Playwright: ' + registrationId + ' for scope ' + scope);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.error('[Remote SW Server] SW registration failed:', errorMessage);
+      log.error('[Remote SW Server] SW registration failed:', errorMessage);
 
       this.sendToClient(client.clientId, {
         type: 'response',
@@ -932,7 +933,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
 
     const swState = client.serviceWorkers.get(scope);
     if (swState && client.swPage) {
-      console.log('[Remote SW Server] Unregistering SW for scope: ' + scope);
+      log.info('[Remote SW Server] Unregistering SW for scope: ' + scope);
 
       try {
         await client.swPage.evaluate(async (s) => {
@@ -946,7 +947,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
           }
         }, scope);
       } catch (error) {
-        console.warn('[Remote SW Server] Error unregistering SW:', error);
+        log.warn('[Remote SW Server] Error unregistering SW:', error);
       }
 
       client.serviceWorkers.delete(scope);
@@ -976,7 +977,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
           }
         }, scope);
       } catch (error) {
-        console.warn('[Remote SW Server] Error updating SW:', error);
+        log.warn('[Remote SW Server] Error updating SW:', error);
       }
     }
 
@@ -993,7 +994,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
 
     const swState = client.serviceWorkers.get(scope);
     if (!swState || !client.swPage) {
-      console.warn('[Remote SW Server] postMessage to unknown SW scope: ' + scope);
+      log.warn('[Remote SW Server] postMessage to unknown SW scope: ' + scope);
       return;
     }
 
@@ -1012,7 +1013,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
         { scope, data: msgData }
       );
     } catch (error) {
-      console.warn('[Remote SW Server] Error posting message to SW:', error);
+      log.warn('[Remote SW Server] Error posting message to SW:', error);
     }
   }
 
@@ -1075,7 +1076,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
     const pending = client.pendingFetches.get(requestId);
 
     if (!pending) {
-      console.warn('[Remote SW Server] Response for unknown fetch request: ' + requestId);
+      log.warn('[Remote SW Server] Response for unknown fetch request: ' + requestId);
       return;
     }
 
@@ -1103,7 +1104,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
       wsSend(client.ws, JSON.stringify(message));
       return true;
     } catch (e) {
-      console.error('[Remote SW Server] Failed to send to client ' + clientId + ':', e);
+      log.error('[Remote SW Server] Failed to send to client ' + clientId + ':', e);
       return false;
     }
   }
@@ -1133,7 +1134,7 @@ console.log('[Revamp SW Host] Page loaded for SW context');
       await this.cleanupClientPlaywright(client);
 
       this.clients.delete(clientId);
-      console.log('[Remote SW Server] Cleaned up client: ' + clientId);
+      log.debug('[Remote SW Server] Cleaned up client: ' + clientId);
     }
   }
 }

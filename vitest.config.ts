@@ -22,6 +22,7 @@ export default defineConfig({
         'src/benchmarks/**',
         'src/transformers/polyfills/**',
         'src/transformers/js-worker.ts',
+        'src/transformers/css-worker.ts',
         'src/portal/index.ts',
       ],
       // Thresholds set to current measured coverage minus a small buffer.
