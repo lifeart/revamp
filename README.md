@@ -63,7 +63,7 @@ Give your old iPad 2, iPad Mini, or iPod Touch a second life by making modern we
 
 - **🎛️ Admin Panel** — Full-featured web UI at `/__revamp__/admin` for managing profiles and configuration
 - **📊 Metrics Dashboard** — Real-time web UI at `/__revamp__/metrics`
-- **🐳 Docker Support** — Production and development Dockerfiles
+- **🐳 Docker Support** — Multi-arch image on `ghcr.io` (amd64/arm64) plus production and development Dockerfiles
 - **📋 PAC File Generation** — Auto-generate proxy config files
 - **⚙️ External Config** — JSON config for blocked domains
 - **🔌 Plugin System** — Extensible architecture with hooks for request/response lifecycle, transforms, and filtering
@@ -94,14 +94,50 @@ pnpm start
 pnpm dev
 ```
 
-### Docker Installation
+### Docker
+
+#### Run the published image (no build needed)
+
+A multi-arch image (`linux/amd64` + `linux/arm64`) is published to GitHub Container Registry on every push to `master`, with a signed build-provenance attestation:
 
 ```bash
-# Build and run with Docker
+docker run -d --name revamp \
+  -p 1080:1080 -p 8080:8080 -p 8888:8888 \
+  -v revamp-certs:/app/.revamp-certs \
+  -v revamp-cache:/app/.revamp-cache \
+  ghcr.io/lifeart/revamp:latest
+```
+
+Then open `http://<host-ip>:8888` on your device to install the certificate (see [Device Setup](#device-setup)). Mounting the two named volumes persists the generated CA certificate and the transform cache across restarts — without them the CA is regenerated on each run and every device has to re-trust it.
+
+Available tags: `latest` (newest `master`), `master`, and the commit SHA. Verify the provenance of an image with:
+
+```bash
+gh attestation verify oci://ghcr.io/lifeart/revamp:latest --repo lifeart/revamp
+```
+
+#### Configure via environment variables
+
+Every CLI flag has a matching `REVAMP_`-prefixed environment variable (see [CLI Options](#cli-options)):
+
+```bash
+docker run -d --name revamp \
+  -p 9090:9090 -p 1080:1080 -p 8888:8888 \
+  -e REVAMP_HTTP_PROXY_PORT=9090 \
+  -e REVAMP_LOG_LEVEL=debug \
+  -e REVAMP_REMOVE_ADS=false \
+  ghcr.io/lifeart/revamp:latest
+```
+
+#### Build from source
+
+```bash
+# Build and run locally
 docker build -t revamp .
 docker run -p 1080:1080 -p 8080:8080 -p 8888:8888 revamp
 
-# Or use Docker Compose
+# Or use Docker Compose (persists certs/cache in named volumes,
+# mounts ./config read-only, and restarts unless stopped)
 docker-compose up -d
 
 # Development mode with hot-reload
