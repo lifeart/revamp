@@ -64,7 +64,11 @@ export function handleConfigRequest(method: string, body: string = '', clientIp?
   // GET - return current config
   if (method === 'GET') {
     const config = getClientConfig(clientIp);
-    log.debug(`⚙️ Config GET${clientIp ? ` (client: ${clientIp})` : ''} - returning:`, JSON.stringify(config));
+    // Pass the config object to the logger rather than pre-stringifying it:
+    // `log.debug` is filtered out at the default level, and the backend
+    // (console.log) only formats the object lazily when the level is enabled,
+    // so JSON.stringify no longer runs unconditionally on this cold path.
+    log.debug(`⚙️ Config GET${clientIp ? ` (client: ${clientIp})` : ''} - returning:`, config);
     const responseBody = JSON.stringify({ success: true, config });
     return {
       statusCode: 200,

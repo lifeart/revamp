@@ -276,6 +276,25 @@ describe('handleRevampRequest', () => {
       expect(parsed.endpoints.sw).toBeDefined();
       expect(parsed.endpoints.sw.bundle).toBe('/__revamp__/sw/bundle');
     });
+
+    // End-to-end regression for the CRLF header-injection finding: a `scope`
+    // query value carrying URL-encoded CR/LF (parseQuery decodes %0d%0a into a
+    // real CR LF) must not be able to inject a header / split the raw SOCKS5
+    // response that buildRawApiResponse produces.
+    it('neutralizes CRLF injected via the scope query param', async () => {
+      const malicious =
+        '/__revamp__/sw/bundle?url=invalid-url&scope=' +
+        encodeURIComponent('/\r\nSet-Cookie: evil=1');
+      const result = await handleRevampRequest(malicious, 'GET');
+
+      // Source-level defense: the echoed header value carries no CR/LF.
+      expect(result.headers['Service-Worker-Allowed']).toBe('/Set-Cookie: evil=1');
+      expect(result.headers['Service-Worker-Allowed']).not.toMatch(/[\r\n]/);
+
+      // Serializer-level guard: the raw response has no injected header line.
+      const raw = buildRawApiResponse(result);
+      expect(raw).not.toContain('\r\nSet-Cookie:');
+    });
   });
 });
 
@@ -527,5 +546,61 @@ describe('buildRawApiResponse', () => {
     expect(raw.match(/Connection:/gi)).toHaveLength(1);
     expect(raw).toContain('Content-Length: 0\r\n');
     expect(raw).toContain('Connection: close\r\n');
+  });
+
+  // HTTP response-splitting / header-injection guard (CWE-113). The SOCKS5
+  // stack writes these bytes straight to the socket, so a CR/LF embedded in a
+  // header value MUST NOT be serialized verbatim — otherwise an attacker who
+  // controls a header value (several SW endpoints echo query/body values into
+  // headers) could inject an arbitrary header or split the response body.
+  it('should NOT serialize a header value containing CRLF (injection neutralized)', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Revamp-SW-Scope': '/\r\nSet-Cookie: evil=1',
+      },
+      body: '{}',
+    };
+    const raw = buildRawApiResponse(result);
+
+    // The injected header must not appear as its own line, and the tainted
+    // header is dropped entirely rather than passed through.
+    expect(raw).not.toContain('Set-Cookie');
+    expect(raw).not.toContain('\r\nSet-Cookie:');
+    expect(raw).not.toContain('X-Revamp-SW-Scope');
+    // Legitimate headers and framing are unaffected.
+    expect(raw).toContain('Content-Type: application/json\r\n');
+    expect(raw).toContain('Content-Length: 2\r\n');
+    expect(raw).toContain('Connection: close\r\n');
+  });
+
+  it('should NOT serialize a header value containing a bare LF', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Evil': 'a\nSet-Cookie: b',
+      },
+      body: '{}',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw).not.toContain('Set-Cookie');
+    expect(raw).not.toContain('X-Evil');
+    expect(raw).toContain('Content-Type: application/json\r\n');
+  });
+
+  it('should drop a header whose NAME contains CRLF', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {
+        'X-Ok': 'fine',
+        'X-Bad\r\nSet-Cookie': 'evil',
+      },
+      body: '{}',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw).not.toContain('Set-Cookie');
+    expect(raw).toContain('X-Ok: fine\r\n');
   });
 });

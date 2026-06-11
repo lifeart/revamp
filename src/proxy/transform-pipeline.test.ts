@@ -167,9 +167,13 @@ describe('transformContent cache isolation by cookie (T4 end-to-end)', () => {
   });
 
   it('should NOT serve user A html to user B when only the cookie differs (NAT leak repro)', async () => {
-    // Two distinct authenticated users sharing one NAT'd client IP. Without
-    // the cookie/auth fingerprint being threaded through transformContent's
-    // cache lookup, user B would receive user A's privately-rendered HTML.
+    // Two distinct authenticated users sharing one NAT'd client IP, differing
+    // in cookie name SHAPE. The cookie/auth fingerprint keeps them in separate
+    // cache buckets so user B never receives user A's privately-rendered HTML.
+    // The upstream marks the response Cache-Control: public — the precondition
+    // the cacheability guard requires before any cookie-bearing response is
+    // stored (a non-public authenticated response is treated as private and
+    // never cached, which is covered by the cache-layer guard tests).
     const url = 'https://example.com/dashboard';
     const sharedClientIp = '198.51.100.42';
     const userAHtml = '<!DOCTYPE html><html><body><p>Alice secret dashboard</p></body></html>';
@@ -177,6 +181,7 @@ describe('transformContent cache isolation by cookie (T4 end-to-end)', () => {
 
     const userAHeaders = { cookie: 'session=alice-abc; csrftoken=aaa' };
     const userBHeaders = { cookie: 'auth=bob-bearer; sid=bbb' };
+    const publicResponse = { 'cache-control': 'public, max-age=600' };
 
     // User A's response is transformed and cached against their cookie shape.
     const aResult = await transformContent(
@@ -187,7 +192,8 @@ describe('transformContent cache isolation by cookie (T4 end-to-end)', () => {
       undefined,
       sharedClientIp,
       'GET',
-      userAHeaders
+      userAHeaders,
+      publicResponse
     );
     expect(aResult.toString()).toContain('Alice');
 
@@ -202,7 +208,8 @@ describe('transformContent cache isolation by cookie (T4 end-to-end)', () => {
       undefined,
       sharedClientIp,
       'GET',
-      userBHeaders
+      userBHeaders,
+      publicResponse
     );
     expect(bResult.toString()).toContain('Bob');
     expect(bResult.toString()).not.toContain('Alice');
@@ -216,7 +223,8 @@ describe('transformContent cache isolation by cookie (T4 end-to-end)', () => {
       undefined,
       sharedClientIp,
       'GET',
-      userAHeaders
+      userAHeaders,
+      publicResponse
     );
     expect(aReplay.toString()).toContain('Alice');
   });

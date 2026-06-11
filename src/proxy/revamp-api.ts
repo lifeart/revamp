@@ -97,6 +97,33 @@ const CORS_HEADERS = {
 };
 
 /**
+ * Characters that must never appear in a raw HTTP header name or value.
+ * CR (0x0D) and LF (0x0A) are the HTTP response-splitting / header-injection
+ * vector (CWE-113); the remaining C0 control characters and DEL (0x7F) have no
+ * legitimate place in a header and are rejected defensively.
+ *
+ * This matters because {@link buildRawApiResponse} (the SOCKS5 stack's raw
+ * HTTP serializer) writes header bytes straight to the socket with no `http`
+ * module to validate framing — several SW endpoints echo attacker-controlled
+ * `url`/`scope` query/body values into response headers, and `parseQuery`
+ * URL-decodes `%0d%0a` into real CR/LF. The plain-HTTP proxy stack is
+ * incidentally safe because `res.setHeader` throws on CR/LF.
+ */
+// eslint-disable-next-line no-control-regex -- CR/LF/control chars are the injection vector we detect
+const UNSAFE_HEADER_CHAR = /[\x00-\x1F\x7F]/;
+
+/**
+ * Strip CR/LF and other control characters from a value before placing it in
+ * a response header. Defense-in-depth at the Service-Worker endpoints, which
+ * echo attacker-controlled `url`/`scope` values into headers;
+ * {@link buildRawApiResponse} independently guards the serializer itself.
+ */
+function stripHeaderUnsafeChars(value: string): string {
+  // eslint-disable-next-line no-control-regex -- intentionally strips control chars
+  return value.replace(/[\x00-\x1F\x7F]/g, '');
+}
+
+/**
  * Serve static files from the admin panel directory.
  *
  * IMPORTANT: This function serves files directly from disk without any
@@ -364,7 +391,13 @@ async function handleSwBundleRequest(req: ApiRequest): Promise<ApiResult> {
     };
   }
 
-  log.info(`📦 SW Bundle request: ${swUrl} (scope: ${scope})`);
+  // `swUrl` and `scope` are attacker-controlled query values that get echoed
+  // into response headers below. Strip CR/LF/control chars at the source as
+  // defense-in-depth (the serializer in buildRawApiResponse guards too).
+  const safeSwUrlHeader = stripHeaderUnsafeChars(swUrl);
+  const safeScopeHeader = stripHeaderUnsafeChars(scope);
+
+  log.info('📦 SW Bundle request: %s (scope: %s)', sanitizeForLog(swUrl), sanitizeForLog(scope));
 
   try {
     const result = await bundleServiceWorker(swUrl, scope);
@@ -376,15 +409,15 @@ async function handleSwBundleRequest(req: ApiRequest): Promise<ApiResult> {
           ...CORS_HEADERS,
           'Content-Type': 'application/javascript; charset=utf-8',
           'Cache-Control': 'public, max-age=3600',
-          'X-Revamp-SW-Original': swUrl,
-          'X-Revamp-SW-Scope': scope,
+          'X-Revamp-SW-Original': safeSwUrlHeader,
+          'X-Revamp-SW-Scope': safeScopeHeader,
           // Service Worker specific header
-          'Service-Worker-Allowed': scope,
+          'Service-Worker-Allowed': safeScopeHeader,
         },
         body: result.code,
       };
     } else {
-      log.warn(`⚠️ SW bundling failed for ${swUrl}: ${result.error}`);
+      log.warn('⚠️ SW bundling failed for %s: %s', sanitizeForLog(swUrl), sanitizeForLog(result.error));
       // Still return the fallback code with 200 to allow SW registration
       return {
         statusCode: 200,
@@ -392,9 +425,9 @@ async function handleSwBundleRequest(req: ApiRequest): Promise<ApiResult> {
           ...CORS_HEADERS,
           'Content-Type': 'application/javascript; charset=utf-8',
           'Cache-Control': 'no-store',
-          'X-Revamp-SW-Original': swUrl,
-          'X-Revamp-SW-Error': result.error || 'Unknown error',
-          'Service-Worker-Allowed': scope,
+          'X-Revamp-SW-Original': safeSwUrlHeader,
+          'X-Revamp-SW-Error': stripHeaderUnsafeChars(result.error || 'Unknown error'),
+          'Service-Worker-Allowed': safeScopeHeader,
         },
         body: result.code,
       };
@@ -498,6 +531,11 @@ async function handleSwInlineRequest(req: ApiRequest): Promise<ApiResult> {
   try {
     const result = await transformInlineServiceWorker(code, scope);
 
+    // `scope` is attacker-controlled (JSON body); strip CR/LF/control chars
+    // before echoing it into headers (defense-in-depth alongside the
+    // serializer guard in buildRawApiResponse).
+    const safeScopeHeader = stripHeaderUnsafeChars(scope);
+
     return {
       statusCode: 200,
       headers: {
@@ -505,8 +543,8 @@ async function handleSwInlineRequest(req: ApiRequest): Promise<ApiResult> {
         'Content-Type': 'application/javascript; charset=utf-8',
         'Cache-Control': 'no-store',
         'X-Revamp-SW-Type': 'inline',
-        'X-Revamp-SW-Scope': scope,
-        'Service-Worker-Allowed': scope,
+        'X-Revamp-SW-Scope': safeScopeHeader,
+        'Service-Worker-Allowed': safeScopeHeader,
       },
       body: result.code,
     };
@@ -603,6 +641,18 @@ export function buildRawApiResponse(result: ApiResult): string {
     // mismatched Content-Length / Connection headers.
     const lowerKey = key.toLowerCase();
     if (lowerKey === 'content-length' || lowerKey === 'connection') {
+      continue;
+    }
+    // HTTP response-splitting guard (CWE-113): this serializer writes header
+    // bytes straight to the SOCKS5 socket, so a CR/LF (or other control char)
+    // in an attacker-influenced header name/value would inject an arbitrary
+    // header or split the framed response. Drop the offending header entirely
+    // and warn — never pass it through.
+    if (UNSAFE_HEADER_CHAR.test(key) || UNSAFE_HEADER_CHAR.test(value)) {
+      log.warn(
+        '🚫 Dropping API response header with control characters: %s',
+        sanitizeForLog(`${key}: ${value}`)
+      );
       continue;
     }
     response += `${key}: ${value}\r\n`;
