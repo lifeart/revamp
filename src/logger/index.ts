@@ -14,3 +14,15 @@ export {
 } from './json-request-logger.js';
 
 export { sanitizeForLog } from './sanitize.js';
+
+export {
+  log,
+  setLogLevel,
+  getLogLevel,
+  setLoggerBackend,
+  consoleLoggerBackend,
+  isLogLevel,
+  LOG_LEVELS,
+  type LogLevel,
+  type LoggerBackend,
+} from './log.js';

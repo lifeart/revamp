@@ -6,12 +6,20 @@
  * like iPads and iPods running iOS 9+ (iPad 2) or iOS 11+.
  */
 
-import { getConfig, updateConfig, CLIENT_CONFIG_OPTIONS, type RevampConfig } from './config/index.js';
+import {
+  getConfig,
+  updateConfig,
+  setRuntimeStarted,
+  CLIENT_CONFIG_OPTIONS,
+  type RevampConfig,
+} from './config/index.js';
+import { parseCliConfig } from './config/cli.js';
 import { createHttpProxy, createSocks5Proxy } from './proxy/index.js';
 import { createCaptivePortal } from './portal/index.js';
 import { generateCA, getCACert } from './certs/index.js';
 import { clearCache, getCacheStats } from './cache/index.js';
 import { initializePluginSystem, shutdownPluginSystem } from './plugins/index.js';
+import { log, setLogLevel } from './logger/log.js';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { networkInterfaces } from 'node:os';
@@ -43,7 +51,7 @@ function generateFeaturesDisplay(config: RevampConfig): string {
 }
 
 function printBanner(): void {
-  console.log(`
+  log.info(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
 ║   ██████╗ ███████╗██╗   ██╗ █████╗ ███╗   ███╗██████╗        ║
@@ -66,7 +74,7 @@ function printSetupInstructions(config: RevampConfig): void {
   const ipList = localIPs.length > 0 ? localIPs.join(', ') : 'Unable to detect';
   const portalUrl = `http://${localIPs[0] || 'YOUR_IP'}:${config.captivePortalPort}`;
 
-  console.log(`
+  log.info(`
 📱 Device Setup Instructions:
 ────────────────────────────────────────────────────────────────
 
@@ -122,6 +130,9 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
     start(): void {
       const config = getConfig();
 
+      // Apply the configured log level before the first log line is emitted
+      setLogLevel(config.logLevel);
+
       printBanner();
 
       // Ensure directories exist
@@ -133,33 +144,36 @@ export function createRevampServer(configOverrides?: Partial<RevampConfig>): Rev
       }
 
       // Generate CA certificate
-      console.log('🔐 Initializing certificates...');
+      log.info('🔐 Initializing certificates...');
       generateCA();
 
       // Start HTTP proxy first (SOCKS5 routes through it)
-      console.log('🌐 Starting HTTP proxy...');
+      log.info('🌐 Starting HTTP proxy...');
       httpServer = createHttpProxy(config.httpProxyPort, config.bindAddress);
 
       // Start SOCKS5 proxy
-      console.log('🧦 Starting SOCKS5 proxy...');
+      log.info('🧦 Starting SOCKS5 proxy...');
       socks5Server = createSocks5Proxy(config.socks5Port, config.httpProxyPort, config.bindAddress);
 
       // Start captive portal for easy certificate installation
-      console.log('📜 Starting captive portal...');
+      log.info('📜 Starting captive portal...');
       portalServer = createCaptivePortal(config.captivePortalPort, config.bindAddress);
 
       // Initialize plugin system
-      console.log('🔌 Initializing plugin system...');
+      log.info('🔌 Initializing plugin system...');
       initializePluginSystem().catch((err) => {
-        console.error('Failed to initialize plugins:', err);
+        log.error('Failed to initialize plugins:', err);
       });
+
+      // From here on, restart-required config fields (ports, dirs) are locked in
+      setRuntimeStarted();
 
       // Print setup instructions
       printSetupInstructions(config);
 
       const localIPs = getLocalIPs();
-      console.log('✅ Revamp is ready!');
-      console.log(`
+      log.info('✅ Revamp is ready!');
+      log.info(`
 🎯 Proxy Status:
    SOCKS5:  ${config.bindAddress}:${config.socks5Port}
    HTTP:    ${config.bindAddress}:${config.httpProxyPort}
@@ -173,12 +187,12 @@ ${generateFeaturesDisplay(config)}
     },
 
     stop(): void {
-      console.log('🛑 Stopping Revamp...');
+      log.info('🛑 Stopping Revamp...');
 
       // Shutdown plugins first
-      console.log('🔌 Shutting down plugins...');
+      log.info('🔌 Shutting down plugins...');
       shutdownPluginSystem().catch((err) => {
-        console.error('Failed to shutdown plugins:', err);
+        log.error('Failed to shutdown plugins:', err);
       });
 
       if (httpServer) {
@@ -196,7 +210,10 @@ ${generateFeaturesDisplay(config)}
         portalServer = null;
       }
 
-      console.log('👋 Revamp stopped');
+      // Startup-only config fields may change again before the next start()
+      setRuntimeStarted(false);
+
+      log.info('👋 Revamp stopped');
     },
 
     getConfig,
@@ -212,11 +229,23 @@ ${generateFeaturesDisplay(config)}
 
 // CLI entry point
 if (process.argv[1]?.includes('index')) {
-  const server = createRevampServer();
+  const cliResult = parseCliConfig(process.argv.slice(2), process.env);
+
+  if (cliResult.kind === 'help' || cliResult.kind === 'version') {
+    console.log(cliResult.text);
+    process.exit(0);
+  }
+  if (cliResult.kind === 'error') {
+    console.error(`[Revamp] ${cliResult.message}`);
+    console.error('Run with --help to list available options.');
+    process.exit(1);
+  }
+
+  const server = createRevampServer(cliResult.overrides);
 
   // Handle graceful shutdown
   process.on('SIGINT', () => {
-    console.log('\n');
+    log.info('\n');
     server.stop();
     process.exit(0);
   });
@@ -231,3 +260,14 @@ if (process.argv[1]?.includes('index')) {
 
 export { getConfig, updateConfig, type RevampConfig } from './config/index.js';
 export { getCACert } from './certs/index.js';
+export {
+  log,
+  setLogLevel,
+  getLogLevel,
+  setLoggerBackend,
+  consoleLoggerBackend,
+  isLogLevel,
+  LOG_LEVELS,
+  type LogLevel,
+  type LoggerBackend,
+} from './logger/log.js';

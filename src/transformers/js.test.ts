@@ -378,6 +378,7 @@ describe('transformJs with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformJs(code, 'test.js', configWithJsDisabled);
@@ -431,6 +432,7 @@ describe('transformJs with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformJs(code, 'test.js', configWithJsEnabled);

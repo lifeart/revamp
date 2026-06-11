@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import {
   createServer as createHttpServer,
+  request as httpRequest,
   type Server as HttpServer,
   type IncomingMessage,
   type ServerResponse,
@@ -20,8 +21,14 @@ import { gzipSync, deflateSync } from 'node:zlib';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { makeHttpRequest, makeHttpsRequest } from './http-client.js';
+import { makeHttpRequest, makeHttpsRequest, processProxiedResponse } from './http-client.js';
+import {
+  registerTransformer,
+  unregisterTransformer,
+} from '../transformers/registry.js';
+import { createHttpProxy } from './http-proxy.js';
 import { updateConfig, resetConfig } from '../config/index.js';
+import { resetMetrics } from '../metrics/index.js';
 import { generateDomainCert } from '../certs/index.js';
 
 // Track test state
@@ -668,5 +675,220 @@ describe('HTTP Client Integration Tests', () => {
       expect(data.receivedHeaders['if-none-match']).toBe('"api-etag"');
       expect(data.receivedHeaders['if-modified-since']).toBe('Mon, 26 Oct 2024 12:00:00 GMT');
     });
+  });
+});
+
+describe('response body-size limit enforced by readResponseBody (P1-3)', () => {
+  // `readResponseBody` (this module) used to concatenate every upstream chunk
+  // with no cap — a 1 GB response would OOM the iPad-class host. It now
+  // enforces a config-driven `maxResponseBodyBytes` and rejects with
+  // `ResponseBodyTooLargeError`, which the HTTP proxy translates into a 502.
+  // The cap is only observable through the full proxy request path, so these
+  // tests run a real upstream and a real proxy (NO MOCKING).
+
+  let upstreamServer: HttpServer;
+  let upstreamPort: number;
+  let proxyServer: HttpServer;
+  let proxyPort: number;
+
+  beforeAll(async () => {
+    upstreamServer = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+      if ((req.url || '/') === '/medium-response') {
+        // 5 MB — sits between the lowered 4 MB cap (502 test) and the
+        // lifted 8 MB cap (pass-through regression test).
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end(Buffer.alloc(5 * 1024 * 1024, 0x42));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => {
+      upstreamServer.listen(0, '127.0.0.1', () => {
+        const addr = upstreamServer.address();
+        upstreamPort = typeof addr === 'object' && addr ? addr.port : 0;
+        resolve();
+      });
+    });
+
+    proxyServer = createHttpProxy(0, '127.0.0.1');
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    const addr = proxyServer.address();
+    proxyPort = typeof addr === 'object' && addr ? addr.port : 0;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => upstreamServer.close(() => resolve()));
+    await new Promise<void>((resolve) => proxyServer.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    resetConfig();
+    resetMetrics();
+  });
+
+  it('returns 502 when upstream response exceeds maxResponseBodyBytes', async () => {
+    // Lower the limit to 4 MB; upstream emits 5 MB on /medium-response.
+    updateConfig({ maxResponseBodyBytes: 4 * 1024 * 1024 });
+
+    const targetUrl = `http://127.0.0.1:${upstreamPort}/medium-response`;
+    const result = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname: '127.0.0.1',
+          port: proxyPort,
+          path: targetUrl,
+          method: 'GET',
+          headers: { Host: `127.0.0.1:${upstreamPort}` },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            resolve({
+              statusCode: res.statusCode || 0,
+              body: Buffer.concat(chunks).toString('utf-8'),
+            });
+          });
+          res.on('error', reject);
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(result.statusCode).toBe(502);
+    expect(result.body.toLowerCase()).toContain('exceeds');
+  }, 15_000);
+
+  it('passes responses through when they are under the cap (regression)', async () => {
+    updateConfig({ maxResponseBodyBytes: 8 * 1024 * 1024 });
+
+    const targetUrl = `http://127.0.0.1:${upstreamPort}/medium-response`;
+    const result = await new Promise<{ statusCode: number; bodyLength: number }>(
+      (resolve, reject) => {
+        const req = httpRequest(
+          {
+            hostname: '127.0.0.1',
+            port: proxyPort,
+            path: targetUrl,
+            method: 'GET',
+            headers: { Host: `127.0.0.1:${upstreamPort}` },
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (c: Buffer) => chunks.push(c));
+            res.on('end', () => {
+              resolve({
+                statusCode: res.statusCode || 0,
+                bodyLength: Buffer.concat(chunks).length,
+              });
+            });
+            res.on('error', reject);
+          }
+        );
+        req.on('error', reject);
+        req.end();
+      }
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(result.bodyLength).toBe(5 * 1024 * 1024);
+  }, 15_000);
+});
+
+describe("processProxiedResponse — coarse-'other' text-pipeline gate", () => {
+  const PLUGIN_ID = 'com.test.http-client-other-gate';
+
+  beforeEach(() => {
+    resetConfig();
+    updateConfig({ cacheEnabled: false });
+  });
+
+  afterEach(() => {
+    resetConfig();
+  });
+
+  it("passes JSON ('other') through byte-identical when no text transformer matches", async () => {
+    // Big-int id would be corrupted by any JSON.parse/stringify round-trip;
+    // odd spacing would be corrupted by any reformatting.
+    const original = '{\n  "id": 9007199254740993,\n  "ok":   true\n}';
+    const processed = await processProxiedResponse({
+      rawBody: Buffer.from(original),
+      upstreamHeaders: { 'content-type': 'application/json; charset=utf-8' },
+      upstreamStatusCode: 200,
+      upstreamStatusMessage: 'OK',
+      url: 'http://api.example.com/no-plugin',
+      method: 'GET',
+    });
+
+    expect(processed.contentType).toBe('other');
+    expect(processed.body.toString('utf-8')).toBe(original);
+    // The charset rewrite only runs when the text pipeline was entered.
+    expect(processed.headers['content-type']).toBe('application/json; charset=utf-8');
+  });
+
+  it("routes JSON ('other') through a matching plugin transformer and rewrites the charset", async () => {
+    registerTransformer(
+      {
+        kind: 'text',
+        name: 'http-client-json-gate',
+        matches: (ctx) =>
+          ctx.contentType === 'other' && ctx.rawContentType.includes('application/json'),
+        transform: (input) => Promise.resolve(input.replace('"ad"', '"clean"')),
+      },
+      PLUGIN_ID
+    );
+    try {
+      const processed = await processProxiedResponse({
+        rawBody: Buffer.from('{"items":["post","ad"]}'),
+        upstreamHeaders: { 'content-type': 'application/json; charset=utf-8' },
+        upstreamStatusCode: 200,
+        upstreamStatusMessage: 'OK',
+        url: 'http://api.example.com/with-plugin',
+        method: 'GET',
+      });
+
+      expect(processed.body.toString('utf-8')).toBe('{"items":["post","clean"]}');
+      // The pipeline re-encodes as UTF-8 and the header now says so.
+      expect(processed.headers['content-type']).toBe('application/json; charset=UTF-8');
+      // The coarse type stays 'other' (no html no-cache handling downstream).
+      expect(processed.contentType).toBe('other');
+    } finally {
+      unregisterTransformer('http-client-json-gate', PLUGIN_ID);
+    }
+  });
+
+  it('decompresses gzip upstream JSON before the plugin transformer sees it', async () => {
+    registerTransformer(
+      {
+        kind: 'text',
+        name: 'http-client-json-gzip-gate',
+        matches: (ctx) =>
+          ctx.contentType === 'other' && ctx.rawContentType.includes('application/json'),
+        transform: (input) => Promise.resolve(input.replace('"ad"', '"clean"')),
+      },
+      PLUGIN_ID
+    );
+    try {
+      const processed = await processProxiedResponse({
+        rawBody: gzipSync(Buffer.from('{"items":["post","ad"]}')),
+        upstreamHeaders: {
+          'content-type': 'application/json',
+          'content-encoding': 'gzip',
+        },
+        upstreamStatusCode: 200,
+        upstreamStatusMessage: 'OK',
+        url: 'http://api.example.com/with-plugin-gzip',
+        method: 'GET',
+      });
+
+      expect(processed.body.toString('utf-8')).toBe('{"items":["post","clean"]}');
+      // Decompression happened upstream of the transform; the encoding
+      // header must be gone so the caller re-compresses fresh.
+      expect(processed.headers['content-encoding']).toBeUndefined();
+    } finally {
+      unregisterTransformer('http-client-json-gzip-gate', PLUGIN_ID);
+    }
   });
 });

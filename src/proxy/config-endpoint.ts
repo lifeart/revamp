@@ -6,6 +6,8 @@
  */
 
 import { getClientConfig, setClientConfig, resetClientConfig, type ClientConfig } from '../config/index.js';
+import { log } from '../logger/log.js';
+import type { ApiRouter, ApiRequest } from './api-router.js';
 
 /** Config API endpoint path */
 export const CONFIG_ENDPOINT = '/__revamp__/config';
@@ -62,7 +64,7 @@ export function handleConfigRequest(method: string, body: string = '', clientIp?
   // GET - return current config
   if (method === 'GET') {
     const config = getClientConfig(clientIp);
-    console.log(`⚙️ Config GET${clientIp ? ` (client: ${clientIp})` : ''} - returning:`, JSON.stringify(config));
+    log.debug(`⚙️ Config GET${clientIp ? ` (client: ${clientIp})` : ''} - returning:`, JSON.stringify(config));
     const responseBody = JSON.stringify({ success: true, config });
     return {
       statusCode: 200,
@@ -75,7 +77,7 @@ export function handleConfigRequest(method: string, body: string = '', clientIp?
   if (method === 'POST') {
     try {
       const newConfig = JSON.parse(body) as ClientConfig;
-      console.log(`⚙️ Config POST${clientIp ? ` (client: ${clientIp})` : ''} - saving:`, JSON.stringify(newConfig));
+      log.info(`⚙️ Config POST${clientIp ? ` (client: ${clientIp})` : ''} - saving:`, JSON.stringify(newConfig));
       setClientConfig(newConfig, clientIp);
       const responseBody = JSON.stringify({ success: true, config: getClientConfig(clientIp) });
       return {
@@ -95,7 +97,7 @@ export function handleConfigRequest(method: string, body: string = '', clientIp?
 
   // DELETE - reset config
   if (method === 'DELETE') {
-    console.log(`⚙️ Config DELETE${clientIp ? ` (client: ${clientIp})` : ''} - resetting`);
+    log.info(`⚙️ Config DELETE${clientIp ? ` (client: ${clientIp})` : ''} - resetting`);
     resetClientConfig(clientIp);
     const responseBody = JSON.stringify({ success: true, config: getClientConfig(clientIp) });
     return {
@@ -112,6 +114,24 @@ export function handleConfigRequest(method: string, body: string = '', clientIp?
     headers: CONFIG_HEADERS,
     body: responseBody,
   };
+}
+
+/**
+ * Register the config endpoint on the shared API router.
+ * Adding a future config route means adding exactly one line here.
+ *
+ * `handleConfigRequest` switches on the method itself (GET/POST/DELETE,
+ * with its historical 405 for everything else), so the routes register with
+ * method '*'. The `/*` pattern preserves the previous `startsWith` matching
+ * for sub-paths like `/__revamp__/config/`.
+ */
+export function registerConfigRoutes(router: ApiRouter): void {
+  const handle = (req: ApiRequest): ConfigEndpointResult =>
+    handleConfigRequest(req.method, req.body, req.clientIp);
+
+  router.register('*', CONFIG_ENDPOINT, handle);
+  router.register('*', `${CONFIG_ENDPOINT}/`, handle);
+  router.register('*', `${CONFIG_ENDPOINT}/*`, handle);
 }
 
 /**

@@ -36,11 +36,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Body-size limits** `maxRequestBodyBytes` and `maxResponseBodyBytes` (default 50 MB each) wired to 413/502 responses on the HTTP path (T17).
 - **`allowInsecureUpstream` config flag** (default `false`) for opting back into the pre-T8 unverified-upstream behaviour when working against self-signed local servers (T8).
 - **TLA AST rewrite enhancements** (T35, T36) — `for await` is now detected as top-level await and rewritten into the IIFE alongside `await` expressions, and `class Foo extends Base` where `Base` is awaited keeps the class declaration inside the IIFE so the `extends` reference resolves.
+- **Full CLI surface** (`src/config/cli.ts`) — 21 options generated from a single `CLI_OPTIONS` table, each with a matching `REVAMP_*` environment variable (precedence: flag > env > default), plus `--help` and `--version`. Boolean toggles are negatable with a `no-` prefix (e.g. `--no-remove-ads`).
+- **Leveled, swappable logger** (`src/logger/log.ts`) — `debug`/`info`/`warn`/`error`/`silent`, set via `--log-level` / `REVAMP_LOG_LEVEL`; embedders can reroute or silence all output with `setLoggerBackend()`.
+- **Content transformer registry** (`src/transformers/registry.ts`) with text and binary lanes. The built-in js/css/html/image transformers are now plain registry entries; plugins register their own via `context.registerTransformer` / `unregisterTransformer` (auto-unregistered on deactivation). Plugin transformers run before built-ins, first match wins, and a throwing plugin transformer is logged and skipped so the response is never broken.
+- **Plugin hook failure observability** — `ChainExecutionResult.errors` lists `{ pluginId, hookName, error, timedOut }` per failed hook and the proxy logs a structured warning for each, so fail-safe chains no longer swallow failures silently.
+- **Plugin composition helpers** — `context.getActivePlugins()` / `context.isPluginActive(id)` (ungated, read-only) plus `setSharedPluginData` / `getSharedPluginData` for namespaced per-request data sharing via the `pluginData` map.
+- **ajv-based plugin config schema validation** — a plugin's `configSchema` is compiled with ajv (JSON Schema Draft-07) and enforced on `updatePluginConfig()`.
+- **Restart-required config warning** — `RESTART_REQUIRED_CONFIG_KEYS` (ports, bind address, cache/cert dirs, CA file names) now trigger a warning when changed via `updateConfig()` after startup, instead of silently having no effect.
 
 ### Changed
 - Dashboard config items now dynamically generated from metadata
 - Improved npm package publishing with `files`, `exports`, and `bin` fields
 - Configuration hierarchy now includes plugin hooks at highest priority
+- **All `/__revamp__/*` endpoints now dispatch through a single shared `ApiRouter`** (`src/proxy/api-router.ts`). Both proxy stacks normalize their requests into one common shape, so each endpoint is defined exactly once — one `router.register(...)` line in its owning module (core / config / domain rules / plugins).
+- **`proxy/shared.ts` dissolved into focused modules** — `cors`, `compression`, `charset`, `content-type`, `blocking`, `transform-pipeline`, `user-agent`, and `client-ip`; `shared.ts` remains as a re-export compatibility facade.
+- **`esm-bundler` decomposed into `src/transformers/esm/*`** — `fetcher`, `import-map`, `top-level-await`, `css-module`, `esbuild-plugin`, and `module-cache`.
+- **Domain profile is now resolved once per request** and threaded through the whole pipeline instead of being re-fetched at each stage.
 
 ### Fixed
 - CI e2e tests now build project before running to compile worker files
@@ -59,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cache key now incorporates the response `Vary` header** (T41). Each varied request header value is hashed into the key and `Vary: *` is treated as uncacheable so two clients sending different `Accept-Language` no longer share the same cache entry.
 - **SOCKS5 inbound bodies are now bounded by `maxRequestBodyBytes`** (T38). The `parseHttpRequest` helper rejects `Content-Length > limit` early and caps the read loop, replying 413 to the SOCKS5 client.
 - **Plugin `fetch` SSRF post-resolve DNS check** (T39). The plugin context now resolves the URL host, pins the lookup, and blocks `::ffff:0:0/96`, `fc00::/7`, `fe80::/10`, plus decimal/octal IPv4 forms before issuing the request.
+- **SOCKS5 plain-HTTP `/__revamp__` responses are no longer corrupted by a duplicate SOCKS5 success reply.** The request-phase state machine conflated "need more bytes" with "an in-process handler took over the stream" (both were `null`), so it re-parsed the stale CONNECT request when the client's HTTP bytes arrived and wrote a second success reply ahead of the HTTP response. The two outcomes are now distinct (`pending` vs `handled`).
+- **HTTP-stack API adapter no longer drops PUT bodies** — the body is now read for every method that can carry one (previously POST only), fixing e.g. domain profile updates issued through the HTTP proxy.
+- **Plugin custom endpoints now receive request headers and survive query strings** — they previously got an empty headers object and 404'd when the URL carried a query string; the router now strips and parses the query before matching and forwards headers plus parsed query params to the handler.
+
+### Performance
+- **PostCSS now runs in a Tinypool worker pool** (`css-worker.ts`), like Babel — main-thread event-loop blocking while transforming large CSS files dropped from ~880ms to ~11.5ms.
+- **Config / domain-profile hashes for cache keys are memoized by object identity** instead of being re-stringified on every request.
+- **ESM bundler module cache is a bounded LRU** (500 entries; lookups refresh recency) instead of an unbounded map.
+- **Inline `<script>` blocks in an HTML document are transformed concurrently** across the Babel worker pool instead of sequentially.
 
 ### Breaking
 - **Requests carrying `Cookie` or `Authorization` are no longer cached** (T4). Previously the cache key was `clientIp + profileHash + configHash + url + contentType`, with no awareness of cookies, `Vary`, HTTP method, or `Cache-Control: private|no-store`. NAT'd users sharing a single egress IP could see each other's logged-in HTML. The cache now (a) skips `setCache` when the response carries `Set-Cookie` or `Cache-Control: no-store|private`, (b) excludes requests that carry `Cookie` or `Authorization` from the cache entirely, and (c) includes the HTTP method in the key. Migration: callers expecting cached responses for authenticated requests must drop that expectation; the proxy intentionally treats those requests as user-private now.

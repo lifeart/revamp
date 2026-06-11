@@ -10,6 +10,7 @@ import { hookExecutor } from './hook-executor.js';
 import { pluginRegistry } from './registry.js';
 import type { HookResult, PreRequestHook, PostResponseHook } from './hooks.js';
 import type { RequestContext, ResponseContext } from './hooks.js';
+import { setSharedPluginData, getSharedPluginData } from './hooks.js';
 
 // Helper to create realistic request context
 function createRequestContext(overrides: Partial<RequestContext> = {}): RequestContext {
@@ -972,6 +973,281 @@ describe('HookExecutor', () => {
       expect(pluginBObservedHeader).toBe('a-tagged');
       // Final merged value carries plugin A's url through to the caller.
       expect(result.value.url).toBe('https://rewritten/');
+    });
+  });
+
+  // Hook failures must be observable: the chain keeps its fail-safe continue
+  // semantics, but every caught exception and timeout is surfaced through the
+  // additive `errors` array on the chain result — and stays 1:1 with the
+  // failed executions recorded in the per-plugin stats.
+  describe('Hook Failure Observability (errors array)', () => {
+    it('returns an empty errors array when no hooks are registered', async () => {
+      const result = await hookExecutor.executePreRequest(createRequestContext());
+      expect(result.errors).toEqual([]);
+    });
+
+    it('returns an empty errors array when all hooks succeed', async () => {
+      const plugin = { manifest: createTestPluginManifest('com.test.healthy') };
+      pluginRegistry.register(plugin);
+      pluginRegistry.updateState('com.test.healthy', 'active');
+
+      pluginRegistry.registerHook(
+        'com.test.healthy',
+        'request:pre',
+        (async () => ({ continue: true })) as PreRequestHook,
+        0
+      );
+
+      const result = await hookExecutor.executePreRequest(createRequestContext());
+      expect(result.errors).toEqual([]);
+      expect(result.hooksExecuted).toBe(1);
+    });
+
+    it('captures a thrown error with pluginId, hookName and timedOut=false', async () => {
+      const plugin = { manifest: createTestPluginManifest('com.test.thrower') };
+      pluginRegistry.register(plugin);
+      pluginRegistry.updateState('com.test.thrower', 'active');
+
+      pluginRegistry.registerHook(
+        'com.test.thrower',
+        'request:pre',
+        (async () => {
+          throw new Error('Database connection failed');
+        }) as PreRequestHook,
+        0
+      );
+
+      const result = await hookExecutor.executePreRequest(createRequestContext());
+
+      // Fail-safe semantics unchanged: chain continues with default value.
+      expect(result.stopped).toBe(false);
+      expect(result.value).toEqual({});
+
+      // ...but the failure is now observable.
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].pluginId).toBe('com.test.thrower');
+      expect(result.errors[0].hookName).toBe('request:pre');
+      expect(result.errors[0].error).toBeInstanceOf(Error);
+      expect(result.errors[0].error.message).toBe('Database connection failed');
+      expect(result.errors[0].timedOut).toBe(false);
+    });
+
+    it('captures a timeout with timedOut=true', async () => {
+      hookExecutor.setTimeout(100);
+
+      const plugin = { manifest: createTestPluginManifest('com.test.slowpoke') };
+      pluginRegistry.register(plugin);
+      pluginRegistry.updateState('com.test.slowpoke', 'active');
+
+      pluginRegistry.registerHook(
+        'com.test.slowpoke',
+        'request:pre',
+        (async () => {
+          await new Promise((r) => setTimeout(r, 500));
+          return { continue: true };
+        }) as PreRequestHook,
+        0
+      );
+
+      const result = await hookExecutor.executePreRequest(createRequestContext());
+
+      expect(result.stopped).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].pluginId).toBe('com.test.slowpoke');
+      expect(result.errors[0].hookName).toBe('request:pre');
+      expect(result.errors[0].timedOut).toBe(true);
+      expect(result.errors[0].error.message).toContain('timed out');
+    });
+
+    it('collects one entry per failing plugin and still runs healthy plugins', async () => {
+      const FAIL_A = 'com.test.fail-a';
+      const FAIL_B = 'com.test.fail-b';
+      const HEALTHY = 'com.test.survivor';
+
+      for (const id of [FAIL_A, FAIL_B, HEALTHY]) {
+        pluginRegistry.register({ manifest: createTestPluginManifest(id) });
+        pluginRegistry.updateState(id, 'active');
+      }
+
+      pluginRegistry.registerHook(
+        FAIL_A,
+        'request:pre',
+        (async () => {
+          throw new Error('failure A');
+        }) as PreRequestHook,
+        100
+      );
+      pluginRegistry.registerHook(
+        FAIL_B,
+        'request:pre',
+        (async () => {
+          throw new Error('failure B');
+        }) as PreRequestHook,
+        50
+      );
+      pluginRegistry.registerHook(
+        HEALTHY,
+        'request:pre',
+        (async () => ({
+          continue: true,
+          value: { headers: { 'x-survivor': 'yes' } },
+        })) as PreRequestHook,
+        0
+      );
+
+      const result = await hookExecutor.executePreRequest(createRequestContext());
+
+      // Errors arrive in chain (priority) order.
+      expect(result.errors.map((e) => e.pluginId)).toEqual([FAIL_A, FAIL_B]);
+      expect(result.errors.map((e) => e.error.message)).toEqual([
+        'failure A',
+        'failure B',
+      ]);
+      // Healthy plugin's contribution survived both failures.
+      expect(result.value.headers).toEqual({ 'x-survivor': 'yes' });
+      expect(result.hooksExecuted).toBe(3);
+    });
+
+    it('keeps errors array and per-plugin stats counting the same events', async () => {
+      const plugin = { manifest: createTestPluginManifest('com.test.consistent') };
+      pluginRegistry.register(plugin);
+      pluginRegistry.updateState('com.test.consistent', 'active');
+
+      let callCount = 0;
+      pluginRegistry.registerHook(
+        'com.test.consistent',
+        'request:pre',
+        (async () => {
+          callCount++;
+          if (callCount === 2) {
+            throw new Error('intermittent failure');
+          }
+          return { continue: true };
+        }) as PreRequestHook,
+        0
+      );
+
+      const context = createRequestContext();
+      const first = await hookExecutor.executePreRequest(context); // succeeds
+      const second = await hookExecutor.executePreRequest(context); // fails
+      const third = await hookExecutor.executePreRequest(context); // succeeds
+
+      expect(first.errors).toHaveLength(0);
+      expect(second.errors).toHaveLength(1);
+      expect(third.errors).toHaveLength(0);
+
+      const stats = hookExecutor.getPluginStats('com.test.consistent');
+      expect(stats).toBeDefined();
+      // Total failures recorded in stats === total entries across all chains.
+      const totalErrors =
+        first.errors.length + second.errors.length + third.errors.length;
+      expect(stats!.failedExecutions).toBe(totalErrors);
+      expect(stats!.successfulExecutions).toBe(2);
+      expect(stats!.byHook.get('request:pre')!.failures).toBe(totalErrors);
+    });
+
+    it('does NOT count a deliberate { continue: false, error } stop as a failure', async () => {
+      const plugin = { manifest: createTestPluginManifest('com.test.deliberate') };
+      pluginRegistry.register(plugin);
+      pluginRegistry.updateState('com.test.deliberate', 'active');
+
+      pluginRegistry.registerHook(
+        'com.test.deliberate',
+        'request:pre',
+        (async () => ({
+          continue: false,
+          error: new Error('policy violation'),
+        })) as PreRequestHook,
+        0
+      );
+
+      const result = await hookExecutor.executePreRequest(createRequestContext());
+
+      // Deliberate stop surfaces through the existing error/stoppedBy fields…
+      expect(result.stopped).toBe(true);
+      expect(result.stoppedBy).toBe('com.test.deliberate');
+      expect(result.error?.message).toBe('policy violation');
+      // …not through the failure array, and counts as a successful execution.
+      expect(result.errors).toEqual([]);
+      const stats = hookExecutor.getPluginStats('com.test.deliberate');
+      expect(stats!.successfulExecutions).toBe(1);
+      expect(stats!.failedExecutions).toBe(0);
+    });
+  });
+
+  // Plugin-to-plugin composition: the per-request `pluginData` Map is shared
+  // across the chain, so plugin B can read what plugin A wrote within the
+  // same request via the `<pluginId>:<key>` namespacing helpers.
+  describe('Shared per-request plugin data', () => {
+    it('lets plugin B read what plugin A wrote within one chain', async () => {
+      const PLUGIN_A = 'com.test.shared-writer';
+      const PLUGIN_B = 'com.test.shared-reader';
+
+      pluginRegistry.register({ manifest: createTestPluginManifest(PLUGIN_A) });
+      pluginRegistry.register({ manifest: createTestPluginManifest(PLUGIN_B) });
+      pluginRegistry.updateState(PLUGIN_A, 'active');
+      pluginRegistry.updateState(PLUGIN_B, 'active');
+
+      let observedByB: string | undefined;
+      let missingKeyByB: string | undefined = 'sentinel';
+
+      // Plugin A (runs first): writes into its own namespace.
+      pluginRegistry.registerHook(
+        PLUGIN_A,
+        'request:pre',
+        (async (ctx: RequestContext) => {
+          setSharedPluginData(ctx.pluginData, PLUGIN_A, 'token', 'abc123');
+          return { continue: true };
+        }) as PreRequestHook,
+        100
+      );
+
+      // Plugin B (runs second): reads plugin A's namespaced value.
+      pluginRegistry.registerHook(
+        PLUGIN_B,
+        'request:pre',
+        (async (ctx: RequestContext) => {
+          observedByB = getSharedPluginData<string>(ctx.pluginData, PLUGIN_A, 'token');
+          missingKeyByB = getSharedPluginData<string>(ctx.pluginData, PLUGIN_A, 'absent');
+          return { continue: true };
+        }) as PreRequestHook,
+        1
+      );
+
+      const context = createRequestContext();
+      const result = await hookExecutor.executePreRequest(context);
+
+      expect(result.hooksExecuted).toBe(2);
+      expect(observedByB).toBe('abc123');
+      expect(missingKeyByB).toBeUndefined();
+      // Stored under the documented `<pluginId>:<key>` convention.
+      expect(context.pluginData.get(`${PLUGIN_A}:token`)).toBe('abc123');
+    });
+
+    it('does not persist data across requests (fresh Map per request)', async () => {
+      const PLUGIN_A = 'com.test.no-persist';
+      pluginRegistry.register({ manifest: createTestPluginManifest(PLUGIN_A) });
+      pluginRegistry.updateState(PLUGIN_A, 'active');
+
+      pluginRegistry.registerHook(
+        PLUGIN_A,
+        'request:pre',
+        (async (ctx: RequestContext) => {
+          setSharedPluginData(ctx.pluginData, PLUGIN_A, 'count', 1);
+          return { continue: true };
+        }) as PreRequestHook,
+        0
+      );
+
+      const firstContext = createRequestContext();
+      await hookExecutor.executePreRequest(firstContext);
+      expect(getSharedPluginData(firstContext.pluginData, PLUGIN_A, 'count')).toBe(1);
+
+      // A second request gets its own Map — nothing leaks across.
+      const secondContext = createRequestContext();
+      expect(
+        getSharedPluginData(secondContext.pluginData, PLUGIN_A, 'count')
+      ).toBeUndefined();
     });
   });
 });

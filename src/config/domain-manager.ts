@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { log } from '../logger/log.js';
 import type {
   DomainProfile,
   DomainPattern,
@@ -40,9 +41,9 @@ export async function initializeDomainManager(): Promise<void> {
   // Watch for external changes
   onFileChange((filename) => {
     if (filename === RULES_FILENAME) {
-      console.log('[DomainManager] Rules file changed, reloading...');
+      log.info('[DomainManager] Rules file changed, reloading...');
       loadRules().catch((err) => {
-        console.warn('[DomainManager] Failed to reload rules:', err);
+        log.warn('[DomainManager] Failed to reload rules:', err);
       });
     }
   });
@@ -61,13 +62,13 @@ export async function loadRules(): Promise<DomainRulesStore> {
       rulesStore = stored;
       compilePatterns();
       profileCache.clear();
-      console.log(
+      log.info(
         `[DomainManager] Loaded ${rulesStore.profiles.length} profiles`
       );
       return rulesStore;
     }
   } catch (err) {
-    console.warn('[DomainManager] Failed to load rules:', err);
+    log.warn('[DomainManager] Failed to load rules:', err);
   }
 
   // Use defaults
@@ -120,7 +121,7 @@ function compilePattern(pattern: DomainPattern): void {
       // backtracking shapes CodeQL flags as `js/regex-injection`.
       const compiled = safeRegex(pattern.pattern, 'i');
       if (!compiled) {
-        console.warn(
+        log.warn(
           '[DomainManager] Rejected unsafe regex pattern: %s',
           sanitizeForLog(pattern.pattern)
         );
@@ -135,7 +136,7 @@ function compilePattern(pattern: DomainPattern): void {
       pattern.compiled = safeRegex(`^${escaped}$`, 'i') ?? undefined;
     }
   } catch (err) {
-    console.warn(
+    log.warn(
       '[DomainManager] Invalid pattern %s: %s',
       sanitizeForLog(pattern.pattern),
       sanitizeForLog(err instanceof Error ? err.message : String(err))

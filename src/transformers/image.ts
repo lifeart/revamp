@@ -5,6 +5,7 @@
  */
 
 import sharp from 'sharp';
+import { log } from '../logger/log.js';
 import { getConfig } from '../config/index.js';
 
 export interface ImageTransformResult {
@@ -91,7 +92,7 @@ export async function transformImage(
   
   // Check for empty or invalid buffer
   if (!imageBuffer || imageBuffer.length === 0) {
-    console.warn(`⚠️ Empty image buffer for ${url}, skipping transformation`);
+    log.warn(`⚠️ Empty image buffer for ${url}, skipping transformation`);
     return {
       data: imageBuffer,
       contentType: contentType,
@@ -101,7 +102,7 @@ export async function transformImage(
   
   // Minimum size for a valid image (WebP header alone is ~12 bytes)
   if (imageBuffer.length < 12) {
-    console.warn(`⚠️ Image buffer too small (${imageBuffer.length} bytes) for ${url}, skipping transformation`);
+    log.warn(`⚠️ Image buffer too small (${imageBuffer.length} bytes) for ${url}, skipping transformation`);
     return {
       data: imageBuffer,
       contentType: contentType,
@@ -115,7 +116,7 @@ export async function transformImage(
     const isAVIFImage = isAVIF(contentType) || isAVIFUrl(url);
     const sourceFormat = isWebPImage ? 'WebP' : isAVIFImage ? 'AVIF' : 'unknown';
     
-    console.log(`🖼️ Converting ${sourceFormat} to JPEG: ${url} (${imageBuffer.length} bytes)`);
+    log.debug(`🖼️ Converting ${sourceFormat} to JPEG: ${url} (${imageBuffer.length} bytes)`);
     
     // Use sharp to convert to JPEG
     // Sharp auto-detects the input format
@@ -126,7 +127,7 @@ export async function transformImage(
       })
       .toBuffer();
     
-    console.log(`✅ Image converted: ${imageBuffer.length} → ${convertedBuffer.length} bytes`);
+    log.debug(`✅ Image converted: ${imageBuffer.length} → ${convertedBuffer.length} bytes`);
     
     return {
       data: convertedBuffer,
@@ -134,7 +135,7 @@ export async function transformImage(
       transformed: true,
     };
   } catch (error) {
-    console.error(`❌ Image conversion error for ${url}:`, error instanceof Error ? error.message : error);
+    log.error(`❌ Image conversion error for ${url}:`, error instanceof Error ? error.message : error);
     
     // Return original on error
     return {

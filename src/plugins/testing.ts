@@ -12,6 +12,7 @@ import type {
   HookName,
 } from './types.js';
 import type { PluginContext, ApiEndpointHandler } from './context.js';
+import type { ContentTransformer } from '../transformers/registry.js';
 import {
   type HookTypes,
   HOOK_PERMISSION_REQUIREMENTS,
@@ -131,6 +132,12 @@ export interface TestContextOptions {
   mockFetch?: MockFetchHandler;
   /** Whether to capture logs instead of writing to console (default: true) */
   captureLog?: boolean;
+  /**
+   * Ids reported as active by `getActivePlugins()` / `isPluginActive()`
+   * (default: just this plugin's own id, mirroring the production registry
+   * where a plugin executing hooks is itself active).
+   */
+  activePlugins?: string[];
 }
 
 /**
@@ -156,6 +163,18 @@ export interface TestPluginContext extends PluginContext {
   getLogsByLevel(level: 'debug' | 'info' | 'warn' | 'error'): LogEntry[];
   /** Set the mock fetch handler */
   setMockFetch(handler: MockFetchHandler): void;
+  /** Replace the set of plugin ids reported as active by the composition API */
+  setActivePlugins(ids: string[]): void;
+  /** Get all content transformers registered via registerTransformer */
+  getRegisteredTransformers(): ContentTransformer[];
+  /**
+   * Get the handler registered via registerEndpoint for a path (leading
+   * slash optional, matching registerEndpoint's normalization). Returns
+   * null when nothing is registered there — mirroring the production
+   * `findPluginEndpoint` lookup — so tests can invoke endpoint handlers
+   * directly instead of only asserting on `getRegisteredEndpoints()` names.
+   */
+  getRegisteredEndpointHandler(path: string): ApiEndpointHandler | null;
 }
 
 // All available permissions
@@ -289,6 +308,10 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
   // Storage for registered endpoints
   const registeredEndpoints = new Map<string, ApiEndpointHandler>();
 
+  // Storage for registered content transformers (isolated from the real
+  // global registry so tests can't leak transformers into each other)
+  const registeredTransformers = new Map<string, ContentTransformer>();
+
   // Storage for custom metrics
   const customMetrics = new Map<string, { value: number; tags: Record<string, string>; timestamp: number }>();
 
@@ -303,6 +326,10 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
 
   // Mock fetch handler
   let mockFetchHandler: MockFetchHandler = options.mockFetch || defaultMockFetch;
+
+  // Mock active-plugin set for the composition API. Defaults to the plugin
+  // itself: in production a plugin executing hooks is always active.
+  let activePlugins = new Set<string>(options.activePlugins ?? [pluginId]);
 
   function requirePermission(permission: PluginPermission, action: string): void {
     if (!permissionSet.has(permission)) {
@@ -477,6 +504,38 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
       return Array.from(registeredEndpoints.keys());
     },
 
+    getRegisteredEndpointHandler(path: string): ApiEndpointHandler | null {
+      const normalizedPath = path.replace(/^\//, '');
+      return registeredEndpoints.get(normalizedPath) ?? null;
+    },
+
+    // Content transformers (gated like the production context: same
+    // permission as the transform hooks)
+    registerTransformer(transformer: ContentTransformer): void {
+      requirePermission('response:modify', 'registerTransformer');
+      if (!transformer.name) {
+        throw new Error('Transformer must have a non-empty name');
+      }
+      if (registeredTransformers.has(transformer.name)) {
+        throw new Error(`Transformer "${transformer.name}" is already registered`);
+      }
+      registeredTransformers.set(transformer.name, transformer);
+    },
+
+    unregisterTransformer(name: string): void {
+      registeredTransformers.delete(name);
+    },
+
+    // Plugin composition (ungated read-only introspection, mirroring the
+    // production context — see context.ts for the rationale).
+    getActivePlugins(): string[] {
+      return Array.from(activePlugins);
+    },
+
+    isPluginActive(id: string): boolean {
+      return activePlugins.has(id);
+    },
+
     // Logging
     log(
       level: 'debug' | 'info' | 'warn' | 'error',
@@ -523,11 +582,13 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
       pluginConfig = { ...options.pluginConfig };
       registeredHooks.clear();
       registeredEndpoints.clear();
+      registeredTransformers.clear();
       customMetrics.clear();
       storage.clear();
       cache.clear();
       capturedLogs.length = 0;
       mockFetchHandler = options.mockFetch || defaultMockFetch;
+      activePlugins = new Set<string>(options.activePlugins ?? [pluginId]);
     },
 
     // Log utilities
@@ -546,6 +607,16 @@ export function createTestContext(options: TestContextOptions = {}): TestPluginC
     // Mock fetch utilities
     setMockFetch(handler: MockFetchHandler): void {
       mockFetchHandler = handler;
+    },
+
+    // Composition mock utilities
+    setActivePlugins(ids: string[]): void {
+      activePlugins = new Set(ids);
+    },
+
+    // Transformer test utilities
+    getRegisteredTransformers(): ContentTransformer[] {
+      return Array.from(registeredTransformers.values());
     },
   };
 

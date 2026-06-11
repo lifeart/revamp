@@ -150,6 +150,18 @@ describe('getPortalHTML (T21 + T22)', () => {
     expect(html).toContain('VPN &amp; Device Management');
   });
 
+  it('renders the full page from the on-disk template (key landmarks present)', () => {
+    const html = getPortalHTML('192.168.1.10', 8888, undefined);
+    expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
+    expect(html.endsWith('</html>')).toBe(true);
+    expect(html).toContain('<title>Revamp Proxy - Certificate Setup</title>');
+    expect(html).toContain('href="/cert/revamp-ca.crt"');
+    expect(html).toContain('<ol class="instructions">');
+    expect(html).toContain('Portal: http://192.168.1.10:8888');
+    // No unrendered placeholders may leak into served HTML.
+    expect(html).not.toContain('{{');
+  });
+
   it('renders both PAC and Manual blocks, with PAC marked recommended (T22)', () => {
     const html = getPortalHTML('192.168.1.10', 8888, undefined);
     expect(html).toContain('Easy (PAC)');

@@ -12,6 +12,7 @@
  */
 
 import { pluginRegistry } from './internal.js';
+import { log } from '../logger/log.js';
 import type { HookName } from './types.js';
 import type {
   HookTypes,
@@ -79,6 +80,24 @@ export interface HookExecutionStats {
 }
 
 /**
+ * A single hook failure captured during chain execution.
+ *
+ * The chain itself continues past the failure (fail-safe semantics are
+ * unchanged); this record exists so callers can OBSERVE that a plugin's
+ * hook threw or timed out instead of silently receiving a normal result.
+ */
+export interface HookChainError {
+  /** Plugin whose hook failed */
+  pluginId: string;
+  /** Hook that failed */
+  hookName: HookName;
+  /** The thrown error (timeouts surface as an Error as well) */
+  error: Error;
+  /** Whether the failure was a timeout rather than a thrown exception */
+  timedOut: boolean;
+}
+
+/**
  * Result of executing a hook chain
  */
 export interface ChainExecutionResult<T> {
@@ -94,6 +113,15 @@ export interface ChainExecutionResult<T> {
   executionTime?: number;
   /** Number of hooks executed */
   hooksExecuted?: number;
+  /**
+   * Hook failures (thrown exceptions and timeouts) caught during the chain.
+   * Empty when every hook succeeded. Each entry corresponds 1:1 with a
+   * failed execution recorded in the per-plugin stats for this chain run.
+   * Note: a hook deliberately stopping the chain via
+   * `{ continue: false, error }` is NOT a failure — it surfaces through the
+   * `error` / `stoppedBy` fields above and counts as a successful execution.
+   */
+  errors: HookChainError[];
 }
 
 /**
@@ -391,9 +419,16 @@ class HookExecutor {
     const hooks = pluginRegistry.getHooks(hookName);
     const chainStartTime = Date.now();
     let hooksExecuted = 0;
+    const errors: HookChainError[] = [];
 
     if (hooks.length === 0) {
-      return { value: defaultValue, stopped: false, executionTime: 0, hooksExecuted: 0 };
+      return {
+        value: defaultValue,
+        stopped: false,
+        executionTime: 0,
+        hooksExecuted: 0,
+        errors,
+      };
     }
 
     let currentValue = defaultValue;
@@ -420,6 +455,7 @@ class HookExecutor {
               error: result.error,
               executionTime: Date.now() - chainStartTime,
               hooksExecuted,
+              errors,
             };
           }
           return {
@@ -428,6 +464,7 @@ class HookExecutor {
             stoppedBy: pluginId,
             executionTime: Date.now() - chainStartTime,
             hooksExecuted,
+            errors,
           };
         }
 
@@ -495,7 +532,16 @@ class HookExecutor {
         const isTimeout = err instanceof Error && err.message.includes('timed out');
         hooksExecuted++;
         this.recordExecution(pluginId, hookName, false, executionTime, isTimeout);
-        console.error(
+        // Surface the failure to the caller via the result's `errors` array.
+        // Must stay 1:1 with the failed execution recorded just above so
+        // observability (errors) and stats count the same events.
+        errors.push({
+          pluginId,
+          hookName,
+          error: err instanceof Error ? err : new Error(String(err)),
+          timedOut: isTimeout,
+        });
+        log.error(
           `[HookExecutor] Hook ${hookName} from ${pluginId} failed:`,
           err
         );
@@ -508,6 +554,7 @@ class HookExecutor {
       stopped: false,
       executionTime: Date.now() - chainStartTime,
       hooksExecuted,
+      errors,
     };
   }
 
@@ -541,7 +588,7 @@ class HookExecutor {
           const executionTime = Date.now() - startTime;
           const isTimeout = err instanceof Error && err.message.includes('timed out');
           this.recordExecution(pluginId, hookName, false, executionTime, isTimeout);
-          console.error(
+          log.error(
             `[HookExecutor] Hook ${hookName} from ${pluginId} failed:`,
             err
           );

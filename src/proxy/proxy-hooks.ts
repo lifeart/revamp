@@ -11,6 +11,7 @@
  */
 
 import type { RevampConfig } from '../config/index.js';
+import { log } from '../logger/log.js';
 import type { DomainProfile } from '../config/domain-rules.js';
 import type {
   RequestContext,
@@ -24,6 +25,34 @@ import {
   runPostResponseHooks,
   type ChainExecutionResult,
 } from '../plugins/hook-executor.js';
+import { sanitizeForLog } from '../logger/sanitize.js';
+
+/**
+ * Surface plugin hook failures (thrown errors / timeouts captured by the
+ * hook executor's fail-safe chain) as structured warnings. Purely
+ * observational — control flow and the chain result are untouched.
+ */
+function logHookChainErrors(
+  context: { requestId: string; url: string },
+  result: ChainExecutionResult<unknown> | null
+): void {
+  if (!result || result.errors.length === 0) {
+    return;
+  }
+  for (const failure of result.errors) {
+    // Constant format string; tainted values (plugin id from a third-party
+    // manifest, request URL, error message) are sanitized arguments.
+    log.warn(
+      '[proxy-hooks] plugin hook failed (chain continued): plugin=%s hook=%s timedOut=%s requestId=%s url=%s error=%s',
+      sanitizeForLog(failure.pluginId),
+      failure.hookName,
+      failure.timedOut,
+      sanitizeForLog(context.requestId),
+      sanitizeForLog(context.url),
+      sanitizeForLog(failure.error.message)
+    );
+  }
+}
 
 /**
  * Inputs needed to build a `RequestContext`.
@@ -96,6 +125,7 @@ export async function applyPreRequestHooks(
   context: RequestContext
 ): Promise<PreRequestOutcome> {
   const result = await runPreRequestHooks(context);
+  logHookChainErrors(context, result);
   const headers = { ...context.headers };
   let url = context.url;
   let blocked = false;
@@ -174,6 +204,7 @@ export async function applyPostResponseHooks(
   context: ResponseContext
 ): Promise<PostResponseOutcome> {
   const result = await runPostResponseHooks(context);
+  logHookChainErrors(context, result);
   let body = context.body;
   let headers = { ...context.responseHeaders };
   let statusCode = context.statusCode;

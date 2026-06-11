@@ -11,20 +11,23 @@
 import { request as httpRequest, type IncomingMessage, type IncomingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { getConfig, getEffectiveConfigForRequestAsync } from '../config/index.js';
+import type { DomainProfile } from '../config/domain-rules.js';
 import { markAsRedirect, isRedirectStatus } from '../cache/index.js';
-import { transformImage, needsImageTransform } from '../transformers/image.js';
+import {
+  dispatchBinaryTransform,
+  hasTextTransformerFor,
+  type TransformDispatchContext,
+} from '../transformers/registry.js';
 import {
   recordTransform,
   recordBandwidth,
   recordHostTransform,
 } from '../metrics/index.js';
-import {
-  getCharset,
-  getContentType,
-  decompressBody,
-  transformContent,
-  SPOOFED_USER_AGENT,
-} from './shared.js';
+import { getCharset } from './charset.js';
+import { getContentType } from './content-type.js';
+import { decompressBody } from './compression.js';
+import { transformContent } from './transform-pipeline.js';
+import { SPOOFED_USER_AGENT } from './user-agent.js';
 import type { ContentType, HttpResponse, RequestHeaders } from './types.js';
 import {
   shouldLogJsonRequest,
@@ -78,6 +81,12 @@ export interface ProcessProxiedResponseInput {
    * when `runPostResponseHook` is `true`.
    */
   requestContext?: import('../plugins/hooks.js').RequestContext;
+  /**
+   * Matched domain profile, threaded from the request entry point
+   * (http-proxy `prepareRequest` / socks5 `handleHttpRequestSocks5`) so the
+   * transform pipeline never has to re-fetch it.
+   */
+  profile?: DomainProfile | null;
 }
 
 /**
@@ -115,6 +124,7 @@ export async function processProxiedResponse(
     requestBody,
     runPostResponseHook,
     requestContext,
+    profile,
   } = input;
 
   // Decompress upstream body if encoded.
@@ -153,22 +163,44 @@ export async function processProxiedResponse(
   const originalSize = body.length;
 
   if (!isRedirect && body.length > 0) {
-    if (needsImageTransform(contentTypeValue, url)) {
-      const imageResult = await transformImage(body, contentTypeValue, url);
-      if (imageResult.transformed) {
-        body = Buffer.from(imageResult.data);
-        headers['content-type'] = imageResult.contentType;
+    // Registry dispatch context shared by both lanes. The coarse content
+    // type is computed once here (it is a pure function of headers + URL);
+    // `detectedContentType` is only committed on the text path below, as
+    // before.
+    const coarseContentType = getContentType(
+      upstreamHeaders as Record<string, string | string[] | undefined>,
+      url
+    );
+    const dispatchContext: TransformDispatchContext = {
+      url,
+      contentType: coarseContentType,
+      rawContentType: contentTypeValue,
+      config: getConfig(),
+      profile: profile ?? null,
+      clientIp,
+    };
+
+    // Binary lane first (built-in: WebP/AVIF → JPEG image transform). When
+    // a binary transformer matches, the text pipeline is skipped — exactly
+    // the old `needsImageTransform` if/else.
+    const binaryResult = await dispatchBinaryTransform(body, dispatchContext);
+    if (binaryResult) {
+      if (binaryResult.transformed) {
+        body = Buffer.from(binaryResult.data);
+        headers['content-type'] = binaryResult.contentType;
         recordTransform('images');
         recordHostTransform(url, 'images');
       }
     } else {
       const charset = getCharset(contentTypeValue);
-      detectedContentType = getContentType(
-        upstreamHeaders as Record<string, string | string[] | undefined>,
-        url
-      );
+      detectedContentType = coarseContentType;
 
-      if (detectedContentType !== 'other') {
+      // Text pipeline gate: js/css/html always enter; coarse-'other'
+      // (JSON APIs etc.) only when a registered text transformer wants it
+      // (plugins matching on rawContentType). Built-ins never match
+      // 'other', so the short-circuit keeps the no-plugin path free of any
+      // decode/cache work — byte-identical to the old `!== 'other'` skip.
+      if (detectedContentType !== 'other' || hasTextTransformerFor(dispatchContext)) {
         body = Buffer.from(await transformContent(
           body,
           detectedContentType,
@@ -178,11 +210,18 @@ export async function processProxiedResponse(
           clientIp,
           method,
           requestHeaders,
-          upstreamHeaders as Record<string, string | string[] | undefined>
+          upstreamHeaders as Record<string, string | string[] | undefined>,
+          profile ?? null
         ));
-        recordTransform(detectedContentType);
-        recordHostTransform(url, detectedContentType);
+        if (detectedContentType !== 'other') {
+          // Metrics only track the built-in lanes (js/css/html/images);
+          // plugin-transformed 'other' content is not counted.
+          recordTransform(detectedContentType);
+          recordHostTransform(url, detectedContentType);
+        }
 
+        // The pipeline re-encodes its output as UTF-8, so advertise that
+        // (for 'other' this only happens when a transformer matched).
         const ct = headers['content-type'];
         if (ct) {
           const ctStr = Array.isArray(ct) ? ct[0] : ct;
@@ -358,6 +397,11 @@ export async function runPreHooksForSocksRequest(
  * Plugin hooks: `request:pre` and `response:post` fire on the SOCKS5 path
  * via this helper (T12). Pass `clientIp` to opt into hooks; without it we
  * skip hook execution to keep direct-call test cases simple.
+ *
+ * @param profile - Matched domain profile, threaded from the SOCKS5 entry
+ *   point so the transform pipeline doesn't re-fetch it. When omitted, the
+ *   profile already resolved by the `request:pre` hook context is reused
+ *   (no extra lookup); direct callers without hooks get `null`.
  */
 export async function makeHttpsRequest(
   method: string,
@@ -365,7 +409,8 @@ export async function makeHttpsRequest(
   path: string,
   headers: RequestHeaders,
   body: Buffer,
-  clientIp?: string
+  clientIp?: string,
+  profile?: DomainProfile | null
 ): Promise<HttpResponse> {
   const config = getConfig();
 
@@ -462,6 +507,7 @@ export async function makeHttpsRequest(
     requestBody: body,
     runPostResponseHook: !!requestContext,
     requestContext,
+    profile: profile !== undefined ? profile : (requestContext?.profile ?? null),
   });
 
   return {
@@ -475,7 +521,8 @@ export async function makeHttpsRequest(
 /**
  * Make an HTTP request to a remote server with transformation support.
  *
- * Mirrors `makeHttpsRequest` for plugin-hook semantics on the SOCKS5 path.
+ * Mirrors `makeHttpsRequest` for plugin-hook semantics on the SOCKS5 path
+ * (including the threaded `profile` parameter).
  */
 export async function makeHttpRequest(
   method: string,
@@ -484,7 +531,8 @@ export async function makeHttpRequest(
   path: string,
   headers: RequestHeaders,
   body: Buffer,
-  clientIp?: string
+  clientIp?: string,
+  profile?: DomainProfile | null
 ): Promise<HttpResponse> {
   const requestHeaders: Record<string, string | string[] | undefined> = { ...headers };
 
@@ -567,6 +615,7 @@ export async function makeHttpRequest(
     requestBody: body,
     runPostResponseHook: !!requestContext,
     requestContext,
+    profile: profile !== undefined ? profile : (requestContext?.profile ?? null),
   });
 
   return {

@@ -736,6 +736,7 @@ describe('transformHtml with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformHtml(html, 'http://localhost/test.html', configWithBundlingDisabled);
@@ -783,6 +784,7 @@ describe('transformHtml with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformHtml(html, 'http://localhost/test.html', configWithHtmlDisabled);
@@ -835,6 +837,7 @@ describe('transformHtml with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformHtml(html, 'http://localhost/test.html', configWithAdsAllowed);
@@ -881,6 +884,7 @@ describe('transformHtml with config parameter', () => {
       spoofUserAgent: false,
       logJsonRequests: false,
       jsonLogDir: './.revamp-json-logs',
+      logLevel: 'info' as const,
     };
 
     const result = await transformHtml(html, 'http://localhost/test.html', configWithPolyfillsDisabled);
@@ -961,5 +965,103 @@ describe('transformHtml with config parameter', () => {
     // Should transform normally
     expect(result).toContain('Content');
     expect(result).toContain('Revamp');
+  });
+});
+
+describe('transformHtml concurrent inline script transformation', () => {
+  beforeEach(() => {
+    resetConfig();
+    updateConfig({
+      transformHtml: true,
+      transformJs: true,
+      bundleEsModules: false,
+      removeAds: false,
+      removeTracking: false,
+      injectPolyfills: false,
+    });
+  });
+
+  afterEach(async () => {
+    await shutdownWorkerPool();
+    resetConfig();
+  });
+
+  it('should transform all inline scripts and keep them in document order', async () => {
+    // Each script is >100 bytes and uses modern syntax so it goes through
+    // the worker pool. The transforms run concurrently — results must still
+    // land in each script's own element, preserving document order.
+    const html = `
+      <html><head>
+        <script>
+          const alphaValues = [1, 2, 3].map((value) => value * 2);
+          window.__alphaMarker = alphaValues.reduce((acc, value) => acc + value, 0);
+        </script>
+      </head><body>
+        <script>
+          const betaValues = [4, 5, 6].map((value) => value * 3);
+          window.__betaMarker = betaValues.reduce((acc, value) => acc + value, 0);
+        </script>
+        <p>Between scripts</p>
+        <script>
+          const gammaValues = [7, 8, 9].map((value) => value * 4);
+          window.__gammaMarker = gammaValues.reduce((acc, value) => acc + value, 0);
+        </script>
+      </body></html>
+    `;
+
+    const result = await transformHtml(html, 'https://example.com/page');
+
+    // All three scripts survived and were transformed (arrows compiled away).
+    expect(result).toContain('__alphaMarker');
+    expect(result).toContain('__betaMarker');
+    expect(result).toContain('__gammaMarker');
+    expect(result).not.toContain('=> value * 2');
+    expect(result).not.toContain('=> value * 3');
+    expect(result).not.toContain('=> value * 4');
+
+    // Document order is preserved regardless of transform completion order.
+    const alphaIndex = result.indexOf('__alphaMarker');
+    const betaIndex = result.indexOf('__betaMarker');
+    const gammaIndex = result.indexOf('__gammaMarker');
+    expect(alphaIndex).toBeGreaterThan(-1);
+    expect(alphaIndex).toBeLessThan(betaIndex);
+    expect(betaIndex).toBeLessThan(gammaIndex);
+    expect(result.indexOf('Between scripts')).toBeGreaterThan(betaIndex);
+    expect(result.indexOf('Between scripts')).toBeLessThan(gammaIndex);
+  });
+
+  it('should keep original content for a failing script without breaking its siblings', async () => {
+    // The middle script has a fatal syntax error: Babel returns the original
+    // source, so it must come through unchanged while the valid siblings are
+    // still transformed.
+    const html = `
+      <html><head></head><body>
+        <script>
+          const firstValues = [1, 2, 3].map((value) => value * 2);
+          window.__firstMarker = firstValues.reduce((acc, value) => acc + value, 0);
+        </script>
+        <script>
+          const broken = ((( => {;
+          window.__brokenMarker = 'kept-as-original';
+          // padding so this script crosses the 100-byte transform threshold
+        </script>
+        <script>
+          const lastValues = [7, 8, 9].map((value) => value * 4);
+          window.__lastMarker = lastValues.reduce((acc, value) => acc + value, 0);
+        </script>
+      </body></html>
+    `;
+
+    const result = await transformHtml(html, 'https://example.com/broken');
+
+    // Broken script falls back to its original, untransformed content.
+    expect(result).toContain('const broken = ((( => {;');
+    expect(result).toContain("__brokenMarker = 'kept-as-original'");
+
+    // Valid siblings are still transformed.
+    expect(result).toContain('__firstMarker');
+    expect(result).toContain('__lastMarker');
+    expect(result).not.toContain('=> value * 2');
+    expect(result).not.toContain('=> value * 4');
   });
 });

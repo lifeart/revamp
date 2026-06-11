@@ -13,6 +13,7 @@ import {
 } from './revamp-api.js';
 import { resetConfig, updateConfig } from '../config/index.js';
 import { resetMetrics } from '../metrics/index.js';
+import { getAllPluginEndpoints } from '../plugins/context.js';
 
 describe('REVAMP_API_BASE', () => {
   it('should be /__revamp__', () => {
@@ -278,6 +279,96 @@ describe('handleRevampRequest', () => {
   });
 });
 
+describe('plugin endpoints through the unified router', () => {
+  const PLUGIN_ID = 'router-test-plugin';
+
+  beforeEach(() => {
+    getAllPluginEndpoints().set(PLUGIN_ID, new Map());
+  });
+
+  afterEach(() => {
+    getAllPluginEndpoints().delete(PLUGIN_ID);
+  });
+
+  it('serves a plugin-registered endpoint via dynamic lookup', async () => {
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('hello', async (req) => ({
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ greeting: 'hi', method: req.method, name: req.query['name'] }),
+    }));
+
+    const result = await handleRevampRequest(
+      `/__revamp__/plugins/${PLUGIN_ID}/hello?name=world`,
+      'GET'
+    );
+    expect(result.statusCode).toBe(200);
+    expect(result.headers['Access-Control-Allow-Origin']).toBe('*');
+    const parsed = JSON.parse(result.body);
+    expect(parsed.greeting).toBe('hi');
+    expect(parsed.method).toBe('GET');
+    expect(parsed.name).toBe('world');
+  });
+
+  it('reflects endpoint registration changes at request time (register/unregister)', async () => {
+    const path = `/__revamp__/plugins/${PLUGIN_ID}/dynamic`;
+
+    // Not registered yet -> 404
+    let result = await handleRevampRequest(path, 'GET');
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body).error).toBe('Not found');
+
+    // Register -> served
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('dynamic', async () => ({
+      statusCode: 200,
+      headers: {},
+      body: 'dynamic-ok',
+    }));
+    result = await handleRevampRequest(path, 'GET');
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toBe('dynamic-ok');
+
+    // Unregister -> 404 again
+    getAllPluginEndpoints().get(PLUGIN_ID)!.delete('dynamic');
+    result = await handleRevampRequest(path, 'GET');
+    expect(result.statusCode).toBe(404);
+  });
+
+  it('never lets custom endpoints shadow reserved management actions', async () => {
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('activate', async () => ({
+      statusCode: 200,
+      headers: {},
+      body: 'should-never-run',
+    }));
+
+    // GET on a reserved action stays a 404 (management activate is POST-only)
+    const result = await handleRevampRequest(
+      `/__revamp__/plugins/${PLUGIN_ID}/activate`,
+      'GET'
+    );
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body).error).toBe('Not found');
+  });
+
+  it('maps a throwing custom endpoint to a 500 with the error message', async () => {
+    getAllPluginEndpoints().get(PLUGIN_ID)!.set('boom', async () => {
+      throw new Error('endpoint exploded');
+    });
+
+    const result = await handleRevampRequest(
+      `/__revamp__/plugins/${PLUGIN_ID}/boom`,
+      'GET'
+    );
+    expect(result.statusCode).toBe(500);
+    expect(JSON.parse(result.body).error).toBe('endpoint exploded');
+  });
+
+  it('returns 404 for unknown sub-paths under /plugins', async () => {
+    const result = await handleRevampRequest('/__revamp__/plugins', 'POST');
+    expect(result.statusCode).toBe(404);
+    expect(JSON.parse(result.body).error).toBe('Not found');
+  });
+});
+
 describe('buildRawApiResponse', () => {
   it('should build HTTP/1.1 response', () => {
     const result: ApiResult = {
@@ -381,5 +472,60 @@ describe('buildRawApiResponse', () => {
     };
     const raw = buildRawApiResponse(result);
     expect(raw).toContain('HTTP/1.1 201 OK');
+  });
+
+  // Regression tests for the SOCKS5 plain-HTTP framing bug: the serialized
+  // response must be a fully framed HTTP/1.1 message — exact CRLF line
+  // endings, a single status line, and a byte-accurate Content-Length —
+  // because the SOCKS5 stack writes these bytes straight to the socket with
+  // no http module to fix framing up afterwards.
+  it('should produce exact CRLF framing with byte-accurate Content-Length for a UTF-8 body', () => {
+    const body = '{"emoji":"🧦","text":"żółć"}';
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    };
+    const raw = buildRawApiResponse(result);
+
+    // Multi-byte UTF-8: byte length must differ from code-unit length,
+    // and Content-Length must reflect bytes, not string length.
+    expect(Buffer.byteLength(body)).toBeGreaterThan(body.length);
+    expect(raw).toBe(
+      'HTTP/1.1 200 OK\r\n' +
+      'Content-Type: application/json\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      'Connection: close\r\n' +
+      '\r\n' +
+      body
+    );
+  });
+
+  it('should emit Content-Length: 0 for empty bodies so responses stay framed', () => {
+    const result: ApiResult = {
+      statusCode: 200,
+      headers: {},
+      body: '',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw).toBe(
+      'HTTP/1.1 200 OK\r\n' +
+      'Content-Length: 0\r\n' +
+      'Connection: close\r\n' +
+      '\r\n'
+    );
+  });
+
+  it('should not duplicate handler-supplied Content-Length or Connection headers', () => {
+    const result: ApiResult = {
+      statusCode: 204,
+      headers: { 'Content-Length': '0', 'Connection': 'keep-alive' },
+      body: '',
+    };
+    const raw = buildRawApiResponse(result);
+    expect(raw.match(/Content-Length:/gi)).toHaveLength(1);
+    expect(raw.match(/Connection:/gi)).toHaveLength(1);
+    expect(raw).toContain('Content-Length: 0\r\n');
+    expect(raw).toContain('Connection: close\r\n');
   });
 });

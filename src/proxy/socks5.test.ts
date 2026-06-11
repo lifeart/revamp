@@ -548,6 +548,95 @@ describe('SOCKS5 Proxy Integration Tests', () => {
     });
   });
 
+  describe('Revamp API over plain HTTP (port 80)', () => {
+    // Regression test: the SOCKS5 state machine used to stay in
+    // AWAITING_REQUEST after dispatching a port-80 connection to the HTTP
+    // handler, so the client's HTTP request bytes were re-parsed as a SOCKS5
+    // CONNECT and a duplicate 10-byte success reply was written ahead of the
+    // HTTP response — making the response unparseable (curl: "Received
+    // HTTP/0.9 when not allowed").
+    it('should return a cleanly framed 200 for /__revamp__/config', async () => {
+      // CONNECT to port 80 — /__revamp__ paths are answered in-process, so
+      // no real server needs to listen there.
+      const { socket, greeting, connectReply } = await makeSocks5Connection(
+        '127.0.0.1',
+        80,
+        false
+      );
+
+      expect(greeting[0]).toBe(SOCKS_VERSION);
+      expect(greeting[1]).toBe(AUTH_NO_AUTH);
+      expect(connectReply[0]).toBe(SOCKS_VERSION);
+      expect(connectReply[1]).toBe(REPLY_SUCCESS);
+
+      const response = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+
+        const timeout = setTimeout(() => {
+          socket.destroy();
+          reject(new Error('Revamp API response timeout'));
+        }, 5000);
+
+        socket.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+          const buffered = Buffer.concat(chunks);
+
+          // The proxy advertises `Connection: close` but leaves plain
+          // sockets open, so read until Content-Length is satisfied instead
+          // of waiting for EOF.
+          const headerEnd = buffered.indexOf('\r\n\r\n');
+          if (headerEnd === -1) return;
+          const headerText = buffered.subarray(0, headerEnd).toString('utf-8');
+          const contentLength = parseInt(
+            /^content-length:\s*(\d+)$/im.exec(headerText)?.[1] ?? '',
+            10
+          );
+          if (Number.isNaN(contentLength)) return;
+          if (buffered.length >= headerEnd + 4 + contentLength) {
+            clearTimeout(timeout);
+            socket.destroy();
+            resolve(buffered);
+          }
+        });
+
+        socket.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+
+        socket.write(
+          'GET /__revamp__/config HTTP/1.1\r\n' +
+          'Host: 127.0.0.1\r\n' +
+          'Accept: */*\r\n' +
+          '\r\n'
+        );
+      });
+
+      // The very first bytes must be the HTTP status line — no stray SOCKS5
+      // reply (0x05 ...) or anything else prepended.
+      expect(response.subarray(0, 17).toString('utf-8')).toBe('HTTP/1.1 200 OK\r\n');
+      const text = response.toString('utf-8');
+      expect(text.match(/HTTP\/1\.1 /g)).toHaveLength(1);
+
+      const headerEnd = text.indexOf('\r\n\r\n');
+      const headerText = text.slice(0, headerEnd);
+      const body = response.subarray(headerEnd + 4);
+
+      // Byte-accurate Content-Length framing.
+      const contentLength = parseInt(
+        /^content-length:\s*(\d+)$/im.exec(headerText)?.[1] ?? '',
+        10
+      );
+      expect(body.length).toBe(contentLength);
+      expect(headerText).toMatch(/^connection:\s*close$/im);
+
+      // And the body must be the parseable config JSON.
+      const parsed = JSON.parse(body.toString('utf-8'));
+      expect(parsed.success).toBe(true);
+      expect(parsed.config).toBeDefined();
+    });
+  });
+
   describe('Direct TCP connections', () => {
     it('should establish connection to non-HTTP ports', async () => {
       // Test connecting to the HTTP server on a non-80 port

@@ -7,9 +7,10 @@
  */
 
 import { createHash } from 'node:crypto';
+import { log } from '../logger/log.js';
 import { access, mkdir, readFile, writeFile, stat, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getConfig, getClientConfig, type ClientConfig } from '../config/index.js';
+import { getConfig, getClientConfig, type ClientConfig, type DomainProfile } from '../config/index.js';
 import { getProfileForDomain } from '../config/domain-manager.js';
 import { recordError } from '../metrics/index.js';
 
@@ -228,6 +229,74 @@ function getVaryFingerprint(
   return createHash('sha256').update(parts.join('\n')).digest('hex').substring(0, 16);
 }
 
+/**
+ * Memoized config / profile hashes, keyed by object identity.
+ *
+ * Identity-keyed memoization is sound here because both object kinds are
+ * REPLACED (never mutated in place) when they change:
+ * - Client configs: setClientConfig() stores the freshly JSON.parse'd request
+ *   body as a brand-new object (src/config/index.ts), so any update yields a
+ *   new identity and therefore a memo miss → fresh hash. The default fallback
+ *   in getClientConfig() (no stored config) builds a new object per call —
+ *   those always miss the memo, which costs the same stringify as before and
+ *   can never serve a stale hash.
+ * - Domain profiles: updateProfile() builds `{ ...old, ...updates }` and swaps
+ *   the array slot (src/config/domain-manager.ts), so updated profiles also
+ *   get a new identity (and a bumped `updatedAt`, which the hash includes).
+ *
+ * WeakMap entries die with their key objects, so replaced configs/profiles
+ * cannot leak memory.
+ */
+const configHashMemo = new WeakMap<ClientConfig, string>();
+const profileHashMemo = new WeakMap<DomainProfile, string>();
+
+/** Test-only counters: bumped when a hash is actually computed (memo miss). */
+let configHashComputeCount = 0;
+let profileHashComputeCount = 0;
+
+/**
+ * Test-only introspection for the hash memoization above. Lets tests prove a
+ * stable config/profile object is hashed exactly once and a replaced object
+ * is re-hashed.
+ *
+ * @internal
+ */
+export function getHashComputeCounts(): { config: number; profile: number } {
+  return { config: configHashComputeCount, profile: profileHashComputeCount };
+}
+
+function getConfigHash(clientConfig: ClientConfig): string {
+  const memoized = configHashMemo.get(clientConfig);
+  if (memoized !== undefined) return memoized;
+
+  configHashComputeCount++;
+  const hash = createHash('md5')
+    .update(JSON.stringify(clientConfig))
+    .digest('hex')
+    .substring(0, 8);
+  configHashMemo.set(clientConfig, hash);
+  return hash;
+}
+
+function getProfileHash(profile: DomainProfile): string {
+  const memoized = profileHashMemo.get(profile);
+  if (memoized !== undefined) return memoized;
+
+  profileHashComputeCount++;
+  const hash = createHash('md5')
+    .update(JSON.stringify({
+      id: profile.id,
+      updatedAt: profile.updatedAt,
+      transforms: profile.transforms,
+      removeAds: profile.removeAds,
+      removeTracking: profile.removeTracking,
+    }))
+    .digest('hex')
+    .substring(0, 8);
+  profileHashMemo.set(profile, hash);
+  return hash;
+}
+
 function getCacheKey(
   url: string,
   contentType: string,
@@ -247,27 +316,13 @@ function getCacheKey(
     // Invalid URL: fall through to the 'unknown' default profile.
   }
 
-  // Get domain profile hash
+  // Get domain profile hash (memoized by profile object identity)
   const { profile } = getProfileForDomain(domain);
-  const profileHash = profile
-    ? createHash('md5')
-        .update(JSON.stringify({
-          id: profile.id,
-          updatedAt: profile.updatedAt,
-          transforms: profile.transforms,
-          removeAds: profile.removeAds,
-          removeTracking: profile.removeTracking,
-        }))
-        .digest('hex')
-        .substring(0, 8)
-    : 'none';
+  const profileHash = profile ? getProfileHash(profile) : 'none';
 
-  // Get client config hash
+  // Get client config hash (memoized by config object identity)
   const clientConfig = getClientConfig(clientIp);
-  const configHash = createHash('md5')
-    .update(JSON.stringify(clientConfig))
-    .digest('hex')
-    .substring(0, 8);
+  const configHash = getConfigHash(clientConfig);
 
   const upperMethod = method.toUpperCase();
   const authFingerprint = getAuthFingerprint(requestHeaders);
@@ -337,7 +392,7 @@ async function ensureCacheDir(): Promise<void> {
   } catch (err) {
     // mkdir with recursive:true should not fail unless the path is unwritable.
     // Surface so we don't silently degrade to a non-functional cache.
-    console.warn('[cache] failed to ensure cache dir', err);
+    log.warn('[cache] failed to ensure cache dir', err);
     recordError();
     cacheDirInitialized = true;
   }
@@ -473,14 +528,14 @@ export async function getCached(
       }
       // Expired, clean up async (don't wait)
       Promise.all([unlink(cachePath), unlink(metaPath)]).catch((err: unknown) => {
-        console.warn('[cache] failed to unlink expired entry', err);
+        log.warn('[cache] failed to unlink expired entry', err);
         recordError();
       });
     }
   } catch (err) {
     // File-cache miss path: any error here means we treat as a miss and
     // re-fetch upstream. Log so corruption is investigatable.
-    console.warn('[cache] file-cache read failed', err);
+    log.warn('[cache] file-cache read failed', err);
     recordError();
   }
 
@@ -584,7 +639,7 @@ export async function setCache(
       }
       await Promise.all(writes);
     } catch (err) {
-      console.warn('[cache] file-cache write failed', err);
+      log.warn('[cache] file-cache write failed', err);
       recordError();
     }
   })();
@@ -616,12 +671,12 @@ export function clearCache(): void {
           if (stats.isDirectory()) {
             const files = await readdir(subdirPath);
             await Promise.all(files.map(file => unlink(join(subdirPath, file)).catch((err: unknown) => {
-              console.warn('[cache] failed to unlink', join(subdirPath, file), err);
+              log.warn('[cache] failed to unlink', join(subdirPath, file), err);
               recordError();
             })));
           }
         } catch (err) {
-          console.warn('[cache] failed to clear subdir', subdirPath, err);
+          log.warn('[cache] failed to clear subdir', subdirPath, err);
           recordError();
         }
       }

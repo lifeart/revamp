@@ -13,10 +13,13 @@ import { fileURLToPath } from 'url';
 const setupDir = fileURLToPath(new URL('.', import.meta.url));
 
 export default async function setup() {
-  const workerPath = resolve(setupDir, 'dist/transformers/js-worker.js');
+  const workerPaths = [
+    resolve(setupDir, 'dist/transformers/js-worker.js'),
+    resolve(setupDir, 'dist/transformers/css-worker.js'),
+  ];
 
-  if (!existsSync(workerPath)) {
-    console.log('Building worker entry (tsconfig.workers.json)...');
+  if (workerPaths.some((workerPath) => !existsSync(workerPath))) {
+    console.log('Building worker entries (tsconfig.workers.json)...');
     execSync('pnpm exec tsc --project tsconfig.workers.json', {
       stdio: 'inherit',
     });

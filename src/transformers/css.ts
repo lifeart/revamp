@@ -1,145 +1,80 @@
 /**
- * CSS Transformer using PostCSS
+ * CSS Transformer using PostCSS Worker Pool
  * Transforms modern CSS to be compatible with iOS 9+ Safari (iPad 2+)
+ *
+ * Uses tinypool to offload CPU-intensive PostCSS transforms to worker threads,
+ * keeping the main event loop free for handling concurrent requests.
  */
 
-import postcss, { type Plugin } from 'postcss';
-import postcssPresetEnv from 'postcss-preset-env';
+import { fileURLToPath } from 'url';
+import { log } from '../logger/log.js';
+import { dirname } from 'path';
+import type { Tinypool } from 'tinypool';
 import { getConfig, type RevampConfig } from '../config/index.js';
-import { hasGridProperties, transformGridToFlexbox } from './css-grid-fallback.js';
-import { hasDarkModeQueries, stripAllDarkModeCSS } from './dark-mode-strip.js';
+import { resolveWorkerPath, createTransformerPool } from './worker-pool.js';
+import type { CssWorkerInput, CssWorkerOutput } from './css-worker.js';
 
-// PostCSS processor instance (cached)
-let processor: ReturnType<typeof postcss> | null = null;
-// Targets used to build the cached processor; used to invalidate when config.targets changes
-let processorTargets: string | null = null;
+// Get the directory of this file for resolving the worker
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Lazy-initialized worker pool
+let pool: Tinypool | null = null;
 
 /**
- * Custom PostCSS plugin to add webkit prefixes for flexbox and grid
- * Safari 9/iOS 9 needs -webkit- prefixes for many flex/grid properties
+ * Get or create the PostCSS worker pool
+ * Uses lazy initialization to avoid startup overhead if CSS transform is disabled
  */
-const webkitFlexGridPlugin: Plugin = {
-  postcssPlugin: 'webkit-flex-grid',
-  Declaration(decl) {
-    const prop = decl.prop;
-    const value = decl.value;
+function getPool(): Tinypool {
+  if (!pool) {
+    const workerPath = resolveWorkerPath(__dirname, 'css-worker.js');
+    pool = createTransformerPool(workerPath);
 
-    // Flexbox properties that need -webkit- prefix for Safari 9
-    const flexboxProps: Record<string, string | undefined> = {
-      'flex': '-webkit-flex',
-      'flex-grow': '-webkit-flex-grow',
-      'flex-shrink': '-webkit-flex-shrink',
-      'flex-basis': '-webkit-flex-basis',
-      'flex-direction': '-webkit-flex-direction',
-      'flex-wrap': '-webkit-flex-wrap',
-      'flex-flow': '-webkit-flex-flow',
-      'justify-content': '-webkit-justify-content',
-      'align-items': '-webkit-align-items',
-      'align-self': '-webkit-align-self',
-      'align-content': '-webkit-align-content',
-      'order': '-webkit-order',
-    };
-
-    // Add -webkit- prefix for flexbox properties
-    if (flexboxProps[prop] && !decl.parent?.some(node =>
-      node.type === 'decl' && (node as typeof decl).prop === flexboxProps[prop]
-    )) {
-      decl.cloneBefore({ prop: flexboxProps[prop]!, value });
-    }
-
-    // Handle display: flex and display: grid
-    if (prop === 'display') {
-      if (value === 'flex' && !decl.parent?.some(node =>
-        node.type === 'decl' && (node as typeof decl).prop === 'display' && (node as typeof decl).value === '-webkit-flex'
-      )) {
-        decl.cloneBefore({ prop: 'display', value: '-webkit-flex' });
-      }
-      if (value === 'inline-flex' && !decl.parent?.some(node =>
-        node.type === 'decl' && (node as typeof decl).prop === 'display' && (node as typeof decl).value === '-webkit-inline-flex'
-      )) {
-        decl.cloneBefore({ prop: 'display', value: '-webkit-inline-flex' });
-      }
-    }
-
-    // Gap property fallback for flexbox (Safari 9 doesn't support gap in flexbox)
-    // We can't perfectly polyfill this, but we can add margin-based fallback hint
-    if (prop === 'gap' || prop === 'row-gap' || prop === 'column-gap') {
-      // Check if parent uses flexbox
-      const parentRule = decl.parent;
-      if (parentRule) {
-        const isFlexbox = parentRule.some(node =>
-          node.type === 'decl' &&
-          (node as typeof decl).prop === 'display' &&
-          ((node as typeof decl).value === 'flex' || (node as typeof decl).value === '-webkit-flex')
-        );
-
-        // For grid, autoprefixer handles it. For flexbox, gap isn't supported in Safari 9
-        // Just ensure the property exists (PostCSS preset-env should handle this)
-      }
-    }
+    log.debug(`🎨 PostCSS worker pool initialized with ${pool.options.maxThreads} max threads (${pool.options.concurrentTasksPerWorker} tasks/worker)`);
   }
-};
 
-webkitFlexGridPlugin.postcssPlugin = 'webkit-flex-grid';
+  return pool;
+}
 
-function getProcessor(): ReturnType<typeof postcss> {
+/**
+ * Gracefully shutdown the worker pool
+ * Call this when the application is shutting down
+ */
+export async function shutdownCssWorkerPool(): Promise<void> {
+  if (pool) {
+    log.debug('🎨 Shutting down PostCSS worker pool...');
+    await pool.destroy();
+    pool = null;
+  }
+}
+
+/**
+ * Prewarm the worker pool by initializing workers early
+ * Call this at application startup for faster first transforms
+ */
+export async function prewarmCssWorkerPool(): Promise<void> {
   const config = getConfig();
-  const targetsKey = config.targets.join(', ');
+  if (!config.transformCss) return;
 
-  if (processor && processorTargets === targetsKey) {
-    return processor;
+  log.debug('🔥 Prewarming PostCSS worker pool...');
+  const workerPool = getPool();
+
+  // Run a minimal transform to ensure workers are ready
+  const warmupCode = '.warmup { display: flex; }';
+  try {
+    await workerPool.run({ code: warmupCode, targets: config.targets } as CssWorkerInput);
+    log.debug('✅ PostCSS worker pool prewarmed and ready');
+  } catch (error) {
+    // Warmup failures are non-fatal (the pool retries lazily on first real
+    // transform), but they must be visible — a broken worker file would
+    // otherwise surface much later as per-request fallbacks.
+    log.warn('⚠️ PostCSS worker pool warmup failed:', error instanceof Error ? error.message : error);
   }
-
-  // Targets changed (or first run) — rebuild the processor so new browser
-  // compatibility settings actually take effect.
-  if (processor && processorTargets !== targetsKey) {
-    resetCssProcessor();
-  }
-
-  processorTargets = targetsKey;
-
-  processor = postcss([
-    // First apply our webkit flexbox/grid prefixes
-    webkitFlexGridPlugin,
-    // Then apply postcss-preset-env for other transformations
-    postcssPresetEnv({
-      // iOS 9 compatible features
-      browsers: targetsKey,
-      // Stage 2 features are reasonably stable
-      stage: 2,
-      features: {
-        // Enable specific features for iOS 9 compatibility
-        'nesting-rules': true,
-        'custom-properties': true, // CSS variables fallbacks
-        'color-function': true,
-        'oklab-function': true,
-        'color-mix': true,
-        'custom-media-queries': true,
-        'media-query-ranges': true,
-        'gap-properties': true,
-        'overflow-wrap-property': true,
-        'font-variant-property': true,
-        'all-property': true,
-        'any-link-pseudo-class': true,
-        'matches-pseudo-class': true, // :is() selector
-        'not-pseudo-class': true,     // :not() with complex selectors
-        'logical-properties-and-values': true,
-        'place-properties': true,
-        'system-ui-font-family': true,
-      },
-      // Add vendor prefixes
-      autoprefixer: {
-        flexbox: true,       // Enable full flexbox prefixing for Safari 9
-        grid: 'autoplace',   // Add IE grid support (useful for older browsers)
-      },
-    }),
-  ]);
-
-  return processor;
 }
 
 /**
  * Transform CSS code for legacy browser compatibility
+ * Uses worker pool for parallel processing
  *
  * Optimization: Skip transformation for small files or files that don't
  * contain modern CSS features that need transpiling.
@@ -163,32 +98,27 @@ export async function transformCss(code: string, filename?: string, config?: Rev
   }
 
   try {
-    let transformedCode = code;
+    const workerPool = getPool();
 
-    // Strip dark mode CSS if configured
-    if (hasDarkModeQueries(transformedCode)) {
-      transformedCode = stripAllDarkModeCSS(transformedCode, {
-        keepScheme: 'light',
-        extractPreferredStyles: true
-      });
+    const input: CssWorkerInput = {
+      code,
+      filename,
+      // The PostCSS processor has always been built from the GLOBAL config
+      // targets (not a per-request config override) — preserve that.
+      targets: getConfig().targets,
+    };
+
+    const result = await workerPool.run(input) as CssWorkerOutput;
+
+    if (result.error) {
+      log.error('❌ PostCSS transform error:', result.error);
+      // Worker already returns the original code on transform errors
+      return result.css;
     }
-
-    // Add flexbox fallbacks for CSS Grid
-    if (hasGridProperties(transformedCode)) {
-      transformedCode = transformGridToFlexbox(transformedCode);
-    }
-
-    const proc = getProcessor();
-    const result = await proc.process(transformedCode, {
-      from: filename || 'input.css',
-      to: filename || 'output.css',
-      // Don't generate source maps for transformed content
-      map: false,
-    });
 
     return result.css;
   } catch (error) {
-    console.error('❌ PostCSS transform error:', error instanceof Error ? error.message : error);
+    log.error('❌ PostCSS worker error:', error instanceof Error ? error.message : error);
     // Return original code on error to not break the page
     return code;
   }
@@ -251,8 +181,12 @@ export function needsCssTransform(code: string): boolean {
 
 /**
  * Reset the processor (useful if config changes)
+ *
+ * Kept for API compatibility. The PostCSS processor now lives inside each
+ * worker thread and is keyed by the targets it was built with, so it rebuilds
+ * automatically whenever config.targets changes — no manual reset is needed.
  */
 export function resetCssProcessor(): void {
-  processor = null;
-  processorTargets = null;
+  // Intentionally a no-op: worker-side processors invalidate themselves
+  // when the targets passed with each task change.
 }

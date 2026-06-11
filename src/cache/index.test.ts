@@ -5,10 +5,18 @@ import {
   clearCache,
   clearMemoryCache,
   getCacheStats,
+  getHashComputeCounts,
   isRedirectStatus,
   markAsRedirect,
 } from './index.js';
-import { resetConfig, updateConfig } from '../config/index.js';
+import {
+  resetConfig,
+  updateConfig,
+  setClientConfig,
+  resetClientConfig,
+  type DomainProfile,
+} from '../config/index.js';
+import { getRulesStore, clearProfileCache } from '../config/domain-manager.js';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -998,5 +1006,135 @@ describe('cache Vary header support (T41)', () => {
       'accept-language': 'fr-FR',
     });
     expect(miss).toBeNull();
+  });
+});
+
+describe('cache key hash memoization', () => {
+  const testCacheDir = join(tmpdir(), 'revamp-hash-memo-test-' + Date.now());
+  const clientIp = '198.51.100.42';
+
+  beforeEach(async () => {
+    clearCache();
+    resetConfig();
+    resetClientConfig();
+    updateConfig({
+      cacheEnabled: true,
+      cacheDir: testCacheDir,
+      cacheTTL: 3600,
+    });
+    try {
+      await mkdir(testCacheDir, { recursive: true });
+    } catch {
+      // Ignore if exists
+    }
+  });
+
+  afterEach(async () => {
+    clearCache();
+    resetClientConfig();
+    resetConfig();
+    try {
+      await rm(testCacheDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('should compute the config hash only once for a stable client config object', async () => {
+    // setClientConfig stores this exact object; getClientConfig returns the
+    // same reference until it is replaced — so the hash must be memoized.
+    setClientConfig({ removeAds: true, transformJs: true }, clientIp);
+
+    const url = 'https://memo-test.example/page';
+    const before = getHashComputeCounts().config;
+
+    await setCache(url, 'text/html', Buffer.from('<html>memo</html>'), clientIp);
+    await getCached(url, 'text/html', clientIp);
+    await getCached(url, 'text/html', clientIp);
+
+    const after = getHashComputeCounts().config;
+    // Three cache-key computations, one actual hash computation.
+    expect(after - before).toBe(1);
+  });
+
+  it('should change the cache key when the client config is replaced with different content', async () => {
+    const url = 'https://memo-replace.example/page';
+
+    setClientConfig({ removeAds: true }, clientIp);
+    await setCache(url, 'text/html', Buffer.from('v1'), clientIp);
+    expect((await getCached(url, 'text/html', clientIp))?.toString()).toBe('v1');
+
+    // Replacing the config with different content must produce a different
+    // hash → different cache key → MISS. A stale memo here would serve a
+    // response cached under the old config (correctness-critical).
+    setClientConfig({ removeAds: false }, clientIp);
+    expect(await getCached(url, 'text/html', clientIp)).toBeNull();
+
+    // A NEW object with content equal to the original must hash to the same
+    // value again (memo is identity-keyed, hash is content-derived) → HIT.
+    setClientConfig({ removeAds: true }, clientIp);
+    expect((await getCached(url, 'text/html', clientIp))?.toString()).toBe('v1');
+  });
+
+  it('should recompute (not reuse) the hash for a replaced equal-content config object', async () => {
+    setClientConfig({ removeTracking: true }, clientIp);
+    const url = 'https://memo-recompute.example/page';
+
+    await getCached(url, 'text/html', clientIp);
+    const afterFirst = getHashComputeCounts().config;
+
+    // New object identity, same content → memo miss → one more computation.
+    setClientConfig({ removeTracking: true }, clientIp);
+    await getCached(url, 'text/html', clientIp);
+
+    const afterSecond = getHashComputeCounts().config;
+    expect(afterSecond - afterFirst).toBe(1);
+  });
+
+  it('should memoize the profile hash and recompute when the profile object is replaced', async () => {
+    const store = getRulesStore();
+    const profile: DomainProfile = {
+      id: 'memo-profile-test-id',
+      name: 'memo test profile',
+      patterns: [{ type: 'exact', pattern: 'profile-memo.example' }],
+      priority: 100,
+      removeAds: true,
+      enabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    store.profiles.push(profile);
+    clearProfileCache();
+
+    try {
+      const url = 'https://profile-memo.example/page';
+      const before = getHashComputeCounts().profile;
+
+      await setCache(url, 'text/html', Buffer.from('profiled'), clientIp);
+      await getCached(url, 'text/html', clientIp);
+      expect((await getCached(url, 'text/html', clientIp))?.toString()).toBe('profiled');
+
+      const afterStable = getHashComputeCounts().profile;
+      // Three cache-key computations against the same profile object → one hash.
+      expect(afterStable - before).toBe(1);
+
+      // Replace the profile object exactly the way updateProfile() does:
+      // a fresh spread object swapped into the array slot, with a bumped
+      // updatedAt. The old cache entry must MISS under the new profile hash.
+      const index = store.profiles.indexOf(profile);
+      store.profiles[index] = {
+        ...profile,
+        removeAds: false,
+        updatedAt: profile.updatedAt + 1,
+      };
+      clearProfileCache();
+
+      expect(await getCached(url, 'text/html', clientIp)).toBeNull();
+      const afterReplace = getHashComputeCounts().profile;
+      expect(afterReplace - afterStable).toBe(1);
+    } finally {
+      store.profiles = store.profiles.filter((p) => p.id !== 'memo-profile-test-id');
+      clearProfileCache();
+    }
   });
 });

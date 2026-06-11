@@ -6,6 +6,7 @@
  */
 
 import { transformAsync, type TransformOptions, type PluginObj } from '@babel/core';
+import { log } from '../logger/log.js';
 import type { NodePath, types as t } from '@babel/core';
 
 export interface JsWorkerInput {
@@ -151,13 +152,13 @@ export default async function transformJsWorker(input: JsWorkerInput): Promise<J
       return { code: result.code };
     }
 
-    console.warn(`⚠️ Babel returned no code for: ${filename || 'unknown'}`);
+    log.warn(`⚠️ Babel returned no code for: ${filename || 'unknown'}`);
     return { code };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isIgnorable = isIgnorableError(errorMessage);
 
-    console.error(`❌ Babel error for ${filename || 'unknown'}: ${errorMessage}`);
+    log.error(`❌ Babel error for ${filename || 'unknown'}: ${errorMessage}`);
 
     return {
       code,

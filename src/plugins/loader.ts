@@ -6,6 +6,7 @@
  */
 
 import { readFile, readdir, stat, watch } from 'node:fs/promises';
+import { log } from '../logger/log.js';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { existsSync, FSWatcher } from 'node:fs';
@@ -18,6 +19,7 @@ import type {
 } from './types.js';
 import { pluginRegistry } from './internal.js';
 import { createPluginContext, cleanupPluginResources } from './context.js';
+import { unregisterTransformersForPlugin } from '../transformers/registry.js';
 import {
   validateManifest,
   checkVersionCompatibility,
@@ -120,7 +122,7 @@ export class PluginLoader {
     const manifests: PluginManifest[] = [];
 
     if (!existsSync(this.pluginsDir)) {
-      console.log(`[PluginLoader] Plugins directory not found: ${this.pluginsDir}`);
+      log.info(`[PluginLoader] Plugins directory not found: ${this.pluginsDir}`);
       return manifests;
     }
 
@@ -128,7 +130,7 @@ export class PluginLoader {
     try {
       entries = await readdir(this.pluginsDir, { withFileTypes: true });
     } catch (err) {
-      console.error(`[PluginLoader] Failed to read plugins directory:`, err);
+      log.error(`[PluginLoader] Failed to read plugins directory:`, err);
       return manifests;
     }
 
@@ -139,7 +141,7 @@ export class PluginLoader {
       const manifestPath = join(pluginDir, MANIFEST_FILENAME);
 
       if (!existsSync(manifestPath)) {
-        console.debug(`[PluginLoader] No manifest in ${entry.name}, skipping`);
+        log.debug(`[PluginLoader] No manifest in ${entry.name}, skipping`);
         continue;
       }
 
@@ -150,7 +152,7 @@ export class PluginLoader {
         // Validate manifest
         const errors = validateManifest(manifest);
         if (errors.length > 0) {
-          console.warn(
+          log.warn(
             `[PluginLoader] Invalid manifest for ${entry.name}:`,
             errors.map((e) => `${e.field}: ${e.message}`).join(', ')
           );
@@ -159,7 +161,7 @@ export class PluginLoader {
 
         manifests.push(manifest);
       } catch (err) {
-        console.warn(
+        log.warn(
           `[PluginLoader] Failed to read manifest for ${entry.name}:`,
           err
         );
@@ -239,7 +241,7 @@ export class PluginLoader {
 
       return plugin;
     } catch (err) {
-      console.error(`[PluginLoader] Failed to load plugin from ${pluginDir}:`, err);
+      log.error(`[PluginLoader] Failed to load plugin from ${pluginDir}:`, err);
       return null;
     }
   }
@@ -264,10 +266,10 @@ export class PluginLoader {
       // Register with the registry
       pluginRegistry.register(plugin, finalConfig);
 
-      console.log(`[PluginLoader] Registered plugin: ${plugin.manifest.id}`);
+      log.info(`[PluginLoader] Registered plugin: ${plugin.manifest.id}`);
       return true;
     } catch (err) {
-      console.error(`[PluginLoader] Failed to register plugin:`, err);
+      log.error(`[PluginLoader] Failed to register plugin:`, err);
       return false;
     }
   }
@@ -280,12 +282,12 @@ export class PluginLoader {
     const instance = pluginRegistry.getInstance(pluginId);
 
     if (!info || !instance) {
-      console.warn(`[PluginLoader] Plugin ${pluginId} not found`);
+      log.warn(`[PluginLoader] Plugin ${pluginId} not found`);
       return false;
     }
 
     if (info.state !== 'loaded') {
-      console.warn(
+      log.warn(
         `[PluginLoader] Plugin ${pluginId} is not in loaded state (${info.state})`
       );
       return false;
@@ -304,12 +306,12 @@ export class PluginLoader {
       }
 
       pluginRegistry.updateState(pluginId, 'initialized');
-      console.log(`[PluginLoader] Initialized plugin: ${pluginId}`);
+      log.info(`[PluginLoader] Initialized plugin: ${pluginId}`);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       pluginRegistry.updateState(pluginId, 'error', message);
-      console.error(`[PluginLoader] Failed to initialize plugin ${pluginId}:`, err);
+      log.error(`[PluginLoader] Failed to initialize plugin ${pluginId}:`, err);
       return false;
     }
   }
@@ -322,12 +324,12 @@ export class PluginLoader {
     const instance = pluginRegistry.getInstance(pluginId);
 
     if (!info || !instance) {
-      console.warn(`[PluginLoader] Plugin ${pluginId} not found`);
+      log.warn(`[PluginLoader] Plugin ${pluginId} not found`);
       return false;
     }
 
     if (info.state !== 'initialized' && info.state !== 'deactivated') {
-      console.warn(
+      log.warn(
         `[PluginLoader] Plugin ${pluginId} cannot be activated from state ${info.state}`
       );
       return false;
@@ -355,7 +357,7 @@ export class PluginLoader {
       }
 
       pluginRegistry.updateState(pluginId, 'active');
-      console.log(`[PluginLoader] Activated plugin: ${pluginId}`);
+      log.info(`[PluginLoader] Activated plugin: ${pluginId}`);
 
       // Update plugins.json
       if (this.pluginsConfig) {
@@ -374,7 +376,7 @@ export class PluginLoader {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       pluginRegistry.updateState(pluginId, 'error', message);
-      console.error(`[PluginLoader] Failed to activate plugin ${pluginId}:`, err);
+      log.error(`[PluginLoader] Failed to activate plugin ${pluginId}:`, err);
       return false;
     }
   }
@@ -400,6 +402,10 @@ export class PluginLoader {
       // Unregister all hooks first
       pluginRegistry.unregisterAllHooks(pluginId);
 
+      // Remove the plugin's content transformers from the transform
+      // pipeline (mirrors hook cleanup; endpoints are cleaned on unload).
+      unregisterTransformersForPlugin(pluginId);
+
       const context = createPluginContext(
         pluginId,
         info.manifest.permissions || []
@@ -410,7 +416,7 @@ export class PluginLoader {
       }
 
       pluginRegistry.updateState(pluginId, 'deactivated');
-      console.log(`[PluginLoader] Deactivated plugin: ${pluginId}`);
+      log.info(`[PluginLoader] Deactivated plugin: ${pluginId}`);
 
       // Update plugins.json
       if (this.pluginsConfig && this.pluginsConfig.plugins[pluginId]) {
@@ -422,7 +428,7 @@ export class PluginLoader {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       pluginRegistry.updateState(pluginId, 'error', message);
-      console.error(`[PluginLoader] Failed to deactivate plugin ${pluginId}:`, err);
+      log.error(`[PluginLoader] Failed to deactivate plugin ${pluginId}:`, err);
       return false;
     }
   }
@@ -460,10 +466,10 @@ export class PluginLoader {
       cleanupPluginResources(pluginId);
 
       pluginRegistry.unregister(pluginId);
-      console.log(`[PluginLoader] Unloaded plugin: ${pluginId}`);
+      log.info(`[PluginLoader] Unloaded plugin: ${pluginId}`);
       return true;
     } catch (err) {
-      console.error(`[PluginLoader] Failed to unload plugin ${pluginId}:`, err);
+      log.error(`[PluginLoader] Failed to unload plugin ${pluginId}:`, err);
       return false;
     }
   }
@@ -475,14 +481,14 @@ export class PluginLoader {
     await this.loadPluginsConfig();
 
     if (!this.pluginsConfig?.enabled) {
-      console.log('[PluginLoader] Plugin system is disabled');
+      log.info('[PluginLoader] Plugin system is disabled');
       return;
     }
 
     const manifests = await this.discoverPlugins();
 
     if (manifests.length === 0) {
-      console.log('[PluginLoader] No plugins found');
+      log.info('[PluginLoader] No plugins found');
       return;
     }
 
@@ -496,7 +502,7 @@ export class PluginLoader {
     for (const manifest of manifests) {
       const depErrors = validateDependencies(manifest, manifestMap);
       if (depErrors.length > 0) {
-        console.warn(
+        log.warn(
           `[PluginLoader] Plugin ${manifest.id} has dependency issues:`,
           depErrors.map((e) => e.message).join(', ')
         );
@@ -506,7 +512,7 @@ export class PluginLoader {
     // Sort by dependencies
     const sorted = resolveDependencies(manifests);
 
-    console.log(
+    log.info(
       `[PluginLoader] Loading ${sorted.length} plugins in order:`,
       sorted.map((m) => m.id).join(', ')
     );
@@ -514,7 +520,7 @@ export class PluginLoader {
     for (const manifest of sorted) {
       // Check if plugin is enabled
       if (!this.isPluginEnabled(manifest.id)) {
-        console.log(`[PluginLoader] Plugin ${manifest.id} is disabled, skipping`);
+        log.info(`[PluginLoader] Plugin ${manifest.id} is disabled, skipping`);
         continue;
       }
 
@@ -566,7 +572,7 @@ export class PluginLoader {
    */
   enableHotReload(): void {
     this.hotReloadEnabled = true;
-    console.log('[PluginLoader] Hot reload enabled');
+    log.info('[PluginLoader] Hot reload enabled');
 
     // Start watching all active plugins
     for (const plugin of pluginRegistry.getActivePlugins()) {
@@ -585,7 +591,7 @@ export class PluginLoader {
       this.stopWatching(pluginId);
     }
 
-    console.log('[PluginLoader] Hot reload disabled');
+    log.info('[PluginLoader] Hot reload disabled');
   }
 
   /**
@@ -615,13 +621,13 @@ export class PluginLoader {
           });
 
           this.watchers.set(pluginId, watcher as unknown as FSWatcher);
-          console.log(`[PluginLoader] Watching plugin: ${pluginId}`);
+          log.info(`[PluginLoader] Watching plugin: ${pluginId}`);
         })
         .catch((err: unknown) => {
-          console.error(`[PluginLoader] Failed to watch plugin ${pluginId}:`, err);
+          log.error(`[PluginLoader] Failed to watch plugin ${pluginId}:`, err);
         });
     } catch (err) {
-      console.error(`[PluginLoader] Failed to watch plugin ${pluginId}:`, err);
+      log.error(`[PluginLoader] Failed to watch plugin ${pluginId}:`, err);
     }
   }
 
@@ -637,7 +643,7 @@ export class PluginLoader {
 
     // Schedule new reload (debounce 500ms)
     const timer = setTimeout(async () => {
-      console.log(`[PluginLoader] Hot reloading plugin: ${pluginId}`);
+      log.info(`[PluginLoader] Hot reloading plugin: ${pluginId}`);
       const config = pluginRegistry.getConfig(pluginId);
       await this.unloadPlugin(pluginId);
 

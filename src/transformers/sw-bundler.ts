@@ -13,6 +13,7 @@
  */
 
 import * as esbuild from 'esbuild';
+import { log } from '../logger/log.js';
 import { URL } from 'node:url';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -265,12 +266,12 @@ function createHttpResolverPlugin(baseUrl: string): esbuild.Plugin {
         }
 
         if (!resolvedUrl) {
-          console.warn(`[SW Bundler] Cannot resolve: ${args.path}`);
+          log.warn(`[SW Bundler] Cannot resolve: ${args.path}`);
           return { external: true };
         }
 
         if (loadedModules.size >= MAX_MODULES) {
-          console.warn(`[SW Bundler] Max modules reached, marking ${args.path} as external`);
+          log.warn(`[SW Bundler] Max modules reached, marking ${args.path} as external`);
           return { external: true };
         }
 
@@ -292,7 +293,7 @@ function createHttpResolverPlugin(baseUrl: string): esbuild.Plugin {
           return { contents: result.content, loader: 'js' };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.error(`[SW Bundler] Failed to fetch ${url}: ${message}`);
+          log.error(`[SW Bundler] Failed to fetch ${url}: ${message}`);
           return {
             contents: `console.error('[Revamp SW] Failed to load module: ${url}');`,
             loader: 'js'
@@ -322,7 +323,7 @@ export async function bundleServiceWorker(scriptUrl: string, scope: string = '/'
     const cacheKey = `sw-bundle:${scriptUrl}:${scope}`;
     const cached = await getCached(scriptUrl, 'sw-bundle');
     if (cached) {
-      console.log(`📦 SW bundle cache hit: ${scriptUrl}`);
+      log.debug(`📦 SW bundle cache hit: ${scriptUrl}`);
       return {
         code: cached.toString('utf-8'),
         success: true,
@@ -331,7 +332,7 @@ export async function bundleServiceWorker(scriptUrl: string, scope: string = '/'
       };
     }
 
-    console.log(`📦 Bundling Service Worker: ${scriptUrl}`);
+    log.info(`📦 Bundling Service Worker: ${scriptUrl}`);
 
     // Fetch the SW script
     const fetchResult = await fetchUrl(scriptUrl);
@@ -353,7 +354,7 @@ export async function bundleServiceWorker(scriptUrl: string, scope: string = '/'
     const usesModules = /\b(import|export)\b/.test(swCode);
 
     if (usesModules) {
-      console.log(`📦 SW uses ES modules, bundling with esbuild`);
+      log.debug(`📦 SW uses ES modules, bundling with esbuild`);
 
       // Bundle with esbuild
       const result = await esbuild.build({
@@ -383,7 +384,7 @@ export async function bundleServiceWorker(scriptUrl: string, scope: string = '/'
     }
 
     // Transform the code for legacy browsers using Babel
-    console.log(`🔧 Transforming SW code for legacy browsers`);
+    log.debug(`🔧 Transforming SW code for legacy browsers`);
     swCode = await transformJs(swCode, scriptUrl);
 
     // Add wrapper code
@@ -401,7 +402,7 @@ export async function bundleServiceWorker(scriptUrl: string, scope: string = '/'
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`❌ SW bundling failed: ${message}`);
+    log.error(`❌ SW bundling failed: ${message}`);
 
     // Return a fallback SW that logs the error
     const fallbackCode = `
@@ -468,7 +469,7 @@ export async function transformInlineServiceWorker(code: string, scope: string =
     // satisfy `js/log-injection` — the message alone still tells us a
     // transform happened, and the size is recoverable from upstream
     // request logs anyway.
-    console.log('📦 Transforming inline Service Worker');
+    log.info('📦 Transforming inline Service Worker');
 
     let swCode = code;
 
@@ -488,7 +489,7 @@ export async function transformInlineServiceWorker(code: string, scope: string =
     const usesModules = /\b(import|export)\b/.test(swCode);
 
     if (usesModules) {
-      console.log(`📦 Inline SW uses ES modules, bundling with esbuild`);
+      log.debug(`📦 Inline SW uses ES modules, bundling with esbuild`);
 
       // Bundle with esbuild - for inline scripts, we can only resolve relative imports
       // that are already embedded in the code
@@ -517,7 +518,7 @@ export async function transformInlineServiceWorker(code: string, scope: string =
     }
 
     // Transform the code for legacy browsers using Babel
-    console.log(`🔧 Transforming inline SW code for legacy browsers`);
+    log.debug(`🔧 Transforming inline SW code for legacy browsers`);
     swCode = await transformJs(swCode, 'inline-sw.js');
 
     // Add wrapper code
@@ -532,7 +533,7 @@ export async function transformInlineServiceWorker(code: string, scope: string =
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`❌ Inline SW transformation failed: ${message}`);
+    log.error(`❌ Inline SW transformation failed: ${message}`);
 
     // Return the original code with wrapper as fallback
     const wrapper = generateSwWrapper('inline-script', scope);

@@ -6,12 +6,12 @@
  * keeping the main event loop free for handling concurrent requests.
  */
 
-import { Tinypool } from 'tinypool';
 import { fileURLToPath } from 'url';
-import { dirname, resolve } from 'path';
-import { cpus } from 'os';
-import { existsSync } from 'fs';
+import { log } from '../logger/log.js';
+import { dirname } from 'path';
+import type { Tinypool } from 'tinypool';
 import { getConfig, type RevampConfig } from '../config/index.js';
+import { resolveWorkerPath, createTransformerPool } from './worker-pool.js';
 import type { JsWorkerInput, JsWorkerOutput } from './js-worker.js';
 
 // Get the directory of this file for resolving the worker
@@ -22,47 +22,15 @@ const __dirname = dirname(__filename);
 let pool: Tinypool | null = null;
 
 /**
- * Resolve the worker file path.
- * Looks for compiled js-worker.js in same directory or dist/.
- */
-function resolveWorkerPath(): string {
-  // First try the same directory (for compiled code)
-  const sameDirPath = resolve(__dirname, 'js-worker.js');
-  if (existsSync(sameDirPath)) {
-    return sameDirPath;
-  }
-
-  // For tsx/development: look in dist/transformers/
-  const distPath = resolve(__dirname, '../../dist/transformers/js-worker.js');
-  if (existsSync(distPath)) {
-    return distPath;
-  }
-
-  // Fallback to same directory path (will error but with clear message)
-  return sameDirPath;
-}
-
-/**
  * Get or create the Babel worker pool
  * Uses lazy initialization to avoid startup overhead if JS transform is disabled
  */
 function getPool(): Tinypool {
   if (!pool) {
-    const workerPath = resolveWorkerPath();
-    const cpuCount = cpus().length;
+    const workerPath = resolveWorkerPath(__dirname, 'js-worker.js');
+    pool = createTransformerPool(workerPath);
 
-    pool = new Tinypool({
-      filename: workerPath,
-      // Use all CPUs for maximum parallelism - Babel is CPU-bound
-      minThreads: Math.max(2, Math.floor(cpuCount / 2)),
-      maxThreads: cpuCount,
-      // Allow multiple concurrent tasks per worker for better throughput
-      concurrentTasksPerWorker: 2,
-      // Idle timeout - terminate workers after 60s of inactivity
-      idleTimeout: 60000,
-    });
-
-    console.log(`🔧 Babel worker pool initialized with ${pool.options.maxThreads} max threads (${pool.options.concurrentTasksPerWorker} tasks/worker)`);
+    log.debug(`🔧 Babel worker pool initialized with ${pool.options.maxThreads} max threads (${pool.options.concurrentTasksPerWorker} tasks/worker)`);
   }
 
   return pool;
@@ -74,7 +42,7 @@ function getPool(): Tinypool {
  */
 export async function shutdownWorkerPool(): Promise<void> {
   if (pool) {
-    console.log('🔧 Shutting down Babel worker pool...');
+    log.debug('🔧 Shutting down Babel worker pool...');
     await pool.destroy();
     pool = null;
   }
@@ -88,14 +56,14 @@ export async function prewarmWorkerPool(): Promise<void> {
   const config = getConfig();
   if (!config.transformJs) return;
 
-  console.log('🔥 Prewarming Babel worker pool...');
+  log.debug('🔥 Prewarming Babel worker pool...');
   const workerPool = getPool();
 
   // Run a minimal transform to ensure workers are ready
   const warmupCode = 'const x = 1;';
   try {
     await workerPool.run({ code: warmupCode, targets: config.targets } as JsWorkerInput);
-    console.log('✅ Worker pool prewarmed and ready');
+    log.debug('✅ Worker pool prewarmed and ready');
   } catch {
     // Ignore warmup errors
   }
@@ -135,7 +103,7 @@ export async function transformJs(code: string, filename?: string, config?: Reva
 
   // Skip RSC payloads - they contain JSON data that Babel can corrupt
   if (isRscPayload(code)) {
-    console.log(`⏭️ Skipping RSC payload: ${filename || 'unknown'}`);
+    log.debug(`⏭️ Skipping RSC payload: ${filename || 'unknown'}`);
     return code;
   }
 
@@ -162,18 +130,18 @@ export async function transformJs(code: string, filename?: string, config?: Reva
 
     if (result.error) {
       if (result.isIgnorable) {
-        console.warn(`⚠️ Skipping JS transform (non-critical parse issue): ${filename || 'unknown'}`);
+        log.warn(`⚠️ Skipping JS transform (non-critical parse issue): ${filename || 'unknown'}`);
         return result.code;
       }
 
-      console.error('❌ Babel transform error:', result.error);
+      log.error('❌ Babel transform error:', result.error);
       return result.code;
     }
 
     return result.code;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('❌ Babel worker error:', errorMessage);
+    log.error('❌ Babel worker error:', errorMessage);
     // Return original code on error to not break the page
     return code;
   }

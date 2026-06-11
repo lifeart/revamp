@@ -31,3 +31,20 @@ export {
   getSwModuleCacheSize,
 } from './sw-bundler.js';
 export type { SwBundleResult } from './sw-bundler.js';
+
+// Content transformer registry
+export {
+  registerTransformer,
+  unregisterTransformer,
+  unregisterTransformersForPlugin,
+  getRegisteredTransformerNames,
+  dispatchTextTransform,
+  dispatchBinaryTransform,
+} from './registry.js';
+export type {
+  ContentTransformer,
+  TextContentTransformer,
+  BinaryContentTransformer,
+  BinaryTransformResult,
+  TransformDispatchContext,
+} from './registry.js';

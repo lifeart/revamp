@@ -6,6 +6,7 @@
  */
 
 import forge from 'node-forge';
+import { log } from '../logger/log.js';
 import {
   chmodSync,
   existsSync,
@@ -217,7 +218,7 @@ export function generateCA(): CertificatePair {
     return { key: keyPem, cert: certPem };
   }
 
-  console.log('🔐 Generating new CA certificate...');
+  log.info('🔐 Generating new CA certificate...');
 
   // Generate new CA
   const keys = forge.pki.rsa.generateKeyPair(2048);
@@ -270,8 +271,8 @@ export function generateCA(): CertificatePair {
   caKey = keys.privateKey;
   caCert = cert;
 
-  console.log(`✅ CA certificate saved to: ${caCertPath}`);
-  console.log('📱 Install this certificate on your device to trust the proxy');
+  log.info(`✅ CA certificate saved to: ${caCertPath}`);
+  log.info('📱 Install this certificate on your device to trust the proxy');
 
   return { key: keyPem, cert: certPem };
 }

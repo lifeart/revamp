@@ -331,6 +331,52 @@ describe('Testing Utilities', () => {
     });
   });
 
+  describe('Plugin Composition Mocks', () => {
+    it('reports the plugin itself as active by default', () => {
+      const context = createTestContext({ pluginId: 'com.test.self' });
+
+      expect(context.getActivePlugins()).toEqual(['com.test.self']);
+      expect(context.isPluginActive('com.test.self')).toBe(true);
+      expect(context.isPluginActive('com.test.other')).toBe(false);
+    });
+
+    it('honors the activePlugins option', () => {
+      const context = createTestContext({
+        pluginId: 'com.test.self',
+        activePlugins: ['com.test.self', 'com.test.peer'],
+      });
+
+      expect(context.getActivePlugins()).toEqual([
+        'com.test.self',
+        'com.test.peer',
+      ]);
+      expect(context.isPluginActive('com.test.peer')).toBe(true);
+      expect(context.isPluginActive('com.test.stranger')).toBe(false);
+    });
+
+    it('supports setActivePlugins and restores the initial set on reset', () => {
+      const context = createTestContext({ pluginId: 'com.test.self' });
+
+      context.setActivePlugins(['com.test.peer']);
+      expect(context.isPluginActive('com.test.self')).toBe(false);
+      expect(context.isPluginActive('com.test.peer')).toBe(true);
+
+      context.reset();
+      expect(context.getActivePlugins()).toEqual(['com.test.self']);
+      expect(context.isPluginActive('com.test.peer')).toBe(false);
+    });
+
+    it('does not require any permission', () => {
+      const context = createTestContext({
+        pluginId: 'com.test.unprivileged',
+        permissions: [],
+      });
+
+      expect(() => context.getActivePlugins()).not.toThrow();
+      expect(() => context.isPluginActive('anything')).not.toThrow();
+    });
+  });
+
   describe('Test Context Hook Simulation', () => {
     it('should register and simulate hooks', async () => {
       const context = createTestContext();
@@ -372,6 +418,64 @@ describe('Testing Utilities', () => {
       expect(hooks.size).toBe(2);
       expect(hooks.get('request:pre')?.priority).toBe(100);
       expect(hooks.get('response:post')?.priority).toBe(50);
+    });
+  });
+
+  describe('Registered Endpoint Handler Lookup', () => {
+    it('returns the registered handler so tests can invoke it directly', async () => {
+      const context = createTestContext();
+
+      context.registerEndpoint('stats', async () => ({
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        body: '{"count":1}',
+      }));
+
+      const handler = context.getRegisteredEndpointHandler('stats');
+      expect(handler).not.toBeNull();
+
+      const response = await handler!({
+        method: 'GET',
+        path: 'stats',
+        query: {},
+        body: '',
+        headers: {},
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe('{"count":1}');
+    });
+
+    it('normalizes the leading slash the same way registerEndpoint does', () => {
+      const context = createTestContext();
+      context.registerEndpoint('/slashed', async () => ({
+        statusCode: 204,
+        headers: {},
+        body: '',
+      }));
+
+      expect(context.getRegisteredEndpointHandler('slashed')).not.toBeNull();
+      expect(context.getRegisteredEndpointHandler('/slashed')).not.toBeNull();
+    });
+
+    it('returns null for unregistered paths and after unregister/reset', () => {
+      const context = createTestContext();
+      expect(context.getRegisteredEndpointHandler('missing')).toBeNull();
+
+      context.registerEndpoint('temp', async () => ({
+        statusCode: 200,
+        headers: {},
+        body: '',
+      }));
+      context.unregisterEndpoint('temp');
+      expect(context.getRegisteredEndpointHandler('temp')).toBeNull();
+
+      context.registerEndpoint('temp', async () => ({
+        statusCode: 200,
+        headers: {},
+        body: '',
+      }));
+      context.reset();
+      expect(context.getRegisteredEndpointHandler('temp')).toBeNull();
     });
   });
 });
