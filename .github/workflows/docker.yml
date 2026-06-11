@@ -81,6 +81,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # OIDC token required by actions/attest-build-provenance
+      attestations: write # write the build-provenance attestation
 
     steps:
       - name: Checkout repository
