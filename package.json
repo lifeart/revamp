@@ -89,8 +89,8 @@
     "vitest": "^4.0.14"
   },
   "dependencies": {
-    "@babel/core": "^7.28.5",
-    "@babel/preset-env": "^7.28.5",
+    "@babel/core": "^8.0.1",
+    "@babel/preset-env": "^8.0.2",
     "@types/ws": "^8.18.1",
     "ajv": "^8.20.0",
     "cheerio": "^1.1.2",
