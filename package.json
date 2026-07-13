@@ -82,7 +82,7 @@
     "@typescript-eslint/parser": "^8.0.0",
     "@vitest/coverage-v8": "^4.0.14",
     "domhandler": "^5.0.3",
-    "eslint": "^8.57.0",
+    "eslint": "^10.7.0",
     "playwright": "^1.57.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
